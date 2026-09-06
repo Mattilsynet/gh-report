@@ -29,7 +29,6 @@ use cherry_pit_core::{
     AggregateId, CorrelationContext, EventScheduler, EventStore, ScheduleArmed, ScheduleCancelled,
     ScheduleFired, ScheduleId,
 };
-use jiff::SignedDuration;
 use tracing::{debug, error, info, warn};
 
 use crate::aggregate::metrics;
@@ -586,15 +585,13 @@ async fn arm_sweep_timeout(
     sweep: &SweepCtx<'_>,
     error: &str,
 ) -> Result<ArmedSweepTimeout, AppError> {
-    let timeout_secs = i64::try_from(config::SWEEP_TIMEOUT_SECS)
-        .expect("sweep timeout seconds fits signed duration");
-    let elapsed_ms = config::SWEEP_TIMEOUT_SECS.saturating_mul(1_000);
-    let fire_at = jiff::Timestamp::now() + SignedDuration::from_secs(timeout_secs);
+    let timeout = sweep.config.sweep_timeout;
+    let fire_at = jiff::Timestamp::now() + timeout.as_signed_duration();
     let target = ensure_sweep_timeout_target(sweep.state.as_ref(), sweep.corr_ctx.clone()).await?;
     let payload = SweepTimeoutPayload {
         run_id: sweep.run().run_id.clone(),
         error: error.to_string(),
-        elapsed_ms,
+        elapsed_ms: timeout.elapsed_ms(),
     };
     let encoded = serde_json::to_vec(&payload).map_err(sweep_timeout_persistence)?;
     let schedule_id = ScheduleId::from_uuid(uuid::Uuid::now_v7());
@@ -921,7 +918,8 @@ impl SweepSaga {
             state: sweep.state,
         });
 
-        let timeout_error = format!("sweep timed out after {}s", config::SWEEP_TIMEOUT_SECS);
+        let sweep_timeout = sweep.config.sweep_timeout;
+        let timeout_error = sweep_timeout.timed_out_error();
         let armed_timeout = arm_sweep_timeout(sweep, &timeout_error).await?;
 
         tokio::select! {
@@ -951,9 +949,9 @@ impl SweepSaga {
                 return Err(e);
             }
             },
-            () = tokio::time::sleep_until(tokio::time::Instant::now() + std::time::Duration::from_secs(config::SWEEP_TIMEOUT_SECS)) => {
+            () = tokio::time::sleep_until(tokio::time::Instant::now() + sweep_timeout.as_duration()) => {
                 warn!(
-                    timeout_secs = config::SWEEP_TIMEOUT_SECS,
+                    timeout_secs = sweep_timeout.as_secs(),
                     elapsed_ms = self.elapsed_ms(),
                     "sweep batch timed out"
                 );
@@ -3222,6 +3220,7 @@ mod tests {
             dashboard_config: DashboardConfig::default(),
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            sweep_timeout: crate::config::SweepTimeout::default(),
         }
     }
 
@@ -3573,6 +3572,7 @@ mod tests {
         let config = RuntimeConfig {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            sweep_timeout: crate::config::SweepTimeout::default(),
             ..sample_config()
         };
         let client = test_github_client();
@@ -3661,6 +3661,7 @@ mod tests {
         let config = RuntimeConfig {
             team_roster_read_from_projection: false,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            sweep_timeout: crate::config::SweepTimeout::default(),
             ..sample_config()
         };
         let client = test_github_client();

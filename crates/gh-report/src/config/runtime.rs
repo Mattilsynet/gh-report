@@ -52,6 +52,11 @@ pub struct RuntimeConfig {
     /// (ghr-79f5d695) — operators revert to `BudgetGate` via config
     /// alone, no logic redeploy.
     pub rate_regulator: RateRegulatorKind,
+    /// How long a sweep batch may run before the saga declares timeout
+    /// failure (ghr-op4w5). Carried here rather than read from a global so
+    /// a test can inject a one-second budget instead of awaiting the real
+    /// two-hour timer (SEC-0004:R2; CHE-0055:R10 injected-time precedent).
+    pub sweep_timeout: config::SweepTimeout,
 }
 
 /// Pardosa authoritative backend selected once at startup.
@@ -207,6 +212,7 @@ impl RuntimeConfig {
             dashboard_config: DashboardConfig::default(),
             team_roster_read_from_projection: true,
             rate_regulator: RateRegulatorKind::default(),
+            sweep_timeout: config::SweepTimeout::default(),
         })
     }
 
@@ -337,6 +343,27 @@ mod tests {
         let mut cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
         cfg.rate_regulator = RateRegulatorKind::BudgetGate;
         assert_eq!(cfg.rate_regulator, RateRegulatorKind::BudgetGate);
+    }
+
+    #[test]
+    fn runtime_config_defaults_to_the_production_sweep_timeout() {
+        let cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
+        assert_eq!(cfg.sweep_timeout, config::SweepTimeout::default());
+        assert_eq!(
+            u64::from(cfg.sweep_timeout.as_secs()),
+            config::SWEEP_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn runtime_config_accepts_an_injected_test_sized_sweep_timeout() {
+        let mut cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
+        cfg.sweep_timeout = config::SweepTimeout::new(1).expect("1s is a valid sweep timeout");
+        assert_eq!(cfg.sweep_timeout.as_secs(), 1);
+        assert_eq!(
+            cfg.sweep_timeout.timed_out_error(),
+            "sweep timed out after 1s"
+        );
     }
 
     #[test]

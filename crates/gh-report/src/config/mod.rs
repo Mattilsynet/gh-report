@@ -305,13 +305,80 @@ pub const REPLAY_CACHE_TTL_SECS: u64 = 3_600;
 
 /// Maximum time to wait for a sweep batch to drain before declaring
 /// timeout failure (seconds). The saga emits `SweepFailed` if exceeded.
+///
+/// This is the production default carried by [`SweepTimeout::default`], not
+/// a value the sweep reads directly — the sweep takes its budget from
+/// `RuntimeConfig::sweep_timeout` so a test can inject a small one
+/// (SEC-0004:R2, clocks and time budgets passed explicitly, never globals).
 pub const SWEEP_TIMEOUT_SECS: u64 = 7_200;
+
+/// How long a sweep batch may run before the saga declares timeout failure.
+///
+/// Zero has no inhabitant here: a zero-second sweep budget can never let any
+/// batch drain, so it is a guaranteed-failure configuration rather than a
+/// short one. Construct through [`SweepTimeout::new`], or take the
+/// production budget from [`SweepTimeout::default`].
+///
+/// The seconds are held as a `u32`, so conversion to
+/// [`jiff::SignedDuration`] is total and needs no fallible narrowing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepTimeout(u32);
+
+impl Default for SweepTimeout {
+    fn default() -> Self {
+        Self(
+            u32::try_from(SWEEP_TIMEOUT_SECS)
+                .expect("SWEEP_TIMEOUT_SECS is a compile-time constant that fits u32"),
+        )
+    }
+}
+
+impl SweepTimeout {
+    /// Build a sweep timeout from a whole number of seconds.
+    ///
+    /// Returns `None` for zero.
+    #[must_use]
+    pub const fn new(secs: u32) -> Option<Self> {
+        if secs == 0 { None } else { Some(Self(secs)) }
+    }
+
+    /// The budget in whole seconds.
+    #[must_use]
+    pub const fn as_secs(self) -> u32 {
+        self.0
+    }
+
+    /// The budget as a [`std::time::Duration`].
+    #[must_use]
+    pub const fn as_duration(self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.0 as u64)
+    }
+
+    /// The budget as a [`jiff::SignedDuration`], for scheduling a fire-at.
+    #[must_use]
+    pub const fn as_signed_duration(self) -> jiff::SignedDuration {
+        jiff::SignedDuration::from_secs(self.0 as i64)
+    }
+
+    /// The elapsed-milliseconds figure recorded on a timeout payload.
+    #[must_use]
+    pub const fn elapsed_ms(self) -> u64 {
+        (self.0 as u64).saturating_mul(1_000)
+    }
+
+    /// The operator-facing message published when this budget is exceeded.
+    #[must_use]
+    pub fn timed_out_error(self) -> String {
+        format!("sweep timed out after {}s", self.0)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::{
         BASELINE_MAX_AGE_SECS, COLLECTION_INTERVAL_SECS, EVIDENCE_SCHEMA_MAJOR,
-        EVIDENCE_SCHEMA_VERSION, PARTIAL_RENDER_HOLD_DOWN, TEAM_REFRESH_INTERVAL_SECS, USER_AGENT,
+        EVIDENCE_SCHEMA_VERSION, PARTIAL_RENDER_HOLD_DOWN, SWEEP_TIMEOUT_SECS,
+        TEAM_REFRESH_INTERVAL_SECS, USER_AGENT,
     };
     use std::time::Duration;
 
@@ -384,5 +451,47 @@ mod tests {
     #[test]
     fn user_agent_interpolates_build_stamped_version() {
         assert_eq!(USER_AGENT, concat!("gh-report/", env!("GH_REPORT_VERSION")));
+    }
+
+    #[test]
+    fn sweep_timeout_default_is_the_two_hour_production_budget() {
+        assert_eq!(super::SweepTimeout::default().as_secs(), 7_200);
+        assert_eq!(
+            u64::from(super::SweepTimeout::default().as_secs()),
+            SWEEP_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn sweep_timeout_has_no_zero_inhabitant() {
+        assert!(super::SweepTimeout::new(0).is_none());
+    }
+
+    #[test]
+    fn sweep_timeout_carries_a_test_sized_budget() {
+        let timeout = super::SweepTimeout::new(1).expect("1s is a valid sweep timeout");
+        assert_eq!(timeout.as_secs(), 1);
+        assert_eq!(timeout.as_duration(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn sweep_timeout_error_message_is_derived_from_the_injected_budget() {
+        let timeout = super::SweepTimeout::new(1).expect("1s is a valid sweep timeout");
+        assert_eq!(timeout.timed_out_error(), "sweep timed out after 1s");
+        assert_eq!(
+            super::SweepTimeout::default().timed_out_error(),
+            "sweep timed out after 7200s"
+        );
+    }
+
+    #[test]
+    fn sweep_timeout_signed_duration_is_total_over_every_inhabitant() {
+        for secs in [1_u32, 7_200, u32::MAX] {
+            let timeout = super::SweepTimeout::new(secs).expect("non-zero is constructible");
+            assert_eq!(
+                timeout.as_signed_duration(),
+                jiff::SignedDuration::from_secs(i64::from(secs))
+            );
+        }
     }
 }
