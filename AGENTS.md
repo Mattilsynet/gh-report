@@ -53,13 +53,35 @@ adr-fmt-xdlw9 O3).
   crate's test + clippy exit 0):
   ```
   CARGO_TERM_PROGRESS_WHEN=never cargo test -p <crate> --message-format=short
-  CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings
+  CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --all-targets --message-format=short -- -D warnings
   ```
   One test: `cargo test -p <crate> <name> --message-format=short`.
   `--workspace` / `--all-features` are FORBIDDEN at this tier.
+
+  `--all-targets` is MANDATORY on the clippy line at this tier and at MID.
+  Without it, any lint that fires only in a test/bench/example target is
+  invisible to INNER, to MID, and to linus's per-round re-verification, and
+  surfaces only at BOUNDARY (once per epic) or in CI. Live instance
+  (ghr-gpu84): a constant `assert!` in a `#[cfg(test)]` module passed two
+  hopper INNER rounds and one linus round clean, then failed
+  `clippy::assertions_on_constants` at exit 101 when linus round 2 ran
+  `--all-targets` — two review rounds spent on a one-line fix, exhausting
+  the 2-round cap. Unlike the CI-ONLY blind spot below, this one was
+  self-inflicted by the tier command and is locally cheap to close.
+
+  Cost, measured 2026-09-06 on `gh-report` (the workspace's largest crate;
+  macOS/arm64, 14 cores, warm cargo cache; `touch` on one `src` file then
+  re-run, two paired rounds, identical both rounds): plain **1.74s**,
+  `--all-targets` **2.35s** — **+0.61s (+35%)** per increment. Re-derive if
+  the crate or machine profile changes (iteration-speed rule 2). This
+  measurement is the input the deferral in ghr-gpu84 was waiting on; the
+  tiering's 1647-invocation over-verification driver concerns `--workspace`
+  scope, which is unchanged here — `-p` scoping stays, only the target set
+  widens.
 - **MID** (ONCE at sub-mission completion, before a sub-mission done-claim;
   changed crates PLUS their reverse-dependent closure; exit-code criterion:
-  every listed `-p` package's test + clippy exit 0). `--workspace` /
+  every listed `-p` package's test + clippy exit 0, with `--all-targets` on
+  the clippy line as at INNER). `--workspace` /
   `--all-features` are FORBIDDEN at this tier — MID stays scoped to the
   computed package list, never the whole graph.
 
