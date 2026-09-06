@@ -5659,10 +5659,6 @@ fn non_orphaned_repos_card_tooltip_states_formula_and_seven_control_set() {
     );
 }
 
-/// The Team Health tooltip's control roster is DERIVED from the canonical
-/// control lists, not hand-authored. Renaming any control's
-/// `display_name` therefore renames it in the tooltip too, so the copy
-/// cannot drift from the score it describes (CHE-0108:R1, COM-0027:R3).
 #[test]
 fn team_health_tooltip_names_every_control_by_its_canonical_display_name() {
     let tooltip = super::team_health_tooltip();
@@ -5678,9 +5674,6 @@ fn team_health_tooltip_names_every_control_by_its_canonical_display_name() {
     }
 }
 
-/// The roster is the SEVEN owner-level controls and nothing else, in the
-/// canonical list order. Pins the derivation against a tooltip that merely
-/// happens to contain the right substrings.
 #[test]
 fn team_health_tooltip_roster_is_the_seven_controls_in_canonical_order() {
     let tooltip = super::team_health_tooltip();

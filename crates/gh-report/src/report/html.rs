@@ -1087,14 +1087,6 @@ fn build_owners_view_model(
     })
 }
 
-/// Compose the owners-overview Team Health header tooltip from the
-/// canonical owner-level control list.
-///
-/// Sole owner of that copy: `owners.html` interpolates the result rather
-/// than restating any control's name, and the roster is derived from
-/// [`SEC_SCORE_MAP_CONTROLS`] plus [`NON_ORPHANED_CONTROL`] rather than
-/// hand-authored, so renaming a control renames it here too and adding
-/// one adds it here too (CHE-0108:R1, COM-0027:R3).
 fn team_health_tooltip() -> String {
     let roster = SEC_SCORE_MAP_CONTROLS
         .iter()
