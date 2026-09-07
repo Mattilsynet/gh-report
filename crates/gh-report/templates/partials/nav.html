@@ -5,8 +5,4 @@
     <a href="{{ nav.base }}report.html" class="nav-right">Report</a>
     <a href="{{ nav.base }}deleted.html">Deleted ({{ nav.deleted_count }})</a>
     <a href="{{ nav.base }}admin.html" class="admin-link">Admin{% if nav.has_technical_issues() %} ({{ nav.technical_issues_total }}){% endif %}</a>
-</nav>{% if let Some(disclosure) = nav.publication %}<aside role="status" class="publication-status">{{ disclosure.summary }}
-<details><summary>Repository evidence capture age (not GitHub inactivity)</summary>
-<table><thead><tr><th scope="col">Repository</th><th scope="col">Capture age at original assessment</th></tr></thead><tbody>
-{% for (repository, age) in disclosure.repositories.iter() %}<tr><td>{{ repository }}</td><td>{{ age }}</td></tr>{% endfor %}
-</tbody></table></details></aside>{% endif %}
+</nav>

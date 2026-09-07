@@ -1191,6 +1191,7 @@ fn control_cell(
         None => (0, "0 unmeasured".to_string()),
     };
     ControlCell {
+        rate,
         rate_formatted: formatted,
         rate_table_formatted: table_formatted,
         tier: CoverageTier::from_rate(rate, tiers),
