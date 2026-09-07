@@ -161,7 +161,7 @@ async fn collect_one_team_roster(
     }
 
     let all_outcome = fetch_role(client, &safe_slug, "all").await;
-    if !all_outcome.is_ok() {
+    if !all_outcome.is_ok() || all_outcome.is_truncated() {
         let status = failure_status(&all_outcome);
         if status == TeamRosterStatus::Deleted {
             client.record_deleted_team(&safe_slug);
@@ -175,6 +175,7 @@ async fn collect_one_team_roster(
         }
         return degraded_roster(canonical_owner, team_slug, status);
     }
+    let fetched_at = jiff::Timestamp::now().to_string();
     let mut members: Vec<TeamMember> = members_from_outcome(&all_outcome)
         .into_iter()
         .map(|(login, role)| TeamMember {
@@ -186,7 +187,7 @@ async fn collect_one_team_roster(
     members.sort_by_cached_key(|m| m.login.to_lowercase());
 
     TeamRoster {
-        fetched_at: None,
+        fetched_at: Some(fetched_at),
         canonical_owner: canonical_owner.to_string(),
         team_slug: team_slug.to_string(),
         status: TeamRosterStatus::Complete,
@@ -397,6 +398,7 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri());
+        let before_fetch = jiff::Timestamp::now();
         let rosters = collect_team_rosters(
             &client,
             &[("@test-org/big-team".to_string(), "big-team".to_string())],
@@ -406,6 +408,13 @@ mod tests {
         assert_eq!(rosters.len(), 1);
         let roster = &rosters[0];
         assert_eq!(roster.status, TeamRosterStatus::Complete);
+        let captured: jiff::Timestamp = roster
+            .fetched_at
+            .as_deref()
+            .expect("successful live fetch has an actual observation instant")
+            .parse()
+            .unwrap();
+        assert!(captured >= before_fetch && captured <= jiff::Timestamp::now());
 
         let mut logins: Vec<&str> = roster.members.iter().map(|m| m.login.as_str()).collect();
         logins.sort_unstable();
@@ -435,6 +444,33 @@ mod tests {
             .find(|m| m.login == "bob")
             .map(|m| m.role);
         assert_eq!(bob_role, Some(TeamMemberRole::Member));
+    }
+
+    #[tokio::test]
+    async fn roster_page_cap_degrades_without_fresh_complete_observation() {
+        let server = MockServer::start().await;
+        let members_path = "/orgs/test-org/teams/big-team/members";
+        Mock::given(path(members_path))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "alice", "role": "member"}]))
+                    .insert_header(
+                        "link",
+                        format!("<{}{members_path}>; rel=\"next\"", server.uri()),
+                    ),
+            )
+            .expect(u64::try_from(config::MAX_PAGINATION_PAGES).unwrap())
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let roster = collect_one_team_roster(&client, "@test-org/big-team", "big-team").await;
+        server.verify().await;
+        assert_eq!(
+            (roster.status, roster.fetched_at, roster.members.len()),
+            (TeamRosterStatus::TransientError, None, 0),
+            "page-capped success must not become a fresh complete roster"
+        );
     }
 
     /// Permission-denied on the completeness-bearing `all`-role fetch

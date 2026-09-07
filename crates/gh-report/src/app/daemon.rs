@@ -1695,6 +1695,7 @@ mod tests {
             dashboard_config: config::dashboard::DashboardConfig::default(),
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            sweep_timeout: crate::config::SweepTimeout::default(),
         };
         let force_flag = OneShotFlag::new(true);
         let force_refresh_flag = OneShotFlag::new(true);
@@ -1930,6 +1931,7 @@ mod tests {
             dashboard_config: config::dashboard::DashboardConfig::default(),
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            sweep_timeout: crate::config::SweepTimeout::default(),
         };
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 

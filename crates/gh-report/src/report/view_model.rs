@@ -87,6 +87,7 @@ impl CoverageTier {
 /// its own drifting copy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopNav {
+    pub(crate) publication: Option<PublicationDisclosure>,
     /// Relative path prefix to the dashboard root: `""` at the root, or
     /// `"../"` for a page nested one directory deep (owner detail pages).
     pub base: &'static str,
@@ -112,6 +113,12 @@ impl TopNav {
     pub fn has_technical_issues(&self) -> bool {
         self.technical_issues_total > 0
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PublicationDisclosure {
+    pub summary: String,
+    pub repositories: std::sync::Arc<[(String, String)]>,
 }
 
 /// Depth of a rendered page relative to the dashboard root.
@@ -339,12 +346,70 @@ pub struct OwnerRepoRow {
 ///
 /// All CSS classes and labels are compile-time constants, so fields use
 /// `&'static str` to avoid unnecessary heap allocations.
+///
+/// Styling cannot be mutated independently of the evidence state:
+///
+/// ```compile_fail
+/// use gh_report::report::view_model::{DotState, StatusDot};
+/// let mut dot = StatusDot::new(DotState::Fail, "fail");
+/// dot.css_class = "status-pass";
+/// ```
+///
+/// ```
+/// use gh_report::report::view_model::{DotState, StatusDot};
+/// let dot = StatusDot::new(DotState::Fail, "fail");
+/// assert_eq!(dot.css_class(), "status-fail");
+/// assert_eq!(dot.sort_key(), "fail");
+/// ```
 #[derive(Debug, Clone)]
 pub struct StatusDot {
-    /// CSS class (e.g., `"status-pass"`, `"status-fail"`, `"status-unknown"`).
-    pub css_class: &'static str,
     /// Accessible label/tooltip text (e.g., `"pass"`, `"fail"`).
     pub label: &'static str,
+    state: DotState,
+}
+
+/// Evidence state of a rendered control, independent of its accessible label.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum DotState {
+    Fail,
+    Partial,
+    Pass,
+    Unknown,
+    Pending,
+    NotApplicable,
+}
+
+impl StatusDot {
+    /// Construct a dot whose styling and sort key derive from its evidence state.
+    #[must_use]
+    pub fn new(state: DotState, label: &'static str) -> Self {
+        Self { label, state }
+    }
+
+    /// CSS class derived from the same evidence state as the sort key.
+    #[must_use]
+    pub fn css_class(&self) -> &'static str {
+        match self.state {
+            DotState::Fail => "status-fail",
+            DotState::Partial => "status-warn",
+            DotState::Pass => "status-pass",
+            DotState::Unknown => "status-unknown",
+            DotState::Pending => "status-pending",
+            DotState::NotApplicable => "status-na",
+        }
+    }
+
+    /// Machine-readable posture key; unmeasured evidence has no known rank.
+    #[must_use]
+    pub fn sort_key(&self) -> &'static str {
+        match self.state {
+            DotState::Fail => "fail",
+            DotState::Partial => "partial",
+            DotState::Pass => "pass",
+            DotState::Unknown | DotState::Pending | DotState::NotApplicable => "indeterminate",
+        }
+    }
 }
 
 /// A summary scorecard card combining a control label with its coverage cell.
@@ -441,10 +506,8 @@ pub struct TeamRosterViewModel {
     /// Human-readable fetch status (e.g., `"Complete"`, `"Permission denied"`).
     pub status_label: &'static str,
     /// Reasoned degraded-state copy for `!is_complete`, tailored to the
-    /// fetch status (CHE-0082:R5) — `None` when `is_complete`. A `Deleted`
-    /// roster gets a distinct "team no longer exists" sentence rather than
-    /// the generic "this list may be incomplete" copy, which would wrongly
-    /// imply partial data for a team that has zero members by construction.
+    /// fetch status — `None` when `is_complete`. A roster HTTP 404 is
+    /// unresolved, not evidence that the team was deleted.
     pub degraded_notice: Option<&'static str>,
     /// Roster rows, sorted by login.
     pub members: Vec<TeamMemberRow>,
@@ -3630,7 +3693,8 @@ mod tests {
     #[test]
     fn view_model_stale_rate_with_stale_active_repos() {
         let mut evidence = sample_evidence();
-        evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
+        evidence.repositories[0].repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2023-01-01T00:00:00Z");
         evidence.collection_statistics.archived_repos = 2;
 
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
@@ -3645,7 +3709,8 @@ mod tests {
     #[test]
     fn stale_rate_formatted_ratio_is_truthful_to_computation() {
         let mut evidence = sample_evidence();
-        evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
+        evidence.repositories[0].repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2023-01-01T00:00:00Z");
         evidence.collection_statistics.archived_repos = 3;
 
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());

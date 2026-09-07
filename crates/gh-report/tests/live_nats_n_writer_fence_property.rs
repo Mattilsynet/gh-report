@@ -11,15 +11,19 @@
 //! same fresh org/domain-key baseline and races their `record` calls
 //! from `n` OS threads (`record` is a synchronous facade call — no
 //! `tokio::spawn` needed to force genuine concurrent contention at the
-//! server). Self-spawns [`LiveNatsServer`], matching the
-//! `live_nats_two_writer_fence.rs` sibling test's convention (no
-//! `#[ignore]`; requires no external server).
+//! server). Self-spawns [`Cluster`] in this single cluster-owning test
+//! target, including the two-writer scenarios and fixture selftests
+//! (no `#[ignore]`; requires no external server).
 use gh_report::app::state::AppState;
 use gh_report::config::runtime::{NatsStoreConfig, PardosaBackend};
 use gh_report::event::DomainEvent;
 use gh_report::store::StoreError;
 use pardosa::store::BackendError;
-use pardosa_nats::test_support::LiveNatsServer;
+#[path = "fixtures/nats_cluster.rs"]
+mod nats_cluster;
+#[path = "fixtures/two_writer_fence.rs"]
+mod two_writer_fence;
+use nats_cluster::Cluster;
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 use proptest::prelude::*;
 use std::error::Error;
@@ -109,19 +113,19 @@ async fn subject_message_count(nats_url: &str, stream_name: &str) -> u64 {
 /// `341188b` amendment), and the server durably holds exactly one
 /// message.
 fn n_writers_race_real_fence(n: usize) {
-    let Some(server) = LiveNatsServer::try_acquire().ready_or_skip("n_writers_race_real_fence")
-    else {
+    let Some(server) = Cluster::acquire("n_writers_race_real_fence") else {
         return;
     };
+    server.ready();
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();
     let org = format!("fence-race-{tag}");
     let nats = NatsStoreConfig::for_org(&org, server.url().to_owned()).expect("nats config");
-    let _repo_cleanup = StreamCleanup {
+    let repo_cleanup = StreamCleanup {
         nats_url: server.url().to_owned(),
         stream_name: nats.stream_name.clone(),
     };
-    let _org_cleanup = StreamCleanup {
+    let org_cleanup = StreamCleanup {
         nats_url: server.url().to_owned(),
         stream_name: nats.org_events().stream_name,
     };
@@ -130,11 +134,31 @@ fn n_writers_race_real_fence(n: usize) {
     let mut tempdirs = Vec::with_capacity(n);
     let states: Vec<Arc<AppState>> = rt.block_on(async {
         let mut states = Vec::with_capacity(n);
-        for _ in 0..n {
+        for i in 0..n {
             let tmp = tempfile::tempdir().expect("writer tempdir");
-            states.push(open_state(tmp.path(), nats.clone()).await);
+            let mut config = nats.clone();
+            config.nats_url = server.node_url(i).to_owned();
+            states.push(open_state(tmp.path(), config).await);
             tempdirs.push(tmp);
         }
+        server.replicate(&nats.stream_name).await;
+        server.replicate(&nats.org_events().stream_name).await;
+        let client = async_nats::connect(server.url()).await.expect("connect");
+        let js = async_nats::jetstream::new(client);
+        let org_stream = js
+            .get_stream(nats.org_events().stream_name)
+            .await
+            .expect("org stream");
+        assert_eq!(
+            org_stream
+                .get_info()
+                .await
+                .expect("org stream info")
+                .config
+                .num_replicas,
+            3,
+            "tested org stream must be R3 before racing appends"
+        );
         states
     });
 
@@ -181,11 +205,14 @@ fn n_writers_race_real_fence(n: usize) {
 
     rt.block_on(async {
         assert_eq!(
-            subject_message_count(server.url(), &nats.stream_name).await,
+            subject_message_count(server.node_url(2), &nats.stream_name).await,
             1,
             "JetStream subject must durably hold exactly the single winner's message"
         );
     });
+    drop(org_cleanup);
+    drop(repo_cleanup);
+    server.finish();
 }
 
 /// I2b self-fence check: a single handle issuing two sequential
@@ -195,26 +222,27 @@ fn n_writers_race_real_fence(n: usize) {
 /// `last_ack_seq` before publishing. Both must succeed.
 #[test]
 fn single_handle_two_racing_appends_never_self_fence() {
-    let Some(server) = LiveNatsServer::try_acquire()
-        .ready_or_skip("single_handle_two_racing_appends_never_self_fence")
-    else {
+    let Some(server) = Cluster::acquire("single_handle_two_racing_appends_never_self_fence") else {
         return;
     };
+    server.ready();
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();
     let org = format!("self-fence-{tag}");
     let nats = NatsStoreConfig::for_org(&org, server.url().to_owned()).expect("nats config");
-    let _repo_cleanup = StreamCleanup {
+    let repo_cleanup = StreamCleanup {
         nats_url: server.url().to_owned(),
         stream_name: nats.stream_name.clone(),
     };
-    let _org_cleanup = StreamCleanup {
+    let org_cleanup = StreamCleanup {
         nats_url: server.url().to_owned(),
         stream_name: nats.org_events().stream_name,
     };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = rt.block_on(open_state(tmp.path(), nats.clone()));
+    rt.block_on(server.replicate(&nats.stream_name));
+    rt.block_on(server.replicate(&nats.org_events().stream_name));
 
     let handles: Vec<_> = (0..2u64)
         .map(|i| {
@@ -248,11 +276,22 @@ fn single_handle_two_racing_appends_never_self_fence() {
             "both intra-handle appends must land durably, serialized by append_gate"
         );
     });
+    drop(org_cleanup);
+    drop(repo_cleanup);
+    server.finish();
 }
 
 #[test]
 fn two_writers_race_real_fence_smoke() {
     n_writers_race_real_fence(2);
+}
+
+#[test]
+fn ten_three_writer_cluster_cases() {
+    for case in 1..=10 {
+        eprintln!("fixed n=3 cluster case {case}/10");
+        n_writers_race_real_fence(3);
+    }
 }
 
 proptest! {

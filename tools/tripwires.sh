@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve(strict=True).parent.parent)' "${BASH_SOURCE[0]}")"
+if [ ! -f "$ROOT/Cargo.toml" ] || ! grep -Eq '^\[workspace\][[:space:]]*$' "$ROOT/Cargo.toml" || [ ! -f "$ROOT/tools/tripwires.sh" ] || [ ! -f "$ROOT/tools/tripwire-regression.sh" ] || [ ! -f "$ROOT/crates/non-exhaustive-check/src/main.rs" ]; then
+  printf '::error::invalid derived workspace root: %s\n' "$ROOT" >&2
+  exit 1
+fi
 cd "$ROOT"
 
 CHECKS=(projection-lock async-trait fence-converge dead-code-suppression non-exhaustive gate-citation adr-number-collision deny-ignore-lifecycle forbid-unsafe-total)
@@ -14,6 +18,46 @@ CHECKS=(projection-lock async-trait fence-converge dead-code-suppression non-exh
 # crate roots now carry #![forbid(unsafe_code)], so RST-0005:R1 coverage
 # is total across every workspace compilation root.
 PENDING_CHECKS=()
+
+# Wall-clock bound for the read-only `cargo metadata` / `cargo tree` probes.
+# A hung probe reaches NO verdict, so it must never be folded into the
+# no-violation result (AGENTS.md code-quality rule 1: error is not a negative
+# finding). The containing CI job's own 30-minute timeout bounds the job but
+# not the verdict: without this, a probe wedged behind a registry stall or a
+# lock consumes the job and the gate's answer is decided by the clock rather
+# than by the code. Overridable via TRIPWIRE_PROBE_TIMEOUT_SECS.
+# Scope: the read-only metadata/tree probes only. `cargo run -p
+# non-exhaustive-check` is deliberately NOT wrapped — it compiles, so its
+# runtime is unbounded by design on a cold cache and a wall-clock bound there
+# would convert a slow build into a false gate failure.
+PROBE_TIMEOUT_SECS="${TRIPWIRE_PROBE_TIMEOUT_SECS:-120}"
+
+probe_out=""
+
+run_probe() {
+  local label=$1
+  shift
+
+  if ! command -v timeout >/dev/null 2>&1; then
+    echo "::error::${label}: 'timeout' not found on PATH — refusing to run an unbounded probe, because a probe that hangs reaches no verdict and cannot be distinguished from a clean one"
+    return 1
+  fi
+  if [[ ! "$PROBE_TIMEOUT_SECS" =~ ^[0-9]+$ ]] || [ "$PROBE_TIMEOUT_SECS" -eq 0 ]; then
+    echo "::error::${label}: TRIPWIRE_PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS}' is not a positive integer — refusing to run a probe with an uninterpretable bound"
+    return 1
+  fi
+
+  local status=0
+  probe_out=$(timeout -- "$PROBE_TIMEOUT_SECS" "$@" 2>&1) || status=$?
+  case "$status" in
+    0) return 0 ;;
+    124 | 137)
+      echo "::error::${label}: probe '$*' was killed after ${PROBE_TIMEOUT_SECS}s at the wall clock (status ${status}) — it reached NO verdict, refusing to fold a timeout into the no-violation result (AGENTS.md code-quality rule 1)"
+      return 1
+      ;;
+    *) return "$status" ;;
+  esac
+}
 
 usage() {
   echo "usage: tools/tripwires.sh <check>|all|--list"
@@ -79,11 +123,12 @@ check_async_trait() {
   fi
 
   local meta
-  if ! meta=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" 2>&1); then
+  if ! run_probe "async-trait" cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest"; then
     echo "::error::async-trait: cargo metadata --locked --no-deps --manifest-path ${manifest} FAILED — a failed workspace enumeration is an ERROR, not an empty member set, refusing to fold it into the no-violation verdict (CHE-0025:R1+R2)"
-    printf '%s\n' "$meta"
+    printf '%s\n' "$probe_out"
     return 1
   fi
+  meta=$probe_out
 
   local crates
   if ! crates=$(jq -r '[.packages[].name | select(startswith("cherry-pit-"))] | sort | .[]' <<< "$meta"); then
@@ -125,12 +170,13 @@ check_async_trait() {
   local fail=0
   local tree
   for c in "${crate_list[@]}"; do
-    if ! tree=$(cargo tree --locked --manifest-path "$manifest" -p "$c" -e features 2>&1); then
+    if ! run_probe "async-trait" cargo tree --locked --manifest-path "$manifest" -p "$c" -e features; then
       echo "::error::async-trait: cargo tree --locked --manifest-path ${manifest} -p ${c} -e features FAILED — a probe error is not a clean result, refusing to fold it into the no-violation verdict (CHE-0025:R1+R2)"
-      printf '%s\n' "$tree"
+      printf '%s\n' "$probe_out"
       fail=1
       continue
     fi
+    tree=$probe_out
     case "$tree" in
       *async-trait*)
         echo "::error::$c transitively depends on async-trait (CHE-0025:R1+R2)"
@@ -239,11 +285,31 @@ check_non_exhaustive() {
 # is asserted to return a plausible non-zero count before the assertion
 # runs — a parser that matches nothing would exit 0 forever and is
 # worse than no check.
+# Workflow path overridable via GATE_CITATION_WORKFLOW for fixture-based
+# proof runs: with the path hardcoded the fail-open guard above could not
+# be exercised against a fixture and was itself asserted-but-unproven —
+# the same fail-open shape it exists to close, one level down. Sibling
+# checks parameterize for exactly this reason (DENY_TOML,
+# FORBID_UNSAFE_MANIFEST). The override redirects EVERY workflow-consuming
+# operation in this function — both the citation-token scan and the job
+# enumeration — so a fixture cannot redirect one stage while another still
+# reads the real workflow (the split-graph exposure of ghr-z9cho.4).
+# A missing workflow is a hard failure, never an empty token set: the
+# greps below carry `|| true` to tolerate a legitimate no-match, which
+# would otherwise make an unreadable file indistinguishable from a clean
+# one.
 check_gate_citation() {
+  local workflow="${GATE_CITATION_WORKFLOW:-$ROOT/.github/workflows/ci-reusable.yml}"
+
+  if [ ! -f "$workflow" ]; then
+    echo "::error::gate-citation: workflow not found at $workflow — an unreadable workflow is an ERROR, not a clean one (RST-0007:R7)"
+    return 1
+  fi
+
   local fail=0
   local tokens
-  tokens=$( { grep -hoE -- '- name:.*' .github/workflows/ci-reusable.yml || true; \
-              grep -hoE '::error::.*' .github/workflows/ci-reusable.yml tools/tripwires.sh || true; } \
+  tokens=$( { grep -hoE -- '- name:.*' "$workflow" || true; \
+              grep -hoE '::error::.*' "$workflow" tools/tripwires.sh || true; } \
             | grep -oE '[A-Z]{2,4}-[0-9]{4}:R[0-9]+(\+R[0-9]+)*' | sort -u )
   while IFS= read -r tok; do
     [ -z "$tok" ] && continue
@@ -283,13 +349,13 @@ check_gate_citation() {
       if ($0 ~ /[A-Z][A-Z][A-Z]?[A-Z]?-[0-9][0-9][0-9][0-9]:R[0-9]/) cited = 1
     }
     END { if (job != "") printf "%s\t%d\t%d\n", job, cited, steps }
-  ' .github/workflows/ci-reusable.yml)
+  ' "$workflow")
 
   local job_count step_total
   job_count=$(printf '%s\n' "$job_report" | grep -c . || true)
   step_total=$(printf '%s\n' "$job_report" | awk -F'\t' '{s += $3} END {print s + 0}')
   if [ "$job_count" -eq 0 ] || [ "$step_total" -eq 0 ]; then
-    echo "::error::gate-citation: enumerated ${job_count} job(s) and ${step_total} step name(s) from .github/workflows/ci-reusable.yml — fail-open guard tripped, refusing to pass silently (RST-0007:R7)"
+    echo "::error::gate-citation: enumerated ${job_count} job(s) and ${step_total} step name(s) from ${workflow} — fail-open guard tripped, refusing to pass silently (RST-0007:R7)"
     return 1
   fi
 
@@ -500,11 +566,12 @@ check_forbid_unsafe_total() {
   fi
 
   local meta
-  if ! meta=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" 2>&1); then
+  if ! run_probe "forbid-unsafe-total" cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest"; then
     echo "::error::forbid-unsafe-total: cargo metadata --locked --no-deps --manifest-path ${manifest} FAILED — a failed workspace enumeration is an ERROR, not an empty member set, refusing to fold it into the no-violation verdict (RST-0005:R1)"
-    printf '%s\n' "$meta"
+    printf '%s\n' "$probe_out"
     return 1
   fi
+  meta=$probe_out
 
   local member_count
   if ! member_count=$(jq -r '.packages | length' <<< "$meta"); then

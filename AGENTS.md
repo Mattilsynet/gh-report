@@ -53,13 +53,35 @@ adr-fmt-xdlw9 O3).
   crate's test + clippy exit 0):
   ```
   CARGO_TERM_PROGRESS_WHEN=never cargo test -p <crate> --message-format=short
-  CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings
+  CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --all-targets --message-format=short -- -D warnings
   ```
   One test: `cargo test -p <crate> <name> --message-format=short`.
   `--workspace` / `--all-features` are FORBIDDEN at this tier.
+
+  `--all-targets` is MANDATORY on the clippy line at this tier and at MID.
+  Without it, any lint that fires only in a test/bench/example target is
+  invisible to INNER, to MID, and to linus's per-round re-verification, and
+  surfaces only at BOUNDARY (once per epic) or in CI. Live instance
+  (ghr-gpu84): a constant `assert!` in a `#[cfg(test)]` module passed two
+  hopper INNER rounds and one linus round clean, then failed
+  `clippy::assertions_on_constants` at exit 101 when linus round 2 ran
+  `--all-targets` — two review rounds spent on a one-line fix, exhausting
+  the 2-round cap. Unlike the CI-ONLY blind spot below, this one was
+  self-inflicted by the tier command and is locally cheap to close.
+
+  Cost, measured 2026-09-06 on `gh-report` (the workspace's largest crate;
+  macOS/arm64, 14 cores, warm cargo cache; `touch` on one `src` file then
+  re-run, two paired rounds, identical both rounds): plain **1.74s**,
+  `--all-targets` **2.35s** — **+0.61s (+35%)** per increment. Re-derive if
+  the crate or machine profile changes (iteration-speed rule 2). This
+  measurement is the input the deferral in ghr-gpu84 was waiting on; the
+  tiering's 1647-invocation over-verification driver concerns `--workspace`
+  scope, which is unchanged here — `-p` scoping stays, only the target set
+  widens.
 - **MID** (ONCE at sub-mission completion, before a sub-mission done-claim;
   changed crates PLUS their reverse-dependent closure; exit-code criterion:
-  every listed `-p` package's test + clippy exit 0). `--workspace` /
+  every listed `-p` package's test + clippy exit 0, with `--all-targets` on
+  the clippy line as at INNER). `--workspace` /
   `--all-features` are FORBIDDEN at this tier — MID stays scoped to the
   computed package list, never the whole graph.
 
@@ -205,7 +227,11 @@ it passes on a clean rebuild. Not a regression.
   from `ci.yml`), invoked via `tools/tripwires.sh <check>` — do not break the
   invariants they guard. Run `tools/tripwires.sh --list` for the current check
   names and dispatch on any single check locally (`tools/tripwires.sh
-  <check>`), or `tools/tripwires.sh all` for every check. Governing citations
+  <check>`), or `tools/tripwires.sh all` for every check. The committed
+  regression harness `tools/tripwire-regression.sh` is the locally-runnable
+  entry point pinning those gates' behaviour; run it before handing off any
+  change to `tools/tripwires.sh`. It is not itself a merge gate — its
+  ratification as one is deferred (see ghr-z9cho.6). Governing citations
   (kept current in the script's `::error::` strings, not duplicated here):
   projection-lock is COM-0018 + CHE-0048:R7; async-trait deny is
   CHE-0025:R1+R2; non-exhaustive gate is RST-0006:R1+R3.
@@ -238,6 +264,26 @@ These are load-bearing; violating them is an abort-class change:
   (attribute, allowed) — not `//`-comments (forbidden fleet-wide). Use
   `#[allow(.., reason=..)]` only where `#[expect]` would be unfulfilled (e.g. a
   lint that fires under `--test` but not `--all-features`).
+
+## Rustling review examples
+
+Selective TigerStyle adopt/adapt/reject decisions and the construction-path
+inventory are canonical in fleet `~/.config/opencode/AGENTS.md` § Rustling —
+selective TigerStyle adaptation. Use its existing `illegal-state-representable`
+artefact in both Linus and generic review; do not add a repo regex or duplicate
+the resource/control-flow doctrine. Joint acceptance: `ghr-jwl9c`, `ghr-2gefa`.
+
+These are scoped review samples, not an exhaustive type audit or an API change:
+
+| Case | Invariant, route and read-level assessment |
+|---|---|
+| `ControlCell` (`crates/gh-report/src/report/view_model.rs`; builder in `report/html.rs`) | Exclusion count and formatted text must agree. The builder derives a consistent pair, but public fields permit setting `excluded_total = 1` while retaining `excluded_formatted = "0 unmeasured"`. Reject this mutation/struct-literal route under `illegal-state-representable`; private fields plus a deriving constructor/accessors are the separate `ghr-p84jq` remedy. A downstream compile-fail mutation test would check that remedy; none is claimed here. |
+| `UpdatedAt` (`crates/gh-report/src/domain/repository.rs`) | Nonempty spelling, NOT timestamp syntax. Accept `new("") == None`, including wire normalization through `deserialize_updated_at`; accept nonempty `"not-a-timestamp"`. Private storage and read-only dereference constrain outside callers. Audit conversions and defining-module construction too; an unchecked deserializer admitting empty would be a reject example, not a claim that one currently exists. Existing constructor/wire/native-roundtrip tests are runtime boundary oracles. |
+| `SweepTimeout` (`crates/gh-report/src/config/mod.rs`) | Nonzero seconds fitting `u32`. Accept `new(0) == None`, `new(1)` and the current 7200-second default. `Default` constructs directly, so review its constant separately; private storage is not a global proof of nonzero. Existing zero/default/duration tests are boundary oracles, not evidence that arbitrary defining-module code cannot create zero. |
+| Independent repository flags (`crates/gh-report/src/domain/repository.rs`) | `archived`, `has_issues`, `fork`, `is_empty` are independent attributes, not exclusive states. Accept their booleans; no enum conversion is justified merely by their count. |
+
+Refresh these implementations when reviewing a diff. Record actual test exits
+if executed; these examples alone are neither compiler nor CI proof.
 
 ## Intent (why this repo exists — the gh-report stance)
 

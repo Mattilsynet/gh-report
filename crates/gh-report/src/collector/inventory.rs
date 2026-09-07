@@ -118,7 +118,10 @@ pub async fn build_inventory_from_api(
             archived,
             has_issues: repo.has_issues.unwrap_or(false),
             inventory_key,
-            updated_at: repo.updated_at.clone(),
+            updated_at: repo
+                .updated_at
+                .clone()
+                .and_then(crate::domain::repository::UpdatedAt::new),
             pushed_at: repo.pushed_at.clone(),
             created_at: repo.created_at.clone(),
             description: repo.description.clone(),

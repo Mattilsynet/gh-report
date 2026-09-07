@@ -213,7 +213,8 @@ fn dashboard_report_includes_coverage_metrics() {
 #[test]
 fn dashboard_index_lifecycle_retirement_shows_truthful_ratio() {
     let mut evidence = sample_evidence();
-    evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
+    evidence.repositories[0].repository.updated_at =
+        crate::domain::repository::UpdatedAt::new("2023-01-01T00:00:00Z");
     evidence.collection_statistics.archived_repos = 3;
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
@@ -1004,6 +1005,7 @@ fn status_dots_match_expected_css_and_label_per_case() {
         let mut checks =
             make_checks_with_statuses(case.policy, case.secret, case.dependabot, case.branch);
         if case.pending {
+            checks.codeowners.status = crate::domain::checks::CodeownersStatus::Unknown;
             checks.secret_scanning.reason = Some("pending".to_string());
             checks.dependabot_security_updates.reason = Some("pending".to_string());
             checks.branch_protection.details.reason = Some("pending".to_string());
@@ -1017,13 +1019,49 @@ fn status_dots_match_expected_css_and_label_per_case() {
         assert_eq!(dots.len(), 4, "case {}: dot count", case.name);
         for (i, (css, label)) in case.expected.iter().enumerate() {
             assert_eq!(
-                dots[i].css_class, *css,
+                dots[i].css_class(),
+                *css,
                 "case {}: dot {} css_class",
-                case.name, i
+                case.name,
+                i
             );
             assert_eq!(dots[i].label, *label, "case {}: dot {} label", case.name, i);
+            let expected_key = match *css {
+                "status-fail" => "fail",
+                "status-warn" => "partial",
+                "status-pass" => "pass",
+                _ => "indeterminate",
+            };
+            assert_eq!(
+                dots[i].sort_key(),
+                expected_key,
+                "case {}: dot {i} key",
+                case.name
+            );
         }
     }
+}
+
+#[test]
+fn owner_control_dots_emit_sortable_headers_and_keys() {
+    let pages =
+        render_dashboard(&evidence_with_owner_repos(), &DashboardConfig::default()).unwrap();
+    let page = &pages["owners/org-team-a.html"];
+    assert_eq!(page.matches("data-sort-type=\"status\"").count(), 4);
+    assert!(page.contains("data-sort-value=\"pass\""));
+}
+
+#[test]
+fn paused_dependabot_emits_partial_sort_key() {
+    let checks = make_checks_with_statuses(
+        SecurityPolicyStatus::Pass,
+        SecretScanningStatus::Enabled,
+        DependabotStatus::Paused,
+        BranchProtectionStatus::Partial,
+    );
+    let dots = build_status_dots(&checks);
+    assert_eq!(dots[2].sort_key(), "partial");
+    assert_eq!(dots[2].label, "paused");
 }
 
 use crate::domain::codeowners::ParsedCodeowners;
@@ -1564,16 +1602,16 @@ fn detail_vm_repo_rows_status_dots_correct() {
 
     let (_, vm) = &detail_vms[0];
     let alpha = &vm.repo_rows[0];
-    assert_eq!(alpha.controls[0].css_class, "status-fail");
-    assert_eq!(alpha.controls[1].css_class, "status-fail");
-    assert_eq!(alpha.controls[2].css_class, "status-fail");
-    assert_eq!(alpha.controls[3].css_class, "status-fail");
+    assert_eq!(alpha.controls[0].css_class(), "status-fail");
+    assert_eq!(alpha.controls[1].css_class(), "status-fail");
+    assert_eq!(alpha.controls[2].css_class(), "status-fail");
+    assert_eq!(alpha.controls[3].css_class(), "status-fail");
 
     let beta = &vm.repo_rows[1];
-    assert_eq!(beta.controls[0].css_class, "status-pass");
-    assert_eq!(beta.controls[1].css_class, "status-pass");
-    assert_eq!(beta.controls[2].css_class, "status-pass");
-    assert_eq!(beta.controls[3].css_class, "status-pass");
+    assert_eq!(beta.controls[0].css_class(), "status-pass");
+    assert_eq!(beta.controls[1].css_class(), "status-pass");
+    assert_eq!(beta.controls[2].css_class(), "status-pass");
+    assert_eq!(beta.controls[3].css_class(), "status-pass");
 }
 
 #[test]
@@ -1769,6 +1807,54 @@ fn render_dashboard_owners_snapshot() {
     insta::with_settings!({snapshot_path => "../snapshots"}, {
     insta::assert_snapshot!("dashboard_owners", &pages["owners.html"]);
     });
+}
+
+#[test]
+fn publication_disclosure_reaches_every_page_and_is_escaped() {
+    let evidence = evidence_with_owner_repos();
+    let mut pages = HashMap::new();
+    super::render_publication_streaming(
+        &evidence,
+        &DashboardConfig::default(),
+        false,
+        Some(crate::report::view_model::PublicationDisclosure {
+            summary: "Partial refresh <script>".to_string(),
+            repositories: vec![(
+                "<script>repo</script>".to_string(),
+                "Capture age unknown".to_string(),
+            )]
+            .into(),
+        }),
+        |path, content| {
+            pages.insert(path, content);
+        },
+    )
+    .unwrap();
+    assert!(pages.contains_key("owners/org-team-a.html"));
+    let html_pages: Vec<_> = pages
+        .iter()
+        .filter(|(path, _)| {
+            std::path::Path::new(path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        })
+        .collect();
+    assert!(html_pages.len() >= 12);
+    for (path, html) in html_pages {
+        assert_eq!(
+            html.matches("class=\"publication-status\"").count(),
+            1,
+            "{path}"
+        );
+        assert!(
+            html.contains("Partial refresh &#60;script&#62;")
+                || html.contains("Partial refresh &lt;script&gt;"),
+            "disclosure escaped on {path}"
+        );
+        assert!(!html.contains("Partial refresh <script>"), "{path}");
+        assert!(!html.contains("<script>repo</script>"), "{path}");
+        assert!(html.contains("Capture age unknown"), "{path}");
+    }
 }
 
 #[test]
@@ -2238,14 +2324,96 @@ fn render_owner_detail_html_unresolved_roster_never_vanishes() {
     );
 }
 
-/// Defect 2 (ghr-e2e9cccb): a genuinely `Deleted` (404) team roster must
-/// render a reasoned "team no longer exists" state — distinct from both
-/// the generic degraded-fetch copy ("this list may be incomplete", which
-/// wrongly implies partial data for a team that has zero members by
-/// construction) and the ambiguous `Unresolved` state (which means no
-/// roster was ever resolved, not that GitHub confirmed the team is gone).
 #[test]
-fn render_owner_detail_html_deleted_roster_renders_reasoned_state() {
+fn render_owner_detail_html_empty_roster_copy_reflects_completeness() {
+    use crate::domain::metrics::{TeamRoster, TeamRosterStatus};
+
+    for (status, complete) in [
+        (TeamRosterStatus::Complete, true),
+        (TeamRosterStatus::Deleted, false),
+        (TeamRosterStatus::PermissionDenied, false),
+        (TeamRosterStatus::TransientError, false),
+    ] {
+        let mut evidence = evidence_with_owner_repos();
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            fetched_at: None,
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status,
+            members: Vec::new(),
+        }];
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = &pages["owners/org-team-a.html"];
+        assert_eq!(
+            (
+                detail_page.contains("No members found for this team."),
+                detail_page.contains("Membership could not be determined for this run."),
+            ),
+            (complete, !complete),
+            "empty roster copy must distinguish confirmed absence from unavailable membership: {status:?}"
+        );
+    }
+}
+
+#[test]
+fn render_owner_detail_html_roster_headline_only_counts_complete_membership() {
+    use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+    for status in [
+        TeamRosterStatus::Complete,
+        TeamRosterStatus::Deleted,
+        TeamRosterStatus::PermissionDenied,
+        TeamRosterStatus::TransientError,
+    ] {
+        for count in [0, 1] {
+            let mut evidence = evidence_with_owner_repos();
+            evidence.metrics.team_rosters = vec![TeamRoster {
+                fetched_at: None,
+                canonical_owner: "@org/team-a".to_string(),
+                team_slug: "team-a".to_string(),
+                status,
+                members: (0..count)
+                    .map(|_| TeamMember {
+                        login: "alice".to_string(),
+                        role: TeamMemberRole::Member,
+                        in_org: None,
+                    })
+                    .collect(),
+            }];
+            let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+            let detail_page = &pages["owners/org-team-a.html"];
+            assert_eq!(
+                (
+                    detail_page.contains(&format!("<summary>Team Members ({count})</summary>")),
+                    detail_page.contains("<summary>Team Members (unknown)</summary>"),
+                ),
+                (
+                    status == TeamRosterStatus::Complete,
+                    status != TeamRosterStatus::Complete,
+                ),
+                "only complete membership supports a headline count: {status:?}, {count}"
+            );
+            assert_eq!(
+                (
+                    detail_page.contains("1 member. <a"),
+                    detail_page.contains("1 observed member; this list may be incomplete. <a"),
+                    detail_page.contains("No members found for this team."),
+                    detail_page.contains("Membership could not be determined for this run."),
+                ),
+                (
+                    count == 1 && status == TeamRosterStatus::Complete,
+                    count == 1 && status != TeamRosterStatus::Complete,
+                    count == 0 && status == TeamRosterStatus::Complete,
+                    count == 0 && status != TeamRosterStatus::Complete,
+                ),
+                "footer must distinguish total from observed membership: {status:?}, {count}"
+            );
+        }
+    }
+}
+
+#[test]
+fn render_owner_detail_html_404_roster_is_unresolved_not_deleted() {
     use crate::domain::metrics::{TeamRoster, TeamRosterStatus};
 
     let mut evidence = evidence_with_owner_repos();
@@ -2261,19 +2429,54 @@ fn render_owner_detail_html_deleted_roster_renders_reasoned_state() {
     let detail_page = &pages["owners/org-team-a.html"];
 
     assert!(
-        detail_page.contains("no longer exists on GitHub"),
-        "a Deleted roster must render an explicit 'no longer exists' \
-             reasoned state; got:\n{detail_page}"
+        detail_page.contains("Unresolved"),
+        "a roster 404 must render an unresolved status"
     );
     assert!(
-        !detail_page.contains("this list may be incomplete"),
-        "Deleted must not reuse the generic degraded-fetch copy (misleading \
-             for a team with zero members by construction)"
+        detail_page.contains("HTTP 404 does not establish whether this team exists"),
+        "a roster 404 must explain the uncertainty"
     );
     assert!(
-        !detail_page.contains("Team Members (unresolved)"),
-        "a Deleted roster is resolved data, not the ambiguous Unresolved state"
+        !detail_page.contains("no longer exists on GitHub")
+            && !detail_page.contains("GitHub has deleted"),
+        "a roster 404 must not assert deletion"
     );
+    let roster = build_team_roster_view_model(
+        &evidence.metrics.team_rosters[0],
+        "2026-09-06T00:00:00Z".parse().unwrap(),
+    );
+    assert_eq!(roster.status_label, "Unresolved");
+    assert!(!roster.is_complete);
+}
+
+#[test]
+fn render_owner_detail_html_roster_403_and_transient_remain_distinct() {
+    use crate::domain::metrics::{TeamRoster, TeamRosterStatus};
+
+    for (status, label) in [
+        (TeamRosterStatus::PermissionDenied, "Permission denied"),
+        (TeamRosterStatus::TransientError, "Temporarily unavailable"),
+    ] {
+        let mut evidence = evidence_with_owner_repos();
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            fetched_at: None,
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status,
+            members: Vec::new(),
+        }];
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = &pages["owners/org-team-a.html"];
+        assert!(detail_page.contains(&format!("Roster fetch: {label}")));
+        assert!(detail_page.contains("this list may be incomplete"));
+        assert!(!detail_page.contains("HTTP 404"));
+        let roster = build_team_roster_view_model(
+            &evidence.metrics.team_rosters[0],
+            "2026-09-06T00:00:00Z".parse().unwrap(),
+        );
+        assert_eq!(roster.status_label, label);
+        assert!(!roster.is_complete);
+    }
 }
 
 /// CHE-0082:R8 — the B2 orphan-attribution section on a `Team`-classified
@@ -2401,7 +2604,7 @@ fn render_owner_detail_html_has_data_driven_table_headers() {
         .1;
 
     assert!(detail_page.contains(
-            "<th scope=\"col\" class=\"text-center\" data-nosort>Security Policy <span class=\"tooltip-trigger tooltip-trigger-header\" tabindex=\"0\" data-tooltip=\""
+            "<th scope=\"col\" class=\"text-center\" data-sort-type=\"status\">Security Policy <span class=\"tooltip-trigger tooltip-trigger-header\" tabindex=\"0\" data-tooltip=\""
         ));
     assert!(detail_page.contains(">Dependabot Status <span class=\"tooltip-trigger"));
 }
@@ -2659,7 +2862,7 @@ fn render_owner_detail_html_stale_repo_has_row_stale_class() {
             test_fixtures::codeowners_with_owners(&["@org/team-stale"]),
         ),
     );
-    repo.repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
+    repo.repository.updated_at = crate::domain::repository::UpdatedAt::new("2023-01-01T00:00:00Z");
 
     let repos = vec![repo];
     let evidence = evidence_from_repos(repos);
@@ -3458,7 +3661,8 @@ fn render_orphaned_html_stale_repo_has_stale_marker_and_footnote() {
             test_fixtures::codeowners_absent(),
         ),
     );
-    orphan.repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
+    orphan.repository.updated_at =
+        crate::domain::repository::UpdatedAt::new("2023-01-01T00:00:00Z");
     orphan.last_commit = Some(LastCommitInfo {
         committer_login: Some("alice".to_string()),
         committer_name: None,
@@ -4711,7 +4915,8 @@ fn evidence_with_asymmetric_freshness_team_owner() -> Evidence {
             ),
         ),
     ];
-    repos[1].repository.updated_at = Some("2019-01-01T00:00:00Z".to_string());
+    repos[1].repository.updated_at =
+        crate::domain::repository::UpdatedAt::new("2019-01-01T00:00:00Z");
 
     let mut metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
     crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle(
@@ -4853,6 +5058,9 @@ fn is_pending_repo_positive() {
         BranchProtectionStatus::Unknown,
     );
     checks.secret_scanning.reason = Some("pending".to_string());
+    checks.dependabot_security_updates.reason = Some("pending".to_string());
+    checks.branch_protection.details.reason = Some("pending".to_string());
+    checks.codeowners.status = crate::domain::checks::CodeownersStatus::Unknown;
     assert!(super::is_pending_repo(&checks));
 }
 
@@ -5656,6 +5864,36 @@ fn non_orphaned_repos_card_tooltip_states_formula_and_seven_control_set() {
     assert!(
         !detail_page.contains("one of six controls behind the Team Health score"),
         "no owner-level tooltip may still claim a six-control Team Health set"
+    );
+}
+
+#[test]
+fn team_health_tooltip_names_every_control_by_its_canonical_display_name() {
+    let tooltip = super::team_health_tooltip();
+    for control in super::SEC_SCORE_MAP_CONTROLS
+        .iter()
+        .chain(std::iter::once(&super::NON_ORPHANED_CONTROL))
+    {
+        assert!(
+            tooltip.contains(control.display_name()),
+            "the Team Health tooltip must name {} by its canonical display name; tooltip:\n{tooltip}",
+            control.display_name()
+        );
+    }
+}
+
+#[test]
+fn team_health_tooltip_roster_is_the_seven_controls_in_canonical_order() {
+    let tooltip = super::team_health_tooltip();
+    let expected: Vec<&str> = super::SEC_SCORE_MAP_CONTROLS
+        .iter()
+        .chain(std::iter::once(&super::NON_ORPHANED_CONTROL))
+        .map(|control| control.display_name())
+        .collect();
+    let roster = expected.join(", ");
+    assert!(
+        tooltip.contains(&roster),
+        "the Team Health tooltip must carry the seven controls in canonical list order as `{roster}`; tooltip:\n{tooltip}"
     );
 }
 

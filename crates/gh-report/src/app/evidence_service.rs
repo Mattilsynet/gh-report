@@ -27,6 +27,7 @@ pub struct EvidenceState {
     /// `Some(map)` → cache key is the relative path (e.g. `"index.html"`,
     /// `"report.html"`).
     pub(crate) html_cache: ArcSwap<Option<HashMap<String, CachedPage>>>,
+    pub(crate) publication: std::sync::Mutex<Option<super::collect::AdmittedPublication>>,
 
     /// Broadcast channel for notifying connected WebSocket clients of page
     /// updates. Each WebSocket handler subscribes via `.subscribe()`.
@@ -53,6 +54,7 @@ impl EvidenceState {
         let (ws_broadcast, _) = tokio::sync::broadcast::channel::<PageUpdateEvent>(64);
         Self {
             html_cache: ArcSwap::from_pointee(None),
+            publication: std::sync::Mutex::new(None),
             ws_broadcast,
             org_summary: Arc::new(ArcSwap::from_pointee(None)),
             batch_tracker: ArcSwap::from_pointee(None),
