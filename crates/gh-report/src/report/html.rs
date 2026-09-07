@@ -307,6 +307,7 @@ const OWNERS_OVERVIEW_CONTROLS: &[ControlKey] = &[
     ControlKey::DependabotSecurityUpdates,
     ControlKey::BranchProtection,
     ControlKey::NonStale,
+    ControlKey::NonOrphaned,
 ];
 
 /// Canonical ordered control set of the owner DETAIL page's summary cards.
@@ -1051,12 +1052,21 @@ fn build_owners_view_model(
             let controls: Vec<ControlCell> = OWNERS_OVERVIEW_CONTROLS
                 .iter()
                 .map(|&key| {
-                    build_control_cell(
-                        &m.per_control_coverage,
-                        &m.score_exclusion_counts,
-                        key.as_str(),
-                        tiers,
-                    )
+                    if key == ControlKey::NonOrphaned {
+                        required_control_cell(
+                            &o.non_orphaned,
+                            &m.score_exclusion_counts,
+                            key.as_str(),
+                            tiers,
+                        )
+                    } else {
+                        build_control_cell(
+                            &m.per_control_coverage,
+                            &m.score_exclusion_counts,
+                            key.as_str(),
+                            tiers,
+                        )
+                    }
                 })
                 .collect();
 
@@ -1112,8 +1122,9 @@ fn team_health_tooltip() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let non_stale_label = ControlKey::NonStale.display_name();
+    let non_orphaned_label = NON_ORPHANED_CONTROL.display_name();
     format!(
-        "Geometric mean of measured control rates across seven controls for this owner's repos — {roster}. The four control-presence columns and the {non_stale_label} column below show five of those inputs; Alert-Free and Ownership feed the score but are not shown as columns. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different six-control set. N/A when no control is scorable."
+        "Geometric mean of measured control rates across seven controls for this owner's repos — {roster}. The four control-presence columns, the {non_stale_label} column, and the {non_orphaned_label} column below show six of those inputs; Alert-Free feeds the score but is not shown as a column. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different six-control set. N/A when no control is scorable."
     )
 }
 
@@ -1522,6 +1533,7 @@ fn build_one_owner_detail_view_model(
         non_stale_tooltip: crate::report::view_model::NON_STALE_TOOLTIP,
         non_orphaned_cell,
         non_orphaned_label: NON_ORPHANED_CONTROL.display_name().to_string(),
+        non_orphaned_tooltip: crate::report::view_model::NON_ORPHANED_TOOLTIP,
         roster,
         github_url,
         security_url,

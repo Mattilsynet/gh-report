@@ -610,6 +610,9 @@ pub struct OwnerDetailViewModel {
     /// shared control vocabulary rather than hardcoded in the template, so
     /// a control rename cannot desynchronise the card from the vocabulary.
     pub non_orphaned_label: String,
+    /// Tooltip copy for the `non_orphaned_cell` card, resolved from
+    /// [`NON_ORPHANED_TOOLTIP`] so card and column cannot drift.
+    pub non_orphaned_tooltip: &'static str,
     /// Team member roster section (B1, CHE-0082:R5). Always one of three
     /// distinct visible states — see [`RosterSection`] — never a silent
     /// `None` omission.
@@ -2632,6 +2635,8 @@ pub(crate) const LIFECYCLE_RETIREMENT_TOOLTIP: &str = "Archived / (archived + st
 /// template may hardcode this copy (COM-0027:R3/R4).
 pub(crate) const NON_STALE_TOOLTIP: &str = "(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. It asks whether work is still happening, the earlier stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the org-wide Lifecycle: Retirement, which asks whether dead work has been retired and divides by stale-lifecycle repos only rather than by all of this owner's repos.";
 
+pub(crate) const NON_ORPHANED_TOOLTIP: &str = "owned / (owned + attributed) for this owner — the share of this owner's repos that carry real CODEOWNERS ownership, rather than being orphans (no CODEOWNERS owner at all) merely attributed to this owner because their last committer is on its roster. Rises as more repos gain a CODEOWNERS owner; one of seven controls behind the Team Health score. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than this owner's share.";
+
 pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str> {
     match key {
         "security_policy" => Some(
@@ -2647,6 +2652,7 @@ pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str>
             "Branch protection at the T2 accept-bar or better — pull request review required, on top of T1's force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.",
         ),
         "non_stale" => Some(NON_STALE_TOOLTIP),
+        "non_orphaned" => Some(NON_ORPHANED_TOOLTIP),
         _ => None,
     }
 }
@@ -3506,6 +3512,11 @@ mod tests {
             coverage_control_column_tooltip("non_stale"),
             Some(NON_STALE_TOOLTIP),
             "non_stale must resolve to the single canonical Freshness copy"
+        );
+        assert_eq!(
+            coverage_control_column_tooltip("non_orphaned"),
+            Some(NON_ORPHANED_TOOLTIP),
+            "non_orphaned must resolve to the single canonical Ownership copy"
         );
     }
 
