@@ -64,7 +64,7 @@ expression: "&pages[\"owners.html\"]"
             <td><a href="owners/org-team-a.html" title="@org/team-a">team-a</a></td>
             <td>Team</td>
             <td>2</td>
-            <td class="text-center">
+            <td class="text-center" data-sort-value="59.5">
                 <div class="score-bar-inline">
                     <div class="progress-bar">
                         <div class="progress-fill tier-warn w-60"></div>
@@ -73,27 +73,27 @@ expression: "&pages[\"owners.html\"]"
                 </div>
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="50">
                 <span class="status-dot status-warn" title="50% (1/2)"><span class="sr-only">50% (1/2)</span></span>
                 50% (1/2)
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="100">
                 <span class="status-dot status-pass" title="100% (1/1)"><span class="sr-only">100% (1/1)</span></span>
                 100% (1/1)
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="50">
                 <span class="status-dot status-warn" title="50% (1/2)"><span class="sr-only">50% (1/2)</span></span>
                 50% (1/2)
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="50">
                 <span class="status-dot status-warn" title="50% (1/2)"><span class="sr-only">50% (1/2)</span></span>
                 50% (1/2)
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="N/A">
                 <span class="status-dot status-unknown" title="N/A"><span class="sr-only">N/A</span></span>
                 N/A
             </td>

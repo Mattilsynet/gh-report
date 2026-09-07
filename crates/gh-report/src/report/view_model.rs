@@ -271,6 +271,8 @@ pub struct OwnerOverviewRow {
 /// A per-control coverage cell in the owner overview table.
 #[derive(Debug, Clone)]
 pub struct ControlCell {
+    /// Measured compliance rate, or `None` when unmeasured / N/A.
+    pub rate: Option<f64>,
     /// Formatted rate string at prose precision (e.g., "80.0% (4/5)"),
     /// used by owner-detail summary cards.
     pub rate_formatted: String,

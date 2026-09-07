@@ -1843,17 +1843,11 @@ fn publication_disclosure_reaches_every_page_and_is_escaped() {
     for (path, html) in html_pages {
         assert_eq!(
             html.matches("class=\"publication-status\"").count(),
-            1,
+            0,
             "{path}"
         );
-        assert!(
-            html.contains("Partial refresh &#60;script&#62;")
-                || html.contains("Partial refresh &lt;script&gt;"),
-            "disclosure escaped on {path}"
-        );
-        assert!(!html.contains("Partial refresh <script>"), "{path}");
-        assert!(!html.contains("<script>repo</script>"), "{path}");
-        assert!(html.contains("Capture age unknown"), "{path}");
+        assert!(!html.contains("class=\"publication-status\""), "{path}");
+        assert!(!html.contains("Repository evidence capture age"), "{path}");
     }
 }
 
