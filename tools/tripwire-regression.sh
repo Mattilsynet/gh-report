@@ -22,7 +22,11 @@ set -euo pipefail
 # at a fixture that MUST produce a different verdict from the real tree, so a
 # no-op override is observable as a false pass.
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve(strict=True).parent.parent)' "${BASH_SOURCE[0]}")"
+if [ ! -f "$ROOT/Cargo.toml" ] || ! grep -Eq '^\[workspace\][[:space:]]*$' "$ROOT/Cargo.toml" || [ ! -f "$ROOT/tools/tripwires.sh" ] || [ ! -f "$ROOT/tools/tripwire-regression.sh" ] || [ ! -f "$ROOT/crates/non-exhaustive-check/src/main.rs" ]; then
+  printf '::error::invalid derived workspace root: %s\n' "$ROOT" >&2
+  exit 1
+fi
 cd "$ROOT"
 
 TRIPWIRES="$ROOT/tools/tripwires.sh"
@@ -60,6 +64,10 @@ timeout/uninterpretable bound fails closed
 EXECUTED=""
 
 cleanup() {
+  if [ "${TRIPWIRE_KEEP_SCRATCH:-0}" = 1 ]; then
+    printf 'Retained regression scratch: %s\n' "$SCRATCH"
+    return
+  fi
   chmod -R u+rwX "$SCRATCH" 2>/dev/null || true
   rm -r "$SCRATCH" 2>/dev/null || true
 }

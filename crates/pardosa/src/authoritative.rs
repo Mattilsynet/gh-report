@@ -257,7 +257,14 @@ pub(crate) mod jetstream {
         /// (sub-mission 02 wires the dispatch bodies; the
         /// detached-for-tests runtime handle traps any premature
         /// network call there).
-        pub(crate) const fn new(handle: JetStreamHandle) -> Self {
+        pub(crate) fn new(mut handle: JetStreamHandle) -> Self {
+            let previous = handle.config().timeout_observer().cloned();
+            handle.set_timeout_observer(pardosa_nats::TimeoutObserver::new(move |error| {
+                tracing::warn!(target: "pardosa::jetstream", error = %error, "JetStream operation timeout diagnostic");
+                if let Some(observer) = &previous {
+                    observer.observe(error);
+                }
+            }));
             Self {
                 handle,
                 schema_tag: None,
@@ -324,6 +331,66 @@ mod jetstream_adapter_shim_tests {
             .credentials_path(creds)
             .build()
             .expect("offline config is valid")
+    }
+    #[test]
+    fn adapter_timeout_observer_is_installed_once_before_schema() {
+        use std::io::{Read, Seek};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let output = tempfile::tempfile().unwrap();
+        let writer = output.try_clone().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.try_clone().unwrap())
+            .finish();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sink = calls.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let config = detached_config("observer")
+            .to_builder()
+            .runtime_handle(RuntimeHandle::from_tokio(runtime.handle().clone()))
+            .nats_url(format!("nats://{}", listener.local_addr().unwrap()))
+            .operation_timeout(std::time::Duration::from_millis(30))
+            .timeout_observer(pardosa_nats::TimeoutObserver::new(move |_| {
+                sink.fetch_add(1, Ordering::SeqCst);
+            }))
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            let mut adapter = JetStreamBackendAdapter::new(JetStreamBackend::open(config));
+            for schema in [None, Some("first"), Some("second"), Some("third")] {
+                if let Some(schema) = schema {
+                    adapter.set_schema_tag(schema.to_owned()).unwrap();
+                }
+                assert!(matches!(
+                    adapter.handle().append(b"payload"),
+                    Err(pardosa_nats::JetStreamRuntimeError::Timeout { .. })
+                ));
+            }
+        });
+        let mut output = output;
+        output.rewind().unwrap();
+        let mut text = String::new();
+        output.read_to_string(&mut text).unwrap();
+        assert_eq!(
+            text.matches("JetStream operation timeout diagnostic")
+                .count(),
+            4,
+            "{text}"
+        );
+        assert_eq!(text.matches("during connect:").count(), 4);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert!(
+            JetStreamBackendAdapter::new(JetStreamBackend::open(detached_config("none")))
+                .handle()
+                .config()
+                .timeout_observer()
+                .is_some()
+        );
     }
     #[test]
     fn adapter_satisfies_authoritative_backend_marker() {

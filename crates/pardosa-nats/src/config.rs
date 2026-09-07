@@ -5,6 +5,35 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Synchronous timeout diagnostic sink. Called after cancellation, outside the
+/// expired operation deadline. Implementations must not block, panic, or re-enter
+/// a handle operation; synchronous runtime re-entry can panic. A stage
+/// identifies the last executing phase, not whether a remote write committed.
+#[derive(Clone)]
+pub struct TimeoutObserver(Arc<TimeoutSink>);
+
+type TimeoutSink = dyn Fn(&(dyn std::error::Error + Send + Sync)) + Send + Sync;
+
+impl TimeoutObserver {
+    /// Wrap a nonblocking diagnostic callback; omitted observers remain silent.
+    pub fn new(
+        sink: impl Fn(&(dyn std::error::Error + Send + Sync)) + Send + Sync + 'static,
+    ) -> Self {
+        Self(Arc::new(sink))
+    }
+
+    /// Deliver a borrowed timeout diagnostic synchronously.
+    pub fn observe(&self, error: &(dyn std::error::Error + Send + Sync)) {
+        (self.0)(error);
+    }
+}
+
+impl std::fmt::Debug for TimeoutObserver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TimeoutObserver(<sink>)")
+    }
+}
+
 pub(crate) const DEFAULT_NATS_URL: &str = "nats://localhost:4222";
 pub const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 pub const OPERATION_TIMEOUT_ENV: &str = "PARDOSA_NATS_OPERATION_TIMEOUT_SECS";
@@ -95,8 +124,17 @@ pub struct JetStreamConfig {
     single_writer_fence_enabled: bool,
     stream_description_marker: Option<String>,
     server_info_observer: Option<ServerInfoObserver>,
+    timeout_observer: Option<TimeoutObserver>,
 }
 impl JetStreamConfig {
+    pub(crate) fn set_timeout_observer(&mut self, observer: TimeoutObserver) {
+        self.timeout_observer = Some(observer);
+    }
+    /// Optional diagnostic observer for total operation deadline expiry.
+    #[must_use]
+    pub const fn timeout_observer(&self) -> Option<&TimeoutObserver> {
+        self.timeout_observer.as_ref()
+    }
     /// Begin assembling a [`JetStreamConfig`] via the builder.
     #[must_use]
     pub fn builder() -> JetStreamConfigBuilder {
@@ -217,6 +255,7 @@ impl JetStreamConfig {
             single_writer_fence_enabled: Some(self.single_writer_fence_enabled),
             stream_description_marker: self.stream_description_marker.clone(),
             server_info_observer: self.server_info_observer.clone(),
+            timeout_observer: self.timeout_observer.clone(),
         }
     }
 }
@@ -237,8 +276,15 @@ pub struct JetStreamConfigBuilder {
     single_writer_fence_enabled: Option<bool>,
     stream_description_marker: Option<String>,
     server_info_observer: Option<ServerInfoObserver>,
+    timeout_observer: Option<TimeoutObserver>,
 }
 impl JetStreamConfigBuilder {
+    /// Set the optional total-deadline diagnostic observer. Defaults to absent.
+    #[must_use]
+    pub fn timeout_observer(mut self, observer: TimeoutObserver) -> Self {
+        self.timeout_observer = Some(observer);
+        self
+    }
     /// Set the `JetStream` stream name (rejected if empty at
     /// [`Self::build`]).
     #[must_use]
@@ -403,6 +449,7 @@ impl JetStreamConfigBuilder {
             single_writer_fence_enabled,
             stream_description_marker,
             server_info_observer: self.server_info_observer,
+            timeout_observer: self.timeout_observer,
         })
     }
 }

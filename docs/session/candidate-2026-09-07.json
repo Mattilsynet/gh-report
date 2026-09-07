@@ -1,0 +1,16 @@
+{
+  "status": "published; fetched remote commit and exact inventory verified",
+  "commit": "e147bffcbb3588d390835ab039db0dff1c1d7659",
+  "base_commit": "4279ab2514d3c5ff0717936e9f09b18fa21f220f",
+  "branch": "checkpoint/candidate-2026-09-07",
+  "git_tree": "a4317b3b7eef925eae4de69b5de6b7485f091f31",
+  "file_count": 1156,
+  "inventory_encoding": "UTF-8 sorted path order: git-mode SPACE sha256 SPACE path LF",
+  "inventory_sha256": "6de1e81d1e7244c43510249f20bc49239e3e13bcac266f9f11bde5b893bd4d4d",
+  "required_absent": ["crates/gh-report/tests/live_nats_two_writer_fence.rs"],
+  "only_ooda_entry": ".ooda/.gitkeep",
+  "script_sha256": {
+    "tools/tripwires.sh": "908a8daa16bfa6bb065c417af1e8064e2c12a4bfacf10162be4f6102f258bf76",
+    "tools/tripwire-regression.sh": "013899eb4ff633a45fc7380a8b92ff3be91389d4205314e5a36bd80cc57c800a"
+  }
+}

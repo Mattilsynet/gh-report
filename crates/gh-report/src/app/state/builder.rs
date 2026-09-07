@@ -91,6 +91,7 @@ impl AppStateBuilder {
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
 
         Arc::new(AppState {
+            live_observation: tokio::sync::Mutex::new(0),
             started_at: Timestamp::now(),
             owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),

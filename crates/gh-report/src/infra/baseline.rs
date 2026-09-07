@@ -197,13 +197,11 @@ pub fn build_baseline(repositories: &[RepositoryEvidence]) -> Baseline {
             continue;
         }
 
-        if let Some(ref updated_at) = repo_evidence.repository.updated_at
-            && !updated_at.is_empty()
-        {
+        if let Some(ref updated_at) = repo_evidence.repository.updated_at {
             entries.insert(
                 repo_evidence.repository.inventory_key.clone(),
                 BaselineEntry {
-                    updated_at: updated_at.clone(),
+                    updated_at: updated_at.to_string(),
                     evidence: repo_evidence.clone(),
                 },
             );
@@ -223,7 +221,7 @@ mod tests {
 
     fn make_evidence_with_updated_at(name: &str, updated_at: Option<&str>) -> RepositoryEvidence {
         let mut ev = test_fixtures::all_passing_evidence(name);
-        ev.repository.updated_at = updated_at.map(String::from);
+        ev.repository.updated_at = updated_at.and_then(crate::domain::repository::UpdatedAt::new);
         ev
     }
 
@@ -428,7 +426,8 @@ mod tests {
     #[test]
     fn build_baseline_excludes_total_failure() {
         let mut ev = test_fixtures::all_passing_evidence("halted-repo");
-        ev.repository.updated_at = Some("2026-04-09T12:00:00Z".to_string());
+        ev.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-09T12:00:00Z");
         ev.checks.security_policy.status = SecurityPolicyStatus::Unknown;
         ev.checks.secret_scanning.status = SecretScanningStatus::Unknown;
         ev.checks.dependabot_security_updates.status = DependabotStatus::Unknown;
@@ -460,7 +459,8 @@ mod tests {
     #[test]
     fn build_baseline_keeps_partial_failure() {
         let mut ev = test_fixtures::all_passing_evidence("partial-repo");
-        ev.repository.updated_at = Some("2026-04-09T12:00:00Z".to_string());
+        ev.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-09T12:00:00Z");
         ev.checks.branch_protection.status = BranchProtectionStatus::Unknown;
 
         let baseline = build_baseline(&[ev]);

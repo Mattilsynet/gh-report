@@ -37,7 +37,8 @@ pub struct Repository {
     pub inventory_key: String,
     /// ISO 8601 timestamp of last update (settings change or push).
     /// Used by baseline mechanism to detect changes.
-    pub updated_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_updated_at")]
+    pub updated_at: Option<UpdatedAt>,
 
     /// Whether the repository has issues enabled.
     pub has_issues: bool,
@@ -74,6 +75,38 @@ impl PartialEq for Repository {
 }
 
 impl Eq for Repository {}
+
+/// A nonempty repository update spelling, preserved without timestamp parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct UpdatedAt(String);
+
+impl UpdatedAt {
+    /// Returns `None` for historical empty values; preserves every nonempty spelling.
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Option<Self> {
+        let raw = raw.into();
+        if raw.is_empty() {
+            None
+        } else {
+            Some(Self(raw))
+        }
+    }
+}
+
+impl std::ops::Deref for UpdatedAt {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+fn deserialize_updated_at<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<UpdatedAt>, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.and_then(UpdatedAt::new))
+}
 
 /// Repository visibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -123,6 +156,52 @@ impl PartialOrd for Repository {
 mod tests {
     use super::*;
     use crate::test_fixtures;
+
+    #[test]
+    fn updated_at_wire_normalizes_empty_and_preserves_nonempty_spelling() {
+        let repository = test_fixtures::make_repository("repo", false, Visibility::Public);
+        let fixture = serde_json::to_value(&repository).unwrap();
+        for raw in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!("2026-04-01T12:00:00Z"),
+            serde_json::json!("not-a-timestamp"),
+            serde_json::json!(" "),
+        ] {
+            let mut input = fixture.clone();
+            input["updated_at"] = raw.clone();
+            let decoded: Repository = serde_json::from_value(input.clone()).unwrap();
+            let expected = raw.as_str().filter(|s| !s.is_empty());
+            assert_eq!(
+                decoded.updated_at.as_deref(),
+                expected,
+                "historical empty must normalize absent"
+            );
+            input["updated_at"] = serde_json::to_value(expected).unwrap();
+            assert_eq!(serde_json::to_value(&decoded).unwrap(), input);
+            assert_eq!(decoded == repository, expected.is_none());
+        }
+        let mut missing = fixture;
+        missing.as_object_mut().unwrap().remove("updated_at");
+        let decoded: Repository = serde_json::from_value(missing).unwrap();
+        assert!(decoded.updated_at.is_none());
+    }
+
+    #[test]
+    fn updated_at_constructor_and_native_roundtrip_preserve_contract() {
+        assert!(UpdatedAt::new("").is_none());
+        for raw in [None, Some("2026-04-01T12:00:00Z")] {
+            let mut repository = test_fixtures::make_repository("repo", false, Visibility::Public);
+            repository.updated_at = raw.and_then(UpdatedAt::new);
+            let native = crate::event::Repository::try_from(repository.clone()).unwrap();
+            let restored = Repository::from(native);
+            assert_eq!(restored, repository);
+            assert_eq!(restored.updated_at.as_deref(), raw);
+        }
+        let a = UpdatedAt::new("2026-04-01T12:00:00Z");
+        let b = UpdatedAt::new("2026-04-01T14:00:00+02:00");
+        assert_ne!(a, b, "equality compares spelling, not parsed instants");
+    }
 
     #[test]
     fn is_public_checks_visibility() {

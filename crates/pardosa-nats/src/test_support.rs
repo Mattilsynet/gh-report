@@ -153,12 +153,12 @@ impl Drop for LiveNatsServer {
 /// harness on a correctly-pinned runner cannot silently erase
 /// assertions while still reporting green.
 #[non_exhaustive]
-pub enum LiveNats {
-    Ready(Arc<LiveNatsServer>),
+pub enum LiveNats<T = Arc<LiveNatsServer>> {
+    Ready(T),
     Unavailable(Unavailable),
     Fatal(HarnessError),
 }
-impl LiveNats {
+impl<T> LiveNats<T> {
     /// Unwrap to a live handle, or emit a skip line to stderr naming
     /// `test_name` and the reason, and return [`None`].
     ///
@@ -178,7 +178,7 @@ impl LiveNats {
     /// or readiness wait is a broken harness rather than an absent
     /// one, and must fail the test instead of skipping it.
     #[must_use]
-    pub fn ready_or_skip(self, test_name: &str) -> Option<Arc<LiveNatsServer>> {
+    pub fn ready_or_skip(self, test_name: &str) -> Option<T> {
         match self {
             Self::Ready(server) => Some(server),
             Self::Unavailable(reason) => {
@@ -309,6 +309,17 @@ impl std::error::Error for HarnessError {
         }
     }
 }
+/// Probe the authoritative server pin without spawning a live server.
+/// Absence and version mismatch are unavailable; probe and pin-file errors are fatal.
+#[must_use]
+pub fn probe_pinned_nats_server() -> LiveNats<()> {
+    match assert_version_pinned() {
+        Ok(()) => LiveNats::Ready(()),
+        Err(StartupFault::Skippable(reason)) => LiveNats::Unavailable(reason),
+        Err(StartupFault::Fatal(error)) => LiveNats::Fatal(error),
+    }
+}
+
 fn assert_version_pinned() -> Result<(), StartupFault> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let pin_path = manifest_dir
@@ -335,6 +346,21 @@ fn assert_version_pinned() -> Result<(), StartupFault> {
                 StartupFault::from(HarnessError::VersionProbe(source))
             }
         })?;
+    classify_version_output(pinned, &output)
+}
+
+fn classify_version_output(
+    pinned: String,
+    output: &std::process::Output,
+) -> Result<(), StartupFault> {
+    if !output.status.success() {
+        return Err(HarnessError::VersionProbe(std::io::Error::other(format!(
+            "version probe exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )))
+        .into());
+    }
     let observed = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let needle = format!("v{pinned}");
     if !observed.split_whitespace().any(|tok| tok == needle) {
@@ -390,9 +416,26 @@ fn wait_for_readiness(url: &str) -> Result<(), StartupFault> {
 #[cfg(test)]
 mod tests {
     use super::{HarnessError, LiveNats, Unavailable};
+    #[cfg(unix)]
+    #[test]
+    fn failed_version_probe_is_fatal_not_a_skippable_mismatch() {
+        use std::os::unix::process::ExitStatusExt;
+        let result = super::classify_version_output(
+            "fixture-pin".to_owned(),
+            &std::process::Output {
+                status: std::process::ExitStatus::from_raw(256),
+                stdout: b"wrong version".to_vec(),
+                stderr: b"injected probe failure".to_vec(),
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(super::StartupFault::Fatal(HarnessError::VersionProbe(_)))
+        ));
+    }
     #[test]
     fn fatal_harness_fault_does_not_skip() {
-        let outcome = LiveNats::Fatal(HarnessError::TempDir(std::io::Error::other(
+        let outcome: LiveNats = LiveNats::Fatal(HarnessError::TempDir(std::io::Error::other(
             "injected tempdir fault",
         )));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -405,7 +448,7 @@ mod tests {
     }
     #[test]
     fn version_mismatch_still_skips() {
-        let outcome = LiveNats::Unavailable(Unavailable::VersionMismatch {
+        let outcome: LiveNats = LiveNats::Unavailable(Unavailable::VersionMismatch {
             expected: "2.14.5".to_string(),
             observed: "nats-server: v2.14.6".to_string(),
         });
@@ -416,9 +459,9 @@ mod tests {
     }
     #[test]
     fn absent_executable_still_skips() {
-        let outcome = LiveNats::Unavailable(Unavailable::ExecutableAbsent(std::io::Error::from(
-            std::io::ErrorKind::NotFound,
-        )));
+        let outcome: LiveNats = LiveNats::Unavailable(Unavailable::ExecutableAbsent(
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        ));
         assert!(
             outcome.ready_or_skip("injected").is_none(),
             "an absent nats-server executable must remain skippable"

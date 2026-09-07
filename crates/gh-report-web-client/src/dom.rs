@@ -13,7 +13,9 @@ use web_sys::{
     KeyboardEvent,
 };
 
-use crate::sort::{SortDirection, SortType, compare_cells, detect_sort_type, parse_sort_type};
+use crate::sort::{
+    SortDirection, SortType, compare_cells_directed, detect_sort_type, parse_sort_type,
+};
 
 #[derive(Clone, Copy)]
 struct SortState {
@@ -199,17 +201,18 @@ fn apply_sort(table: &HtmlTableElement, state: &SortState) {
     let mut texts: Vec<(HtmlTableRowElement, String)> = collect_rows(&tbody)
         .into_iter()
         .map(|row| {
-            let text = cell_text(&row, state.column);
+            let text = match state.sort_type {
+                SortType::Status => row
+                    .cells()
+                    .item(state.column)
+                    .and_then(|cell| cell.get_attribute("data-sort-value"))
+                    .unwrap_or_default(),
+                _ => cell_text(&row, state.column),
+            };
             (row, text)
         })
         .collect();
-    texts.sort_by(|(_, a), (_, b)| {
-        let ordering = compare_cells(a, b, state.sort_type);
-        match state.direction {
-            SortDirection::Ascending => ordering,
-            SortDirection::Descending => ordering.reverse(),
-        }
-    });
+    texts.sort_by(|(_, a), (_, b)| compare_cells_directed(a, b, state.sort_type, state.direction));
 
     for (row, _) in &texts {
         let _ignored = tbody.append_child(row);
@@ -239,12 +242,46 @@ fn cell_text(row: &HtmlTableRowElement, column: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::start;
+    use any_spawner::Executor;
+    use leptos::prelude::Owner;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::wasm_bindgen_test;
-    use web_sys::{Element, Event, HtmlElement, HtmlTableRowElement, HtmlTableSectionElement};
+    use web_sys::{
+        Event, HtmlElement, HtmlTableElement, HtmlTableRowElement, HtmlTableSectionElement,
+    };
 
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+    struct TableFixture {
+        table: HtmlTableElement,
+        owner: Owner,
+    }
+
+    impl TableFixture {
+        fn new(html: &str) -> Self {
+            let _ = Executor::init_wasm_bindgen();
+            let owner = Owner::new();
+            let document = web_sys::window().unwrap().document().unwrap();
+            let table: HtmlTableElement = document
+                .create_element("table")
+                .unwrap()
+                .dyn_into()
+                .unwrap();
+            table.set_attribute("data-sortable", "").unwrap();
+            table.set_inner_html(html);
+            let fixture = Self { table, owner };
+            assert!(fixture.table.parent_node().is_none());
+            fixture.owner.with(|| super::wire_table(&fixture.table));
+            fixture
+        }
+    }
+
+    impl Drop for TableFixture {
+        fn drop(&mut self) {
+            self.table.remove();
+            self.owner.cleanup();
+        }
+    }
 
     async fn yield_to_microtasks() {
         for _ in 0..8 {
@@ -268,19 +305,46 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    async fn status_click_consumes_keys_and_keeps_unknown_last() {
+        let fixture = TableFixture::new(
+            "<thead><tr><th data-sort-type=\"status\">Control</th></tr></thead>\
+             <tbody><tr><td data-sort-value=\"indeterminate\">A unknown</td></tr>\
+             <tr><td data-sort-value=\"pass\">B pass</td></tr>\
+             <tr><td data-sort-value=\"fail\">Z fail</td></tr>\
+             <tr><td>Missing key</td></tr></tbody>",
+        );
+        let table = &fixture.table;
+        assert!(table.parent_node().is_none());
+        let header = table.query_selector("th").unwrap().unwrap();
+        let tbody: HtmlTableSectionElement = table
+            .query_selector("tbody")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        yield_to_microtasks().await;
+        for expected in [
+            vec!["Z fail", "B pass", "A unknown", "Missing key"],
+            vec!["B pass", "Z fail", "A unknown", "Missing key"],
+        ] {
+            header
+                .dispatch_event(&Event::new("click").unwrap())
+                .unwrap();
+            yield_to_microtasks().await;
+            assert!(table.parent_node().is_none());
+            assert_eq!(row_names(&tbody), expected);
+        }
+    }
+
+    #[wasm_bindgen_test]
     async fn click_on_sortable_header_reorders_rows() {
-        let document = web_sys::window().unwrap().document().unwrap();
-        let table: Element = document.create_element("table").unwrap();
-        table.set_attribute("data-sortable", "").unwrap();
-        table.set_inner_html(
+        let fixture = TableFixture::new(
             "<thead><tr><th data-sort-type=\"text\">Name</th></tr></thead>\
              <tbody><tr><td>Zeta</td></tr><tr><td>Alpha</td></tr></tbody>",
         );
-        document.body().unwrap().append_child(&table).unwrap();
-
-        start();
-
-        let header: HtmlElement = document
+        let table = &fixture.table;
+        assert!(table.parent_node().is_none());
+        let header: HtmlElement = table
             .query_selector("th")
             .unwrap()
             .unwrap()
@@ -295,7 +359,7 @@ mod tests {
 
         yield_to_microtasks().await;
 
-        let tbody: HtmlTableSectionElement = document
+        let tbody: HtmlTableSectionElement = table
             .query_selector("tbody")
             .unwrap()
             .unwrap()
@@ -311,6 +375,7 @@ mod tests {
             .dispatch_event(&Event::new("click").unwrap())
             .unwrap();
         yield_to_microtasks().await;
+        assert!(table.parent_node().is_none());
         assert_eq!(row_names(&tbody), vec!["Zeta", "Alpha"]);
         assert_eq!(
             header.get_attribute("aria-sort").as_deref(),
@@ -320,18 +385,13 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn keydown_enter_on_header_reorders_rows() {
-        let document = web_sys::window().unwrap().document().unwrap();
-        let table: Element = document.create_element("table").unwrap();
-        table.set_attribute("data-sortable", "").unwrap();
-        table.set_inner_html(
+        let fixture = TableFixture::new(
             "<thead><tr><th data-sort-type=\"text\">Name</th></tr></thead>\
              <tbody><tr><td>Zeta</td></tr><tr><td>Alpha</td></tr></tbody>",
         );
-        document.body().unwrap().append_child(&table).unwrap();
-
-        start();
-
-        let header: HtmlElement = document
+        let table = &fixture.table;
+        assert!(table.parent_node().is_none());
+        let header: HtmlElement = table
             .query_selector("th")
             .unwrap()
             .unwrap()
@@ -339,19 +399,34 @@ mod tests {
             .unwrap();
         assert_eq!(header.get_attribute("tabindex").as_deref(), Some("0"));
 
-        let keydown = web_sys::KeyboardEvent::new("keydown").unwrap();
-        js_sys::Reflect::set(&keydown, &"key".into(), &"Enter".into()).unwrap();
+        yield_to_microtasks().await;
+        let options = js_sys::Object::new();
+        assert!(js_sys::Reflect::set(&options, &"key".into(), &"Enter".into()).unwrap());
+        let constructor =
+            js_sys::Reflect::get(&web_sys::window().unwrap(), &"KeyboardEvent".into())
+                .unwrap()
+                .dyn_into::<js_sys::Function>()
+                .unwrap();
+        let keydown: web_sys::KeyboardEvent = js_sys::Reflect::construct(
+            &constructor,
+            &js_sys::Array::of2(&"keydown".into(), &options),
+        )
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+        assert_eq!(keydown.key(), "Enter");
         header.dispatch_event(&keydown).unwrap();
 
         yield_to_microtasks().await;
 
-        let tbody: HtmlTableSectionElement = document
+        let tbody: HtmlTableSectionElement = table
             .query_selector("tbody")
             .unwrap()
             .unwrap()
             .dyn_into()
             .unwrap();
         assert_eq!(row_names(&tbody), vec!["Alpha", "Zeta"]);
+        assert!(table.parent_node().is_none());
         assert_eq!(
             header.get_attribute("aria-sort").as_deref(),
             Some("ascending")

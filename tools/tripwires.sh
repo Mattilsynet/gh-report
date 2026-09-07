@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
+ROOT="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve(strict=True).parent.parent)' "${BASH_SOURCE[0]}")"
+if [ ! -f "$ROOT/Cargo.toml" ] || ! grep -Eq '^\[workspace\][[:space:]]*$' "$ROOT/Cargo.toml" || [ ! -f "$ROOT/tools/tripwires.sh" ] || [ ! -f "$ROOT/tools/tripwire-regression.sh" ] || [ ! -f "$ROOT/crates/non-exhaustive-check/src/main.rs" ]; then
+  printf '::error::invalid derived workspace root: %s\n' "$ROOT" >&2
+  exit 1
+fi
 cd "$ROOT"
 
 CHECKS=(projection-lock async-trait fence-converge dead-code-suppression non-exhaustive gate-citation adr-number-collision deny-ignore-lifecycle forbid-unsafe-total)

@@ -21,8 +21,12 @@ impl cherry_pit_web::serve::ServerState for AppState {
         self.event_store.backend_reachable()
             && self.org_event_store.backend_reachable()
             && self.team_event_store.backend_reachable()
-            && (self.last_completed_run.load().is_some()
-                || self.evidence.html_cache.load().is_some()
-                || !self.lock_projection().is_empty())
+            && self
+                .evidence
+                .html_cache
+                .load()
+                .as_ref()
+                .as_ref()
+                .is_some_and(|pages| pages.contains_key("index.html"))
     }
 }

@@ -217,9 +217,14 @@ mod tests {
         use crate::app::collect::build_cached_pages;
 
         let (config, evidence) = owner_page_fixture();
-        let cache = build_cached_pages(&config, &evidence)
-            .await
-            .expect("production cache-build path succeeds");
+        let cache = build_cached_pages(
+            &config,
+            &evidence,
+            crate::app::collect::PublicationStage::Terminal,
+        )
+        .await
+        .expect("production cache-build path succeeds")
+        .into_pages();
         let owner_key = cache
             .keys()
             .find(|k| k.starts_with("owners/"))
@@ -288,9 +293,14 @@ mod tests {
         use crate::app::collect::build_cached_pages;
 
         let (config, evidence) = owner_page_fixture();
-        let cache = build_cached_pages(&config, &evidence)
-            .await
-            .expect("production cache-build path succeeds");
+        let cache = build_cached_pages(
+            &config,
+            &evidence,
+            crate::app::collect::PublicationStage::Terminal,
+        )
+        .await
+        .expect("production cache-build path succeeds")
+        .into_pages();
         assert!(
             cache.contains_key("favicon.svg"),
             "favicon.svg must be registered by the asset path"
@@ -533,7 +543,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readyz_returns_200_after_completed_run() {
+    async fn readyz_rejects_completed_run_without_root_content() {
         let state = state_no_cache().await;
 
         let mut run = crate::domain::run::RunMetadata::new(
@@ -543,6 +553,42 @@ mod tests {
         run.complete();
         state.last_completed_run.store(Arc::new(Some(run)));
 
+        assert_readiness_and_root(state, 503, 503).await;
+    }
+
+    #[tokio::test]
+    async fn readyz_rejects_no_cache() {
+        assert_readiness_and_root(state_no_cache().await, 503, 503).await;
+    }
+
+    #[tokio::test]
+    async fn readyz_rejects_empty_cache() {
+        let state = state_no_cache().await;
+        state.set_html_cache(std::collections::HashMap::new());
+        assert_readiness_and_root(state, 503, 404).await;
+    }
+
+    #[tokio::test]
+    async fn readyz_rejects_cache_without_root() {
+        let state = state_no_cache().await;
+        state.set_html_cache(std::collections::HashMap::from([(
+            "admin.html".to_string(),
+            cherry_pit_web::serve::CachedPage::new("admin.html", b"admin".to_vec()),
+        )]));
+        assert_readiness_and_root(state, 503, 404).await;
+    }
+
+    #[tokio::test]
+    async fn readyz_accepts_root_content_without_run_metadata() {
+        let state = state_no_cache().await;
+        state.set_html_cache(std::collections::HashMap::from([(
+            "index.html".to_string(),
+            cherry_pit_web::serve::CachedPage::new("index.html", b"root report".to_vec()),
+        )]));
+        assert_readiness_and_root(state, 200, 200).await;
+    }
+
+    async fn assert_readiness_and_root(state: Arc<AppState>, ready_status: u16, root_status: u16) {
         let app = build_router(Arc::clone(&state));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -554,10 +600,22 @@ mod tests {
 
         wait_for_server(addr).await;
 
+        let root = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        assert_eq!(root.status(), root_status, "root content status");
+        assert!(!root.bytes().await.unwrap().is_empty());
         let resp = reqwest::get(format!("http://{addr}/readyz")).await.unwrap();
-        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.status(),
+            ready_status,
+            "readiness must require root content and reachable backends"
+        );
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["status"], "ready");
+        let expected = if ready_status == 200 {
+            "ready"
+        } else {
+            "not_ready"
+        };
+        assert_eq!(body["status"], expected);
 
         handle.abort();
     }
@@ -643,9 +701,10 @@ mod tests {
         assert_eq!(state.projection_len(), 2);
         assert!(state.github_client().is_none());
         assert!(
-            state.is_ready(),
-            "populated event-log projection should be ready without run/cache or GitHub API"
+            !state.is_ready(),
+            "populated event-log projection is not ready before root publication"
         );
+        assert_readiness_and_root(Arc::clone(&state), 503, 503).await;
 
         let config = RuntimeConfig {
             org_name: "TestOrg".to_string(),
@@ -665,6 +724,7 @@ mod tests {
 
         assert!(warm_start_from_baseline(&config, &state).await);
         assert!(state.github_client().is_none());
+        assert_readiness_and_root(Arc::clone(&state), 200, 200).await;
 
         let app = build_router(Arc::clone(&state));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -697,6 +757,7 @@ mod tests {
         );
         state.set_html_cache(pages);
         state.event_store.mark_backend_connect_failure_for_test();
+        assert_readiness_and_root(Arc::clone(&state), 503, 200).await;
 
         let app = build_router(Arc::clone(&state));
 
@@ -806,9 +867,15 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
 
-        publish_evidence(&config, &run, &evidence, &state)
-            .await
-            .unwrap();
+        publish_evidence(
+            &config,
+            &run,
+            &evidence,
+            &state,
+            crate::app::collect::PublicationStage::Terminal,
+        )
+        .await
+        .unwrap();
 
         let timeout_result =
             tokio::time::timeout(std::time::Duration::from_secs(3), ws.next()).await;

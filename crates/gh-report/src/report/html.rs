@@ -31,7 +31,7 @@ use crate::error::ReportError;
 use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
     ControlDenominatorViewModel, CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel,
-    DenominatorRepoRow, DrillDownPage, GhostTeamRow, OrphanedRepoRow, OrphanedTeamGroup,
+    DenominatorRepoRow, DotState, DrillDownPage, GhostTeamRow, OrphanedRepoRow, OrphanedTeamGroup,
     OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel,
     ReportViewModel, RosterFreshness, RosterSection, StatusDot, SummaryCard, TeamMemberRow,
     TeamRosterViewModel, TopNav, TopSecurityTeam, UnmeasuredRepoRow, WildcardOwnerRow,
@@ -474,11 +474,26 @@ pub fn render_dashboard(
 pub fn render_dashboard_streaming(
     evidence: &Evidence,
     config: &DashboardConfig,
+    sink: impl FnMut(String, String),
+) -> Result<(), ReportError> {
+    render_publication_streaming(
+        evidence,
+        config,
+        evidence.assessment_metadata.warm_start,
+        None,
+        sink,
+    )
+}
+
+pub(crate) fn render_publication_streaming(
+    evidence: &Evidence,
+    config: &DashboardConfig,
+    warm_start: bool,
+    publication: Option<crate::report::view_model::PublicationDisclosure>,
     mut sink: impl FnMut(String, String),
 ) -> Result<(), ReportError> {
     debug!(org = %evidence.assessment_metadata.organization, "rendering dashboard pages");
     let tiers = &config.tiers;
-    let warm_start = evidence.assessment_metadata.warm_start;
 
     let orphaned_vm = build_orphaned_view_model(
         &evidence.repositories,
@@ -501,6 +516,7 @@ pub fn render_dashboard_streaming(
     );
 
     let mut vm = ReportViewModel::from_evidence(evidence, tiers);
+    vm.warm_start = warm_start;
     vm.owners.clone_from(&owners_vm);
     vm.orphaned_count = orphaned_count;
     (vm.team_access_guidance, vm.team_access_help_links) =
@@ -511,6 +527,7 @@ pub fn render_dashboard_streaming(
     }
 
     let nav = TopNav {
+        publication,
         base: "",
         dashboard_href: DashboardHref::Root,
         show_owners: owners_vm.is_some(),
@@ -1248,10 +1265,10 @@ fn build_team_roster_view_model(roster: &TeamRoster, now: jiff::Timestamp) -> Te
         TeamRosterStatus::Complete => (true, "Complete", None),
         TeamRosterStatus::Deleted => (
             false,
-            "Deleted",
+            "Unresolved",
             Some(
-                "This team no longer exists on GitHub — CODEOWNERS references a team \
-                 GitHub has deleted.",
+                "Roster fetch: Unresolved — HTTP 404 does not establish whether this team exists. \
+                 Check the CODEOWNERS team reference and membership-read permissions.",
             ),
         ),
         TeamRosterStatus::PermissionDenied => (
@@ -1950,7 +1967,8 @@ fn format_date_prefix(iso_ts: Option<&str>) -> String {
 /// checks produced by `failure_evidence_with_reason(_, _, "pending")`
 /// share this marker.
 fn is_pending_repo(checks: &crate::domain::checks::RepositoryChecks) -> bool {
-    checks.secret_scanning.reason.as_deref() == Some("pending")
+    crate::domain::evidence::RepositoryReadState::from_checks(checks)
+        == crate::domain::evidence::RepositoryReadState::Pending
 }
 
 /// Return a pending or unknown status dot based on the `pending` flag.
@@ -1959,15 +1977,9 @@ fn is_pending_repo(checks: &crate::domain::checks::RepositoryChecks) -> bool {
 /// to avoid repeating the same if/else block.
 fn unknown_or_pending_dot(pending: bool) -> StatusDot {
     if pending {
-        StatusDot {
-            css_class: "status-pending",
-            label: "Pending",
-        }
+        StatusDot::new(DotState::Pending, "Pending")
     } else {
-        StatusDot {
-            css_class: "status-unknown",
-            label: "unknown",
-        }
+        StatusDot::new(DotState::Unknown, "unknown")
     }
 }
 
@@ -1985,66 +1997,32 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
     let pending = is_pending_repo(checks);
 
     let policy_dot = match checks.security_policy.status {
-        SecurityPolicyStatus::Pass => StatusDot {
-            css_class: "status-pass",
-            label: "pass",
-        },
-        SecurityPolicyStatus::Fail => StatusDot {
-            css_class: "status-fail",
-            label: "fail",
-        },
+        SecurityPolicyStatus::Pass => StatusDot::new(DotState::Pass, "pass"),
+        SecurityPolicyStatus::Fail => StatusDot::new(DotState::Fail, "fail"),
         SecurityPolicyStatus::Unknown => unknown_or_pending_dot(pending),
-        SecurityPolicyStatus::NotApplicable => StatusDot {
-            css_class: "status-na",
-            label: "N/A",
-        },
+        SecurityPolicyStatus::NotApplicable => StatusDot::new(DotState::NotApplicable, "N/A"),
     };
 
     let secret_dot = match checks.secret_scanning.status {
-        SecretScanningStatus::Enabled => StatusDot {
-            css_class: "status-pass",
-            label: "enabled",
-        },
-        SecretScanningStatus::Disabled => StatusDot {
-            css_class: "status-fail",
-            label: "disabled",
-        },
-        SecretScanningStatus::PermissionDenied => StatusDot {
-            css_class: "status-unknown",
-            label: "permission denied",
-        },
+        SecretScanningStatus::Enabled => StatusDot::new(DotState::Pass, "enabled"),
+        SecretScanningStatus::Disabled => StatusDot::new(DotState::Fail, "disabled"),
+        SecretScanningStatus::PermissionDenied => {
+            StatusDot::new(DotState::Unknown, "permission denied")
+        }
         SecretScanningStatus::Unknown => unknown_or_pending_dot(pending),
     };
 
     let dependabot_dot = match checks.dependabot_security_updates.status {
-        DependabotStatus::Enabled => StatusDot {
-            css_class: "status-pass",
-            label: "enabled",
-        },
-        DependabotStatus::Paused => StatusDot {
-            css_class: "status-warn",
-            label: "paused",
-        },
-        DependabotStatus::Disabled => StatusDot {
-            css_class: "status-fail",
-            label: "disabled",
-        },
+        DependabotStatus::Enabled => StatusDot::new(DotState::Pass, "enabled"),
+        DependabotStatus::Paused => StatusDot::new(DotState::Partial, "paused"),
+        DependabotStatus::Disabled => StatusDot::new(DotState::Fail, "disabled"),
         DependabotStatus::Unknown => unknown_or_pending_dot(pending),
     };
 
     let branch_dot = match checks.branch_protection.status {
-        BranchProtectionStatus::Pass => StatusDot {
-            css_class: "status-pass",
-            label: "pass",
-        },
-        BranchProtectionStatus::Partial => StatusDot {
-            css_class: "status-warn",
-            label: "partial",
-        },
-        BranchProtectionStatus::Fail => StatusDot {
-            css_class: "status-fail",
-            label: "fail",
-        },
+        BranchProtectionStatus::Pass => StatusDot::new(DotState::Pass, "pass"),
+        BranchProtectionStatus::Partial => StatusDot::new(DotState::Partial, "partial"),
+        BranchProtectionStatus::Fail => StatusDot::new(DotState::Fail, "fail"),
         BranchProtectionStatus::Unknown => unknown_or_pending_dot(pending),
     };
 
@@ -2055,18 +2033,9 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
 /// `Some(false)` fail, `None` unknown.
 fn option_bool_dot(value: Option<bool>) -> StatusDot {
     match value {
-        Some(true) => StatusDot {
-            css_class: "status-pass",
-            label: "yes",
-        },
-        Some(false) => StatusDot {
-            css_class: "status-fail",
-            label: "no",
-        },
-        None => StatusDot {
-            css_class: "status-unknown",
-            label: "unknown",
-        },
+        Some(true) => StatusDot::new(DotState::Pass, "yes"),
+        Some(false) => StatusDot::new(DotState::Fail, "no"),
+        None => StatusDot::new(DotState::Unknown, "unknown"),
     }
 }
 

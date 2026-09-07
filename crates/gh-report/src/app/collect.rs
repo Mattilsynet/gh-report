@@ -230,6 +230,7 @@ struct CollectionContext {
     budget_baseline: u64,
 }
 
+#[derive(Clone)]
 struct InventoryLoad {
     active_repos: Vec<Arc<Repository>>,
     complete: bool,
@@ -351,7 +352,7 @@ async fn run_collection_inner(
     let stale_check: Vec<(String, Option<String>)> = inventory
         .active_repos
         .iter()
-        .map(|r| (r.name.clone(), r.updated_at.clone()))
+        .map(|r| (r.name.clone(), r.updated_at.as_deref().map(str::to_owned)))
         .collect();
     setup.client.evict_stale_entries(&stale_check);
 
@@ -913,7 +914,7 @@ impl SweepSaga {
             capabilities: &ctx.capabilities,
             config: sweep.config,
             run: sweep.run(),
-            corr_ctx: &sweep.corr_ctx,
+            run_id: RunId::parse(&sweep.run().run_id)?,
             inventory,
             state: sweep.state,
         });
@@ -1063,7 +1064,16 @@ impl SweepSaga {
     }
 }
 
-/// Parameters for [`enqueue_and_await_batch`].
+struct RunId(uuid::Uuid);
+
+impl RunId {
+    fn parse(value: &str) -> Result<Self, AppError> {
+        uuid::Uuid::parse_str(value)
+            .map(Self)
+            .map_err(AppError::InvalidRunIdentity)
+    }
+}
+
 struct BatchParams<'a> {
     pending: &'a [&'a Arc<Repository>],
     run_timestamp: &'a str,
@@ -1073,7 +1083,7 @@ struct BatchParams<'a> {
     capabilities: &'a CapabilitySet,
     config: &'a RuntimeConfig,
     run: &'a RunMetadata,
-    corr_ctx: &'a CorrelationContext,
+    run_id: RunId,
     inventory: &'a InventoryLoad,
     state: &'a Arc<AppState>,
 }
@@ -1082,6 +1092,7 @@ struct BatchParams<'a> {
 /// completion bookkeeping that will retire it.
 struct PublishedBatch {
     tracker: Arc<crate::app::work_queue::BatchTracker>,
+    owner: Arc<super::evidence_service::ScheduledRun>,
     result: crate::app::work_queue::BatchEnqueueResult,
 }
 
@@ -1090,20 +1101,39 @@ enum RunStart {
     Published(PublishedBatch),
 }
 
-fn publish_batch<F>(state: &Arc<AppState>, expected: usize, publish: F) -> RunStart
+async fn publish_batch<F>(
+    state: &Arc<AppState>,
+    run_id: uuid::Uuid,
+    expected: usize,
+    publish: F,
+) -> RunStart
 where
     F: FnOnce() -> crate::app::work_queue::BatchEnqueueResult,
 {
+    let _gate = state.evidence().delivery_gate.lock().await;
     if let Some(signal) = state.begin_run() {
         return RunStart::Fenced(signal);
     }
     let tracker = crate::app::work_queue::BatchTracker::new(expected);
     state.set_active_batch_tracker(Some(Arc::clone(&tracker)));
+    let owner = Arc::new(super::evidence_service::ScheduledRun {
+        id: run_id,
+        tracker: Arc::clone(&tracker),
+        failure: std::sync::Mutex::new(None),
+    });
+    state
+        .evidence()
+        .scheduled_run
+        .store(Arc::new(Some(Arc::clone(&owner))));
 
     let result = publish();
 
     tracker.retire(expected.saturating_sub(result.accepted));
-    RunStart::Published(PublishedBatch { tracker, result })
+    RunStart::Published(PublishedBatch {
+        tracker,
+        owner,
+        result,
+    })
 }
 
 /// Enqueue pending repos, wait for all jobs to complete, then shut down
@@ -1119,7 +1149,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         capabilities,
         config,
         run,
-        corr_ctx,
+        run_id,
         inventory,
         state,
     } = params;
@@ -1138,19 +1168,22 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
 
     let expected = items.len();
     let queue = Arc::clone(&state.work_queue);
-    let started = publish_batch(state, expected, move || {
+    let corr_ctx = CorrelationContext::correlated(run_id.0);
+    let started = publish_batch(state, run_id.0, expected, move || {
         crate::app::work_queue::enqueue_batch(
             &queue,
             items,
             &crate::app::work_queue::JobSource::ScheduledBatch,
-            corr_ctx,
+            &corr_ctx,
         )
-    });
+    })
+    .await;
     let PublishedBatch {
         tracker,
+        owner,
         result: batch_result,
     } = match started {
-        RunStart::Fenced(signal) => return batch_outcome(Some(signal)),
+        RunStart::Fenced(signal) => return batch_outcome(RetireOutcome::Retired(Some(signal))),
         RunStart::Published(batch) => batch,
     };
 
@@ -1160,7 +1193,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
             rejected = batch_result.rejected,
             "sweep aborted: work queue rejected all jobs (closed or full)"
         );
-        state.set_active_batch_tracker(None);
+        batch_outcome(retire_batch(state, &owner).await)?;
         return Ok(false);
     }
 
@@ -1177,6 +1210,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         config: config.clone(),
         run: run.clone(),
         inventory_fetched_at: inventory.inventory_fetched_at.clone(),
+        inventory: inventory.clone(),
         org_alert_summary: Some(Arc::clone(org_summary)),
         auth_metadata: auth_metadata.clone(),
         capabilities: capabilities.clone(),
@@ -1185,15 +1219,47 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
     let (pp_task, pp_shutdown) = spawn_partial_publisher_from_store(pp_config, Arc::clone(state));
 
     tracker.wait().await;
-    state.set_active_batch_tracker(None);
-    let fence = state.take_run_fence();
+    let fence = retire_batch(state, &owner).await;
 
     let _ = pp_shutdown.send(true);
     if let Err(e) = pp_task.await {
         error!(error = ?e, "partial publisher task panicked");
     }
 
-    batch_outcome(fence)
+    batch_outcome(fence)?;
+    match owner
+        .failure
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        Some(error) => Err(AppError::Persistence(error)),
+        None => Ok(true),
+    }
+}
+
+enum RetireOutcome {
+    Retired(Option<crate::app::daemon::FenceSignal>),
+    NotOwner,
+}
+
+async fn retire_batch(
+    state: &AppState,
+    owner: &Arc<super::evidence_service::ScheduledRun>,
+) -> RetireOutcome {
+    let _gate = state.evidence().delivery_gate.lock().await;
+    let current = state.evidence().scheduled_run.load_full();
+    if current
+        .as_ref()
+        .as_ref()
+        .is_some_and(|active| Arc::ptr_eq(active, owner))
+    {
+        state.evidence().scheduled_run.store(Arc::new(None));
+        state.set_active_batch_tracker(None);
+        RetireOutcome::Retired(state.take_run_fence())
+    } else {
+        RetireOutcome::NotOwner
+    }
 }
 
 /// Resolve the batch barrier into a run outcome.
@@ -1204,10 +1270,11 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
 /// `converge_on_fence` sink via the existing
 /// [`CollectionOutcome::FencedConflict`] mapping — no re-arm is
 /// performed at this call site (CHE-0088:R9).
-fn batch_outcome(fence: Option<crate::app::daemon::FenceSignal>) -> Result<bool, AppError> {
-    match fence {
-        Some(signal) => Err(AppError::Persistence(signal.into_error())),
-        None => Ok(true),
+fn batch_outcome(outcome: RetireOutcome) -> Result<bool, AppError> {
+    match outcome {
+        RetireOutcome::Retired(Some(signal)) => Err(AppError::Persistence(signal.into_error())),
+        RetireOutcome::Retired(None) => Ok(true),
+        RetireOutcome::NotOwner => Err(AppError::RunOwnershipLost),
     }
 }
 
@@ -1242,7 +1309,7 @@ struct FinalizeParams<'a> {
 /// replay per CHE-0051:R5 + CHE-0048:R2).
 async fn finalize_and_publish(
     params: FinalizeParams<'_>,
-) -> Result<(HashMap<String, CachedPage>, bool), AppError> {
+) -> Result<(PublicationCandidate, bool), AppError> {
     let FinalizeParams {
         config,
         run,
@@ -1275,20 +1342,44 @@ async fn finalize_and_publish(
             AppError::Persistence(write_failure.error)
         })?;
 
-    let evidence_repos = state.projection_snapshot();
-
-    let (team_rosters, team_rosters_already_enriched) =
-        resolve_team_rosters(config, state, client, &evidence_repos).await;
-    let org_members = team_membership::collect_org_members(client).await;
+    let snapshot = state
+        .projection_render_snapshot()
+        .map_err(PersistenceError::Io)?;
+    let evidence_repos =
+        include_unread_repositories(snapshot.repositories(), inventory, &run.timestamp());
+    let (team_rosters, team_rosters_already_enriched, org_members, provenance) =
+        if config.team_roster_read_from_projection {
+            (
+                snapshot.team_rosters(),
+                true,
+                None,
+                PublicationProvenance::Projection(snapshot.token()),
+            )
+        } else {
+            let ((rosters, org_members), live) = state
+                .observe_live(async {
+                    let (rosters, _) =
+                        resolve_team_rosters(config, state, client, &evidence_repos).await;
+                    let org_members = team_membership::collect_org_members(client).await;
+                    (rosters, org_members)
+                })
+                .await
+                .map_err(PersistenceError::Io)?;
+            (
+                rosters,
+                false,
+                org_members,
+                PublicationProvenance::LiveOverlay {
+                    projection: snapshot.token(),
+                    live,
+                },
+            )
+        };
 
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: evidence_repos,
-        deleted: state
-            .projection_deleted_snapshot()
-            .into_iter()
-            .map(|(_, record)| record)
-            .collect(),
-        org_state: state.projection_org_state(),
+        deleted: snapshot.deleted(),
+        org_state: snapshot.org_state(),
         config,
         run,
         inventory_fetched_at: inventory.inventory_fetched_at.clone(),
@@ -1301,8 +1392,15 @@ async fn finalize_and_publish(
         org_members,
     });
 
-    let pages = build_cached_pages(config, &evidence).await?;
-    let warm_start = evidence.assessment_metadata.warm_start;
+    drop(snapshot);
+    let pages = build_sourced_publication_pages(
+        config,
+        &evidence,
+        PublicationStage::Terminal,
+        Some(inventory),
+        provenance,
+    )
+    .await?;
 
     run.complete();
 
@@ -1318,7 +1416,7 @@ async fn finalize_and_publish(
         "collection run complete"
     );
 
-    Ok((pages, warm_start))
+    Ok((pages, evidence.assessment_metadata.warm_start))
 }
 
 fn log_org_record_failure(write_failure: &crate::app::write_policy::WriteFailure) {
@@ -1588,8 +1686,16 @@ pub(crate) async fn warm_start_from_baseline(
     config: &RuntimeConfig,
     state: &Arc<AppState>,
 ) -> bool {
-    let repos = state.projection_snapshot();
-    let org_state = state.projection_org_state();
+    let snapshot = match state.projection_render_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            warn!(%error, "warm-start capture unavailable; retaining existing report");
+            return false;
+        }
+    };
+    let repos = snapshot.repositories();
+    let org_state = snapshot.org_state();
+    let provenance = PublicationProvenance::Projection(snapshot.token());
 
     if repos.is_empty() && org_state.is_none() {
         info!("projection is empty — skipping warm start");
@@ -1605,11 +1711,7 @@ pub(crate) async fn warm_start_from_baseline(
 
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: repos,
-        deleted: state
-            .projection_deleted_snapshot()
-            .into_iter()
-            .map(|(_, record)| record)
-            .collect(),
+        deleted: snapshot.deleted(),
         org_state,
         config,
         run: &run,
@@ -1622,11 +1724,12 @@ pub(crate) async fn warm_start_from_baseline(
         },
         capabilities: &CapabilitySet::default(),
         rate_limit_warnings: 0,
-        team_rosters: Vec::new(),
+        team_rosters: snapshot.team_rosters(),
         team_rosters_already_enriched: true,
         org_members: None,
     });
 
+    drop(snapshot);
     let warm_repo_count: u64 = u64::from(evidence.collection_statistics.total_repos);
 
     info!(
@@ -1638,8 +1741,17 @@ pub(crate) async fn warm_start_from_baseline(
 
     let warm_run = run.clone();
 
-    match publish_evidence(config, &warm_run, &evidence, state).await {
-        Ok(()) => {
+    match build_sourced_publication_pages(
+        config,
+        &evidence,
+        PublicationStage::WarmStart,
+        None,
+        provenance,
+    )
+    .await
+    {
+        Ok(pages) => {
+            commit_cached_pages(state, &warm_run, pages);
             info!("warm-start cache populated — server can start serving");
             true
         }
@@ -1651,13 +1763,15 @@ pub(crate) async fn warm_start_from_baseline(
 }
 
 /// Build the HTML+zstd cache and broadcast WS update. Returns `page_count`.
+#[cfg(test)]
 pub(crate) async fn render_and_cache_evidence(
     config: &RuntimeConfig,
     run: &RunMetadata,
     evidence: &Evidence,
     state: &Arc<AppState>,
+    publication_stage: PublicationStage,
 ) -> Result<usize, AppError> {
-    let pages = build_cached_pages(config, evidence).await?;
+    let pages = build_cached_pages(config, evidence, publication_stage).await?;
     Ok(commit_cached_pages(state, run, pages))
 }
 
@@ -1688,29 +1802,482 @@ pub(crate) async fn render_and_cache_evidence(
     reason = "block_in_place must run inside an async task on a multi-thread runtime; \
               kept async to match render_and_cache_evidence/publish_evidence call chain"
 )]
+#[cfg(test)]
 pub(crate) async fn build_cached_pages(
     config: &RuntimeConfig,
     evidence: &Evidence,
+    stage: PublicationStage,
+) -> Result<PublicationCandidate, AppError> {
+    build_publication_pages(config, evidence, stage, None).await
+}
+
+pub(crate) struct PublicationCandidate {
+    pages: HashMap<String, CachedPage>,
+    retained_pages: HashMap<String, CachedPage>,
+    quality: PublicationQuality,
+    render_input: Option<Box<RetainedRenderInput>>,
+    attempt: String,
+}
+
+struct RetainedRenderInput {
+    config: crate::config::dashboard::DashboardConfig,
+    evidence: Evidence,
+    stage: PublicationStage,
+    disclosure: crate::report::view_model::PublicationDisclosure,
+}
+
+#[derive(Default)]
+struct PublicationQuality {
+    provenance: PublicationProvenance,
+    inventory_known: bool,
+    repositories: std::collections::BTreeMap<String, ProtectedEntry<RepositoryEvidence>>,
+    rosters: std::collections::BTreeMap<String, ProtectedEntry<crate::domain::metrics::TeamRoster>>,
+}
+
+#[derive(Default)]
+enum PublicationProvenance {
+    Projection(crate::app::state::ProjectionCaptureToken),
+    LiveOverlay {
+        projection: crate::app::state::ProjectionCaptureToken,
+        live: crate::app::state::LiveObservationToken,
+    },
+    #[default]
+    Unordered,
+}
+
+struct ProtectedEntry<T> {
+    complete: bool,
+    captured: CaptureTime,
+    content: T,
+}
+
+#[derive(Clone, Copy)]
+enum CaptureTime {
+    Missing,
+    Malformed,
+    Captured(jiff::Timestamp),
+}
+
+impl CaptureTime {
+    fn parse(value: Option<&str>) -> Self {
+        match value {
+            None | Some("") => Self::Missing,
+            Some(value) => match value.parse() {
+                Ok(at) => Self::Captured(at),
+                Err(_) => Self::Malformed,
+            },
+        }
+    }
+
+    fn from_checks(checks: &RepositoryChecks) -> Self {
+        crate::domain::evidence::RepositoryReadState::observed_check_timestamps(checks)
+            .into_iter()
+            .flatten()
+            .map(|at| Self::parse(Some(at)))
+            .reduce(|oldest, next| match (oldest, next) {
+                (Self::Malformed, _) | (_, Self::Malformed) => Self::Malformed,
+                (Self::Missing, _) | (_, Self::Missing) => Self::Missing,
+                (Self::Captured(a), Self::Captured(b)) => Self::Captured(a.min(b)),
+            })
+            .unwrap_or(Self::Missing)
+    }
+
+    fn preserves(self, previous: Self) -> bool {
+        match (self, previous) {
+            (Self::Captured(new), Self::Captured(old)) => new >= old,
+            (Self::Captured(_), Self::Missing | Self::Malformed) => true,
+            (Self::Missing | Self::Malformed, _) => false,
+        }
+    }
+}
+
+impl PublicationQuality {
+    fn from_evidence(evidence: &Evidence, inventory: Option<&InventoryLoad>) -> Self {
+        Self {
+            provenance: PublicationProvenance::Unordered,
+            inventory_known: inventory.is_some_and(|inventory| inventory.complete),
+            repositories: evidence
+                .repositories
+                .iter()
+                .filter(|repo| {
+                    crate::domain::evidence::RepositoryReadState::from_checks(&repo.checks)
+                        == crate::domain::evidence::RepositoryReadState::Observed
+                })
+                .map(|repo| {
+                    (
+                        repo.repository.inventory_key.clone(),
+                        ProtectedEntry {
+                            complete: repo.is_complete(),
+                            captured: CaptureTime::from_checks(&repo.checks),
+                            content: repo.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            rosters: evidence
+                .metrics
+                .team_rosters
+                .iter()
+                .filter(|roster| {
+                    roster.status == crate::domain::metrics::TeamRosterStatus::Complete
+                })
+                .map(|roster| {
+                    (
+                        roster.canonical_owner.clone(),
+                        ProtectedEntry {
+                            complete: true,
+                            captured: CaptureTime::parse(roster.fetched_at.as_deref()),
+                            content: roster.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn preserves(&self, previous: &Self) -> bool {
+        use PublicationProvenance::{LiveOverlay, Projection, Unordered};
+        let (repositories_ordered, rosters_ordered) = match (&self.provenance, &previous.provenance)
+        {
+            (Projection(new), Projection(old)) if new.succeeds(old) => (true, true),
+            (
+                LiveOverlay {
+                    projection: new,
+                    live,
+                },
+                Projection(old),
+            ) if new.succeeds(old) && live.belongs_to(new) => (true, true),
+            (
+                LiveOverlay {
+                    projection: new,
+                    live,
+                },
+                LiveOverlay {
+                    projection: old,
+                    live: previous_live,
+                },
+            ) if new.succeeds(old)
+                && live.belongs_to(new)
+                && previous_live.belongs_to(old)
+                && live.succeeds(previous_live) =>
+            {
+                (true, true)
+            }
+            (
+                Projection(new),
+                LiveOverlay {
+                    projection: old, ..
+                },
+            ) if new.succeeds(old) && previous.rosters.is_empty() => (true, false),
+            (Unordered, Unordered) => (false, false),
+            _ => return false,
+        };
+        (!previous.inventory_known || self.inventory_known)
+            && previous.repositories.iter().all(|(key, previous)| {
+                match self.repositories.get(key) {
+                    Some(incoming) => {
+                        Self::preserves_entry(incoming, previous, repositories_ordered)
+                    }
+                    None => {
+                        repositories_ordered
+                            && match &self.provenance {
+                                Projection(token)
+                                | LiveOverlay {
+                                    projection: token, ..
+                                } => token.witnesses_deletion(key),
+                                Unordered => false,
+                            }
+                    }
+                }
+            })
+            && Self::preserves_entries(&self.rosters, &previous.rosters, rosters_ordered)
+    }
+
+    fn preserves_entry<T: PartialEq>(
+        incoming: &ProtectedEntry<T>,
+        previous: &ProtectedEntry<T>,
+        ordered: bool,
+    ) -> bool {
+        (!previous.complete || incoming.complete)
+            && (ordered
+                || incoming.captured.preserves(previous.captured)
+                || incoming.content == previous.content)
+    }
+
+    fn preserves_entries<T: PartialEq>(
+        incoming: &std::collections::BTreeMap<String, ProtectedEntry<T>>,
+        previous: &std::collections::BTreeMap<String, ProtectedEntry<T>>,
+        ordered: bool,
+    ) -> bool {
+        previous.iter().all(|(key, previous)| {
+            incoming
+                .get(key)
+                .is_some_and(|incoming| Self::preserves_entry(incoming, previous, ordered))
+        })
+    }
+}
+
+pub(crate) enum AdmittedPublication {
+    Current(PublicationCandidate),
+    Retained(PublicationCandidate),
+}
+
+impl AdmittedPublication {
+    fn candidate(&self) -> &PublicationCandidate {
+        match self {
+            Self::Current(candidate) | Self::Retained(candidate) => candidate,
+        }
+    }
+}
+
+#[cfg(test)]
+impl PublicationCandidate {
+    pub(crate) fn into_pages(self) -> HashMap<String, CachedPage> {
+        self.pages
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PublicationStage {
+    WarmStart,
+    Intermediate,
+    Terminal,
+}
+
+impl PublicationStage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::WarmStart => "Cached warm start",
+            Self::Intermediate => "Partial refresh",
+            Self::Terminal => "Collection cycle finished; evidence may still be partial",
+        }
+    }
+}
+
+enum InventoryCoverage {
+    Unknown,
+    Known { expected: usize, unread: usize },
+}
+
+impl InventoryCoverage {
+    fn from_evidence(inventory: Option<&InventoryLoad>, evidence: &Evidence) -> Self {
+        let observed = observed_repository_keys(&evidence.repositories);
+        match inventory {
+            Some(inventory) if inventory.complete => Self::Known {
+                expected: inventory.active_repos.len(),
+                unread: inventory
+                    .active_repos
+                    .iter()
+                    .filter(|repo| !observed.contains(repo.inventory_key.as_str()))
+                    .count(),
+            },
+            Some(_) | None => Self::Unknown,
+        }
+    }
+}
+
+fn observed_repository_keys(repositories: &[RepositoryEvidence]) -> BTreeSet<&str> {
+    use crate::domain::evidence::RepositoryReadState;
+    repositories
+        .iter()
+        .filter(|repo| {
+            RepositoryReadState::from_checks(&repo.checks) == RepositoryReadState::Observed
+        })
+        .map(|repo| repo.repository.inventory_key.as_str())
+        .collect()
+}
+
+fn include_unread_repositories(
+    mut repositories: Vec<RepositoryEvidence>,
+    inventory: &InventoryLoad,
+    run_timestamp: &str,
+) -> Vec<RepositoryEvidence> {
+    let present: BTreeSet<_> = repositories
+        .iter()
+        .map(|repo| repo.repository.inventory_key.as_str())
+        .collect();
+    let unread: Vec<_> = inventory
+        .active_repos
+        .iter()
+        .filter(|repo| !present.contains(repo.inventory_key.as_str()))
+        .map(|repo| {
+            failure_evidence_with_reason(
+                repo,
+                run_timestamp,
+                crate::domain::evidence::RepositoryReadState::PENDING_REASON,
+            )
+        })
+        .collect();
+    repositories.extend(unread);
+    repositories
+}
+
+#[allow(
+    clippy::unused_async,
+    reason = "block_in_place requires a multi-thread async runtime"
+)]
+#[cfg(test)]
+async fn build_publication_pages(
+    config: &RuntimeConfig,
+    evidence: &Evidence,
+    stage: PublicationStage,
+    inventory: Option<&InventoryLoad>,
+) -> Result<PublicationCandidate, AppError> {
+    build_sourced_publication_pages(
+        config,
+        evidence,
+        stage,
+        inventory,
+        PublicationProvenance::Unordered,
+    )
+    .await
+}
+
+#[allow(
+    clippy::unused_async,
+    reason = "block_in_place requires a multi-thread async runtime"
+)]
+async fn build_sourced_publication_pages(
+    config: &RuntimeConfig,
+    evidence: &Evidence,
+    stage: PublicationStage,
+    inventory: Option<&InventoryLoad>,
+    provenance: PublicationProvenance,
+) -> Result<PublicationCandidate, AppError> {
+    let coverage = match InventoryCoverage::from_evidence(inventory, evidence) {
+        InventoryCoverage::Unknown => {
+            "Inventory denominator unknown; unread count unknown".to_string()
+        }
+        InventoryCoverage::Known { expected, unread } => {
+            format!("Inventory: {expected} repositories; {unread} not yet read")
+        }
+    };
+    let banner = format!(
+        "{}. {coverage}. {}. Evidence may be stale; publication time is not capture time.",
+        stage.label(),
+        repository_capture_age_disclosure(evidence)
+    );
+    let reference = evidence
+        .assessment_metadata
+        .run_timestamp
+        .parse::<jiff::Timestamp>()
+        .ok();
+    let disclosure = crate::report::view_model::PublicationDisclosure {
+        summary: banner,
+        repositories: evidence
+            .repositories
+            .iter()
+            .map(|repo| {
+                let age = match (CaptureTime::from_checks(&repo.checks), reference) {
+                    (CaptureTime::Captured(at), Some(reference)) if at <= reference => {
+                        format!(
+                            "{} seconds (captured {at})",
+                            reference.as_second() - at.as_second()
+                        )
+                    }
+                    _ => "Capture age unknown".to_string(),
+                };
+                (repo.repository.name.clone(), age)
+            })
+            .collect(),
+    };
+    let attempt = format!(
+        "Refresh attempted at {}. Attempt assessed at {}. {}. {coverage}",
+        jiff::Timestamp::now(),
+        reference.map_or_else(
+            || "unknown assessment time".to_string(),
+            |at| at.to_string()
+        ),
+        stage.label()
+    );
+    let pages = render_publication_cache(
+        &config.dashboard_config,
+        evidence,
+        stage,
+        disclosure.clone(),
+    )?;
+    let retained_pages = pages.clone();
+    let mut quality = PublicationQuality::from_evidence(evidence, inventory);
+    quality.provenance = provenance;
+    Ok(PublicationCandidate {
+        pages,
+        retained_pages,
+        quality,
+        render_input: Some(Box::new(RetainedRenderInput {
+            config: config.dashboard_config.clone(),
+            evidence: evidence.clone(),
+            stage,
+            disclosure,
+        })),
+        attempt,
+    })
+}
+
+fn repository_capture_age_disclosure(evidence: &Evidence) -> String {
+    let reference = evidence
+        .assessment_metadata
+        .run_timestamp
+        .parse::<jiff::Timestamp>()
+        .ok();
+    let mut unknown = 0;
+    let mut oldest = None;
+    for repo in &evidence.repositories {
+        let captured = match CaptureTime::from_checks(&repo.checks) {
+            CaptureTime::Captured(at) => Some(at),
+            CaptureTime::Missing | CaptureTime::Malformed => None,
+        };
+        match (captured, reference) {
+            (Some(at), Some(reference)) if at <= reference => {
+                let seconds = reference.as_second() - at.as_second();
+                oldest = Some(oldest.map_or(seconds, |previous: i64| previous.max(seconds)));
+            }
+            _ => unknown += 1,
+        }
+    }
+    let age = oldest.map_or_else(
+        || "no known capture age".to_string(),
+        |seconds| format!("oldest known {seconds} seconds"),
+    );
+    format!(
+        "Repository capture age as of {}: {age}; unknown for {unknown} of {} repositories",
+        reference.map_or_else(
+            || "unknown assessment time".to_string(),
+            |at| at.to_string()
+        ),
+        evidence.repositories.len()
+    )
+}
+
+fn render_publication_cache(
+    dashboard_config: &crate::config::dashboard::DashboardConfig,
+    evidence: &Evidence,
+    stage: PublicationStage,
+    banner: crate::report::view_model::PublicationDisclosure,
 ) -> Result<HashMap<String, CachedPage>, AppError> {
-    let dashboard_config = &config.dashboard_config;
     let mut page_count = 0usize;
     let mut total_bytes = 0usize;
     let cache = tokio::task::block_in_place(|| {
         let mut cache = HashMap::new();
-        html::render_dashboard_streaming(evidence, dashboard_config, |path, content| {
-            page_count += 1;
-            total_bytes += content.len();
-            let page = match path.as_str() {
-                "style.css" => CACHED_STYLESHEET.clone(),
-                "ws.js" => CACHED_WS_JS.clone(),
-                "favicon.svg" => CACHED_FAVICON_SVG.clone(),
-                "gh-report-web-client.js" => CACHED_SORT_CLIENT_JS.clone(),
-                "gh-report-web-client_bg.wasm" => CACHED_SORT_CLIENT_WASM.clone(),
-                "sort-init.js" => CACHED_SORT_INIT_JS.clone(),
-                _ => CachedPage::new(&path, content.into_bytes()),
-            };
-            cache.insert(path, page);
-        })?;
+        html::render_publication_streaming(
+            evidence,
+            dashboard_config,
+            matches!(stage, PublicationStage::WarmStart),
+            Some(banner),
+            |path, content| {
+                page_count += 1;
+                total_bytes += content.len();
+                let page = match path.as_str() {
+                    "style.css" => CACHED_STYLESHEET.clone(),
+                    "ws.js" => CACHED_WS_JS.clone(),
+                    "favicon.svg" => CACHED_FAVICON_SVG.clone(),
+                    "gh-report-web-client.js" => CACHED_SORT_CLIENT_JS.clone(),
+                    "gh-report-web-client_bg.wasm" => CACHED_SORT_CLIENT_WASM.clone(),
+                    "sort-init.js" => CACHED_SORT_INIT_JS.clone(),
+                    _ => CachedPage::new(&path, content.into_bytes()),
+                };
+                cache.insert(path, page);
+            },
+        )?;
         Ok::<_, crate::error::ReportError>(cache)
     })?;
     info!(page_count, total_bytes, "dashboard pages rendered");
@@ -1722,34 +2289,91 @@ pub(crate) async fn build_cached_pages(
 pub(crate) fn commit_cached_pages(
     state: &Arc<AppState>,
     run: &RunMetadata,
-    cache: HashMap<String, CachedPage>,
+    candidate: PublicationCandidate,
 ) -> usize {
+    let mut publication = state
+        .evidence()
+        .publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let next = match publication.take() {
+        Some(previous) if !candidate.quality.preserves(&previous.candidate().quality) => {
+            let mut previous = match previous {
+                AdmittedPublication::Current(previous)
+                | AdmittedPublication::Retained(previous) => previous,
+            };
+            if let Some(input) = &previous.render_input {
+                let mut disclosure = input.disclosure.clone();
+                disclosure.summary = format!(
+                    "Retained earlier report. Latest attempted refresh: not admitted because it would lose evidence or capture recency. {}. Retained content and original capture age: {}",
+                    candidate.attempt, input.disclosure.summary
+                );
+                match render_publication_cache(
+                    &input.config,
+                    &input.evidence,
+                    input.stage,
+                    disclosure,
+                ) {
+                    Ok(pages) => previous.retained_pages = pages,
+                    Err(error) => {
+                        error!(%error, "could not update retained publication disclosure");
+                    }
+                }
+            }
+            AdmittedPublication::Retained(previous)
+        }
+        Some(_) | None => AdmittedPublication::Current(candidate),
+    };
+    let cache = match &next {
+        AdmittedPublication::Current(candidate) => &candidate.pages,
+        AdmittedPublication::Retained(candidate) => &candidate.retained_pages,
+    };
     let page_count = cache.len();
     let page_keys: Vec<String> = cache.keys().cloned().collect();
-
-    state.set_html_cache(cache);
+    let unchanged = state
+        .evidence()
+        .html_cache
+        .load()
+        .as_ref()
+        .as_ref()
+        .is_some_and(|previous| {
+            previous.len() == cache.len()
+                && cache
+                    .iter()
+                    .all(|(path, page)| previous.get(path).is_some_and(|old| old.etag == page.etag))
+        });
+    state
+        .evidence()
+        .html_cache
+        .store(Arc::new(Some(cache.clone())));
+    *publication = Some(next);
     info!(page_count, run_id = %run.run_id, "html cache updated");
 
-    let _ = state.send_page_update(crate::app::state::PageUpdateEvent::new(
-        page_keys,
-        jiff::Timestamp::now().to_string(),
-    ));
+    if !unchanged {
+        let _ = state.send_page_update(crate::app::state::PageUpdateEvent::new(
+            page_keys,
+            jiff::Timestamp::now().to_string(),
+        ));
+    }
 
     page_count
 }
 
 /// Render, cache, and trace evidence publication.
+#[cfg(test)]
 pub(crate) async fn publish_evidence(
     config: &RuntimeConfig,
     run: &RunMetadata,
     evidence: &Evidence,
     state: &Arc<AppState>,
+    publication_stage: PublicationStage,
 ) -> Result<(), AppError> {
-    let page_count = render_and_cache_evidence(config, run, evidence, state).await?;
+    let page_count =
+        render_and_cache_evidence(config, run, evidence, state, publication_stage).await?;
 
     info!(
         page_count = page_count,
-        warm_start = evidence.assessment_metadata.warm_start,
+        warm_start = matches!(publication_stage, PublicationStage::WarmStart),
         timestamp = %jiff::Timestamp::now(),
         "evidence published"
     );
@@ -1843,14 +2467,15 @@ fn reuse_from_baseline(
 /// [`publish_evidence`] inside a `tokio::spawn` boundary.
 pub(crate) struct PartialPublishConfig {
     /// Notification channel: fires when the budget gate pauses.
-    pub pause_notify: Arc<tokio::sync::Notify>,
-    pub config: RuntimeConfig,
-    pub run: RunMetadata,
-    pub inventory_fetched_at: Option<String>,
-    pub org_alert_summary: Option<Arc<OrgAlertSummary>>,
-    pub auth_metadata: AuthMetadata,
-    pub capabilities: CapabilitySet,
-    pub state: Arc<AppState>,
+    pause_notify: Arc<tokio::sync::Notify>,
+    config: RuntimeConfig,
+    run: RunMetadata,
+    inventory_fetched_at: Option<String>,
+    inventory: InventoryLoad,
+    org_alert_summary: Option<Arc<OrgAlertSummary>>,
+    auth_metadata: AuthMetadata,
+    capabilities: CapabilitySet,
+    state: Arc<AppState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2043,16 +2668,21 @@ async fn run_partial_publisher<F, Fut>(
 
 /// Render one partial report from the current projection snapshot.
 async fn partial_render_once(pp: &PartialPublishConfig, state: &AppState) {
-    let all_evidence = state.projection_snapshot();
+    let snapshot = match state.projection_render_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            warn!(%error, "partial capture unavailable; retaining existing report");
+            return;
+        }
+    };
+    let provenance = PublicationProvenance::Projection(snapshot.token());
+    let all_evidence =
+        include_unread_repositories(snapshot.repositories(), &pp.inventory, &pp.run.timestamp());
 
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: all_evidence,
-        deleted: state
-            .projection_deleted_snapshot()
-            .into_iter()
-            .map(|(_, record)| record)
-            .collect(),
-        org_state: state.projection_org_state(),
+        deleted: snapshot.deleted(),
+        org_state: snapshot.org_state(),
         config: &pp.config,
         run: &pp.run,
         inventory_fetched_at: pp.inventory_fetched_at.clone(),
@@ -2060,19 +2690,26 @@ async fn partial_render_once(pp: &PartialPublishConfig, state: &AppState) {
         auth_metadata: &pp.auth_metadata,
         capabilities: &pp.capabilities,
         rate_limit_warnings: 0,
-        team_rosters: Vec::new(),
+        team_rosters: snapshot.team_rosters(),
         team_rosters_already_enriched: true,
         org_members: None,
     });
 
-    let pending_repos: u64 = 0;
-
-    match render_and_cache_evidence(&pp.config, &pp.run, &evidence, &pp.state).await {
-        Ok(page_count) => {
+    drop(snapshot);
+    match build_sourced_publication_pages(
+        &pp.config,
+        &evidence,
+        PublicationStage::Intermediate,
+        Some(&pp.inventory),
+        provenance,
+    )
+    .await
+    {
+        Ok(pages) => {
+            let page_count = commit_cached_pages(&pp.state, &pp.run, pages);
             info!(
                 batch_id = %pp.run.run_id,
                 page_count = page_count,
-                pending_repos,
                 timestamp = %jiff::Timestamp::now(),
                 "partial report published"
             );
@@ -4023,7 +4660,7 @@ mod tests {
     /// Helper: create a test repository with an explicit `updated_at` value.
     fn test_repository_with_updated_at(name: &str, updated_at: Option<&str>) -> Repository {
         let mut repo = test_repository(name);
-        repo.updated_at = updated_at.map(String::from);
+        repo.updated_at = updated_at.and_then(crate::domain::repository::UpdatedAt::new);
         repo
     }
 
@@ -4351,7 +4988,8 @@ mod tests {
             .into_iter()
             .map(|(_name, updated_at, mut evidence)| {
                 if evidence.repository.updated_at.is_none() {
-                    evidence.repository.updated_at = Some(updated_at.to_string());
+                    evidence.repository.updated_at =
+                        crate::domain::repository::UpdatedAt::new(updated_at);
                 }
                 evidence
             })
@@ -4422,9 +5060,9 @@ mod tests {
 
         let fresh_updated_at = "2026-04-10T00:00:00Z";
         let mut e1 = sample_repo("repo-1");
-        e1.repository.updated_at = Some(fresh_updated_at.to_string());
+        e1.repository.updated_at = crate::domain::repository::UpdatedAt::new(fresh_updated_at);
         let mut e2 = sample_repo("repo-2");
-        e2.repository.updated_at = Some(fresh_updated_at.to_string());
+        e2.repository.updated_at = crate::domain::repository::UpdatedAt::new(fresh_updated_at);
         seed_baseline(
             dir.path(),
             &state,
@@ -4466,7 +5104,7 @@ mod tests {
 
         let fresh_updated_at = "2026-04-10T00:00:00Z";
         let mut e1 = sample_repo("repo-1");
-        e1.repository.updated_at = Some(fresh_updated_at.to_string());
+        e1.repository.updated_at = crate::domain::repository::UpdatedAt::new(fresh_updated_at);
         seed_baseline(dir.path(), &state, vec![("repo-1", fresh_updated_at, e1)]);
 
         let inventory = InventoryLoad {
@@ -4520,7 +5158,8 @@ mod tests {
 
         let fresh_updated_at = "2026-04-10T00:00:00Z";
         let mut evidence_1 = sample_repo("repo-1");
-        evidence_1.repository.updated_at = Some(fresh_updated_at.to_string());
+        evidence_1.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new(fresh_updated_at);
         seed_baseline(
             dir.path(),
             &state,
@@ -4563,7 +5202,7 @@ mod tests {
         .to_string();
         let repo = test_fixtures::make_repository("repo-1", false, Visibility::Public);
         let mut evidence = test_fixtures::evidence_from_repository(&repo, &observed_within_max_age);
-        evidence.repository.updated_at = Some(old_updated_at.to_string());
+        evidence.repository.updated_at = crate::domain::repository::UpdatedAt::new(old_updated_at);
         seed_baseline(
             dir.path(),
             &state,
@@ -4606,7 +5245,7 @@ mod tests {
         .to_string();
         let repo = test_fixtures::make_repository("repo-1", false, Visibility::Public);
         let mut evidence = test_fixtures::evidence_from_repository(&repo, &observed_beyond_max_age);
-        evidence.repository.updated_at = Some(old_updated_at.to_string());
+        evidence.repository.updated_at = crate::domain::repository::UpdatedAt::new(old_updated_at);
         seed_baseline(
             dir.path(),
             &state,
@@ -4638,7 +5277,8 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
 
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at = Some("2026-04-09T00:00:00Z".to_string());
+        evidence.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-09T00:00:00Z");
         seed_baseline(
             dir.path(),
             &state,
@@ -4673,7 +5313,8 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
 
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        evidence.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
         seed_baseline(
             dir.path(),
             &state,
@@ -4697,7 +5338,8 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        evidence.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
         seed_baseline(
             dir.path(),
             &state,
@@ -4727,7 +5369,8 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        evidence.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
         seed_baseline(
             dir.path(),
             &state,
@@ -5106,26 +5749,29 @@ mod tests {
         let queue = Arc::clone(&state.work_queue);
         let fencing_state = Arc::clone(&state);
 
-        let RunStart::Published(batch) = publish_batch(&state, items.len(), move || {
-            let result = crate::app::work_queue::enqueue_batch(
-                &queue,
-                items,
-                &crate::app::work_queue::JobSource::ScheduledBatch,
-                &corr_ctx,
-            );
-            let failure = crate::app::write_policy::WriteFailure::classify(
-                PersistenceError::FencedConflict {
-                    expected_seq: Some(8901),
-                    actual_seq: Some(8902),
-                    source: Box::new(std::io::Error::other("wrong last sequence")),
-                },
-            );
-            let Ok(signal) = crate::app::daemon::FenceSignal::from_failure(failure) else {
-                panic!("a Conflict write failure must yield a fence signal");
-            };
-            fencing_state.fence_active_run(signal);
-            result
-        }) else {
+        let RunStart::Published(batch) =
+            publish_batch(&state, uuid::Uuid::now_v7(), items.len(), move || {
+                let result = crate::app::work_queue::enqueue_batch(
+                    &queue,
+                    items,
+                    &crate::app::work_queue::JobSource::ScheduledBatch,
+                    &corr_ctx,
+                );
+                let failure = crate::app::write_policy::WriteFailure::classify(
+                    PersistenceError::FencedConflict {
+                        expected_seq: Some(8901),
+                        actual_seq: Some(8902),
+                        source: Box::new(std::io::Error::other("wrong last sequence")),
+                    },
+                );
+                let Ok(signal) = crate::app::daemon::FenceSignal::from_failure(failure) else {
+                    panic!("a Conflict write failure must yield a fence signal");
+                };
+                fencing_state.fence_active_run(signal);
+                result
+            })
+            .await
+        else {
             panic!("an unfenced run start must publish the batch");
         };
 
@@ -5139,6 +5785,66 @@ mod tests {
             state.run_is_fenced(),
             "a latched fence must survive tracker registration (CHE-0088:R3 no-swallow)"
         );
+    }
+
+    #[tokio::test]
+    async fn retiring_a_replaced_run_is_not_clean_completion() {
+        let state = AppState::new().await;
+        let previous_owner = Arc::new(super::super::evidence_service::ScheduledRun {
+            id: uuid::Uuid::now_v7(),
+            tracker: crate::app::work_queue::BatchTracker::new(1),
+            failure: std::sync::Mutex::new(None),
+        });
+        assert!(
+            matches!(
+                batch_outcome(retire_batch(&state, &previous_owner).await),
+                Err(AppError::RunOwnershipLost)
+            ),
+            "a run that no longer owns retirement cannot report clean completion"
+        );
+    }
+
+    #[test]
+    fn batch_run_identity_matches_existing_correlation() {
+        let run = test_run_meta();
+        let identity = RunId::parse(&run.run_id).unwrap();
+        assert_eq!(Some(identity.0), run.correlation_context().correlation_id());
+    }
+
+    #[test]
+    fn invalid_batch_identity_is_an_error_not_a_panic() {
+        assert!(matches!(
+            RunId::parse("not-a-run"),
+            Err(AppError::InvalidRunIdentity(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_transition_waits_for_delivery_ownership_release() {
+        let state = AppState::new().await;
+        let gate = state.evidence().delivery_gate.lock().await;
+        let published = std::sync::atomic::AtomicBool::new(false);
+        let mut transition = std::pin::pin!(publish_batch(&state, uuid::Uuid::now_v7(), 0, || {
+            published.store(true, std::sync::atomic::Ordering::SeqCst);
+            crate::app::work_queue::enqueue_batch(
+                &state.work_queue,
+                Vec::new(),
+                &crate::app::work_queue::JobSource::ScheduledBatch,
+                &CorrelationContext::none(),
+            )
+        }));
+        let blocked = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(transition.as_mut(), cx).is_pending())
+        })
+        .await;
+        assert!(
+            blocked,
+            "Run B cannot replace ownership during Run A append"
+        );
+        assert!(!published.load(std::sync::atomic::Ordering::SeqCst));
+        drop(gate);
+        assert!(matches!(transition.await, RunStart::Published(_)));
+        assert!(published.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -5215,7 +5921,8 @@ mod tests {
         let ctx = make_test_collection_context();
 
         let mut seeded = sample_repo("repo-1");
-        seeded.repository.updated_at = Some("2026-01-01T00:00:00Z".to_string());
+        seeded.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-01-01T00:00:00Z");
         seed_baseline(
             dir.path(),
             &state,
@@ -5644,7 +6351,8 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        evidence.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
         seed_baseline(
             dir.path(),
             &state,
@@ -5653,6 +6361,13 @@ mod tests {
 
         let ok = warm_start_from_baseline(&config, &state).await;
         assert!(ok, "warm-start should succeed with a seeded baseline");
+        let cache = state.html_cache().load_full();
+        let index = &cache.as_ref().as_ref().unwrap()["index.html"];
+        assert!(
+            String::from_utf8_lossy(&index.body.identity_bytes().unwrap())
+                .contains("warm-start-badge"),
+            "warm-start must visibly identify cached evidence"
+        );
         assert!(
             state.html_cache().load().is_some(),
             "warm-start must populate html cache from projection"
@@ -5669,7 +6384,8 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        evidence.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
         seed_baseline(
             dir.path(),
             &state,
@@ -5695,7 +6411,8 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut contaminant = sample_repo("repo-not-in-inventory");
-        contaminant.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        contaminant.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
         seed_baseline(
             dir.path(),
             &state,
@@ -5704,7 +6421,7 @@ mod tests {
 
         let fresh_updated_at = "2026-04-10T00:00:00Z";
         let mut reused = sample_repo("repo-reused");
-        reused.repository.updated_at = Some(fresh_updated_at.to_string());
+        reused.repository.updated_at = crate::domain::repository::UpdatedAt::new(fresh_updated_at);
         seed_baseline(
             dir.path(),
             &state,
@@ -5762,7 +6479,17 @@ mod tests {
             crate::app::state::CachedPage::new("report.html", b"<html>y</html>".to_vec()),
         );
 
-        let page_count = commit_cached_pages(&state, &run, cache);
+        let page_count = commit_cached_pages(
+            &state,
+            &run,
+            PublicationCandidate {
+                retained_pages: cache.clone(),
+                pages: cache,
+                quality: PublicationQuality::default(),
+                render_input: None,
+                attempt: String::new(),
+            },
+        );
         assert_eq!(page_count, 2);
 
         let guard = state.html_cache().load();
@@ -5790,5 +6517,1236 @@ mod tests {
             "PageUpdateEvent.pages must list every cache key written so the \
              client can decide whether to reload"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admission_retains_complete_pages_and_only_broadcasts_changes() {
+        let config = sample_config();
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("retained-repo")],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: vec![crate::test_fixtures::all_passing_evidence("retained-repo")],
+            deleted: Vec::new(),
+            org_state: None,
+            config: &config,
+            run: &run,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &AuthMetadata {
+                token_tier: crate::domain::auth::TokenTier::Unknown,
+                token_scopes: String::new(),
+                auth_mode: crate::domain::auth::AuthMode::Unknown,
+            },
+            capabilities: &CapabilitySet::default(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        });
+        let complete = build_publication_pages(
+            &config,
+            &evidence,
+            PublicationStage::Terminal,
+            Some(&inventory),
+        )
+        .await
+        .unwrap();
+        let mut rx = state.ws_subscribe();
+        commit_cached_pages(&state, &run, complete);
+        rx.try_recv().unwrap();
+        let mut partial = Evidence {
+            repositories: Vec::new(),
+            ..evidence
+        };
+        for attempt in 0..2 {
+            partial.assessment_metadata.run_timestamp = format!("2026-09-06T1{attempt}:00:00Z");
+            let pages = build_publication_pages(
+                &config,
+                &partial,
+                PublicationStage::Intermediate,
+                Some(&inventory),
+            )
+            .await
+            .unwrap();
+            commit_cached_pages(&state, &run, pages);
+            let cache = state.html_cache().load_full();
+            let body = cache.as_ref().as_ref().unwrap()["index.html"]
+                .body
+                .identity_bytes()
+                .unwrap();
+            let html = String::from_utf8_lossy(&body);
+            assert!(
+                html.contains("Retained earlier report"),
+                "must disclose rejected refresh"
+            );
+            assert!(html.contains("Latest attempted refresh: not admitted"));
+            assert!(html.contains("Retained content and original capture age:"));
+            assert!(html.contains("Repository capture age"));
+            assert!(html.contains(&format!("Attempt assessed at 2026-09-06T1{attempt}:00:00Z")));
+            assert!(html.contains("Partial refresh. Inventory: 1 repositories; 1 not yet read"));
+            assert!(
+                cache.as_ref().as_ref().unwrap().values().any(|page| {
+                    page.body.identity_bytes().is_some_and(|body| {
+                        String::from_utf8_lossy(&body).contains("retained-repo")
+                    })
+                }),
+                "must retain richer content"
+            );
+            rx.try_recv().unwrap();
+        }
+    }
+
+    fn admission_evidence(repositories: Vec<RepositoryEvidence>) -> Evidence {
+        crate::test_fixtures::make_full_evidence(
+            crate::test_fixtures::make_metadata(),
+            crate::test_fixtures::make_collection_statistics(
+                u32::try_from(repositories.len()).unwrap(),
+                0,
+                0,
+                0,
+            ),
+            crate::test_fixtures::make_minimal_metrics(),
+            crate::test_fixtures::make_observability(),
+            repositories,
+        )
+    }
+
+    #[test]
+    fn admission_failed_cannot_replace_incomplete_real_evidence() {
+        for reason in ["collection_error", "task_panicked", "unrecognized_failure"] {
+            let failed =
+                failure_evidence_with_reason(&arc_repo("repo"), "2026-09-06T12:00:00Z", reason);
+            assert!(
+                observed_repository_keys(std::slice::from_ref(&failed)).is_empty(),
+                "failed is not observed: {reason}"
+            );
+            let mut real = crate::test_fixtures::all_passing_evidence("repo");
+            real.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+            let previous = PublicationQuality::from_evidence(&admission_evidence(vec![real]), None);
+            let incoming =
+                PublicationQuality::from_evidence(&admission_evidence(vec![failed]), None);
+            assert!(
+                !incoming.preserves(&previous),
+                "synthetic run time cannot replace real evidence"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_removal_requires_exact_immutable_projection_witness() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let removed = crate::test_fixtures::all_passing_evidence("removed");
+        let kept = crate::test_fixtures::all_passing_evidence("kept");
+        state
+            .lock_projection()
+            .load_baseline(vec![removed.clone(), kept.clone()]);
+        let before = state.projection_render_snapshot().unwrap();
+        let mut previous =
+            PublicationQuality::from_evidence(&admission_evidence(before.repositories()), None);
+        previous.provenance = PublicationProvenance::Projection(before.token());
+        state
+            .mark_repo_deleted(
+                &removed.repository.inventory_key,
+                &removed.repository.name,
+                "2026-09-06T12:00:00Z",
+            )
+            .unwrap();
+        let after = state.projection_render_snapshot().unwrap();
+        let mut incoming =
+            PublicationQuality::from_evidence(&admission_evidence(vec![kept.clone()]), None);
+        incoming.provenance = PublicationProvenance::Projection(before.token());
+        assert!(
+            !incoming.preserves(&previous),
+            "old snapshot cannot borrow a later deletion"
+        );
+        incoming.provenance = PublicationProvenance::Projection(after.token());
+        assert!(incoming.preserves(&previous), "actual deleted key may drop");
+        incoming.repositories.clear();
+        assert!(
+            !incoming.preserves(&previous),
+            "one deletion cannot authorize arbitrary shrink"
+        );
+        state
+            .mark_repo_deleted(
+                &kept.repository.inventory_key,
+                &kept.repository.name,
+                "2026-09-06T12:00:01Z",
+            )
+            .unwrap();
+        assert!(
+            !incoming.preserves(&previous),
+            "later mutation cannot expand immutable witness"
+        );
+    }
+
+    #[test]
+    fn admission_failed_private_repo_is_unread_not_observed() {
+        use crate::domain::evidence::RepositoryReadState;
+        let repo = Arc::new(crate::test_fixtures::make_repository(
+            "failed",
+            false,
+            crate::domain::repository::Visibility::Private,
+        ));
+        let failed = failure_evidence(&repo, "2026-09-06T12:00:00Z");
+        assert_eq!(
+            RepositoryReadState::from_checks(&failed.checks),
+            RepositoryReadState::Failed
+        );
+        let inventory = InventoryLoad {
+            active_repos: vec![repo],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+        let repositories =
+            include_unread_repositories(vec![failed.clone()], &inventory, "2026-09-06T12:01:00Z");
+        assert_eq!(repositories, vec![failed]);
+        assert!(matches!(
+            InventoryCoverage::from_evidence(Some(&inventory), &admission_evidence(repositories)),
+            InventoryCoverage::Known {
+                expected: 1,
+                unread: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn admission_equal_clockless_rosters_preserve_but_changed_members_do_not() {
+        for fetched_at in [None, Some(""), Some("malformed")] {
+            let mut evidence = admission_evidence(Vec::new());
+            evidence
+                .metrics
+                .team_rosters
+                .push(crate::domain::metrics::TeamRoster {
+                    canonical_owner: "@org/team".into(),
+                    team_slug: "team".into(),
+                    status: crate::domain::metrics::TeamRosterStatus::Complete,
+                    members: Vec::new(),
+                    fetched_at: fetched_at.map(str::to_owned),
+                });
+            let quality = PublicationQuality::from_evidence(&evidence, None);
+            assert!(
+                quality.preserves(&quality),
+                "identical protected evidence makes no freshness claim"
+            );
+            evidence.metrics.team_rosters[0]
+                .members
+                .push(crate::domain::metrics::TeamMember {
+                    login: "changed-member".into(),
+                    role: crate::domain::metrics::TeamMemberRole::Member,
+                    in_org: None,
+                });
+            assert!(!PublicationQuality::from_evidence(&evidence, None).preserves(&quality));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rollback_warm_and_partial_advance_through_two_live_terminals() {
+        use wiremock::MockServer;
+        let server = MockServer::start().await;
+        let client = rollback_test_client(&server.uri());
+        for warm in [true, false] {
+            rollback_from_seed(&server, &client, warm).await;
+        }
+    }
+
+    fn rollback_test_client(uri: &str) -> Arc<GitHubClient> {
+        Arc::new(
+            GitHubClient::new(
+                crate::github::auth::GitHubCredential {
+                    mode: AuthMode::Pat,
+                    token: secrecy::SecretString::from("test-token"),
+                    expires_at: None,
+                },
+                uri,
+                "TestOrg",
+                None,
+                Arc::new(crate::github::budget::BudgetGate::new(
+                    1000,
+                    std::time::Duration::from_secs(1),
+                )),
+                Arc::new(crate::github::rate_limit::new_default()),
+            )
+            .unwrap(),
+        )
+    }
+
+    async fn rollback_from_seed(
+        server: &wiremock::MockServer,
+        client: &Arc<GitHubClient>,
+        warm: bool,
+    ) {
+        use wiremock::{Mock, ResponseTemplate, matchers::path};
+        let state = AppState::new_with_cache_capacity(10).await;
+        let config = RuntimeConfig {
+            team_roster_read_from_projection: false,
+            ..sample_config()
+        };
+        let mut repo = crate::test_fixtures::all_passing_evidence("repo");
+        repo.checks.codeowners.parsed = Some(crate::domain::codeowners::ParsedCodeowners {
+            entries: Vec::new(),
+            unique_owners: vec!["@TestOrg/platform".into()],
+            skipped_lines: 0,
+        });
+        state.lock_projection().load_baseline(vec![repo.clone()]);
+        let inventory = InventoryLoad {
+            active_repos: vec![Arc::new(repo.repository.clone())],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+        let pp = PartialPublishConfig {
+            pause_notify: Arc::new(tokio::sync::Notify::new()),
+            config: config.clone(),
+            run: test_run_meta(),
+            inventory_fetched_at: None,
+            inventory,
+            org_alert_summary: None,
+            auth_metadata: test_auth_metadata(),
+            capabilities: test_capabilities(),
+            state: Arc::clone(&state),
+        };
+        if warm {
+            assert!(warm_start_from_baseline(&config, &state).await);
+        } else {
+            partial_render_once(&pp, &state).await;
+        }
+        for login in ["first-live", "second-live"] {
+            server.reset().await;
+            Mock::given(path("/orgs/TestOrg/teams/platform/members"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!([{"login":login,"role":"member"}])),
+                )
+                .expect(1)
+                .mount(server)
+                .await;
+            Mock::given(path("/orgs/TestOrg/members"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!([{"login":login}])),
+                )
+                .expect(1)
+                .mount(server)
+                .await;
+            let mut run = test_run_meta();
+            let (candidate, _) = finalize_and_publish(FinalizeParams {
+                config: &config,
+                run: &mut run,
+                inventory: &pp.inventory,
+                org_summary: &Arc::new(test_org_summary()),
+                auth_metadata: &pp.auth_metadata,
+                capabilities: &pp.capabilities,
+                budget_baseline: 0,
+                client,
+                state: &state,
+            })
+            .await
+            .unwrap();
+            commit_cached_pages(&state, &run, candidate);
+            server.verify().await;
+            assert!(
+                matches!(state.evidence().publication.lock().unwrap().as_ref(),
+                    Some(AdmittedPublication::Current(candidate))
+                    if candidate.quality.rosters["@testorg/platform"].content.members[0].login == login),
+                "rollback terminal must advance from warm/partial and then from live"
+            );
+            partial_render_once(&pp, &state).await;
+            assert!(
+                matches!(state.evidence().publication.lock().unwrap().as_ref(),
+                    Some(AdmittedPublication::Retained(candidate))
+                    if candidate.quality.rosters["@testorg/platform"].content.members[0].login == login)
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_overlay_component_order_rejects_stale_finishes() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let foreign = AppState::new_with_cache_capacity(10).await;
+        let config = sample_config();
+        let run = test_run_meta();
+        let older = state.projection_render_snapshot().unwrap().token();
+        let first_live = state.observe_live(async {}).await.unwrap().1;
+        let newer = state.projection_render_snapshot().unwrap().token();
+        let second_live = state.observe_live(async {}).await.unwrap().1;
+        let evidence = admission_evidence(Vec::new());
+        let current = build_sourced_publication_pages(
+            &config,
+            &evidence,
+            PublicationStage::Terminal,
+            None,
+            PublicationProvenance::LiveOverlay {
+                projection: newer.clone(),
+                live: second_live.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        commit_cached_pages(&state, &run, current);
+        for provenance in [
+            PublicationProvenance::LiveOverlay {
+                projection: newer.clone(),
+                live: first_live,
+            },
+            PublicationProvenance::LiveOverlay {
+                projection: older.clone(),
+                live: state.observe_live(async {}).await.unwrap().1,
+            },
+            PublicationProvenance::Projection(older),
+            PublicationProvenance::LiveOverlay {
+                projection: newer,
+                live: foreign.observe_live(async {}).await.unwrap().1,
+            },
+        ] {
+            let late = build_sourced_publication_pages(
+                &config,
+                &evidence,
+                PublicationStage::Terminal,
+                None,
+                provenance,
+            )
+            .await
+            .unwrap();
+            commit_cached_pages(&state, &run, late);
+            assert!(
+                matches!(state.evidence().publication.lock().unwrap().as_ref(),
+                Some(AdmittedPublication::Retained(candidate))
+                if matches!(&candidate.quality.provenance, PublicationProvenance::LiveOverlay { live, .. }
+                    if live.succeeds(&second_live) && second_live.succeeds(live)))
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_overlay_fetch_is_serialized_before_poll_and_released_on_cancel() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let first_state = Arc::clone(&state);
+        let first = tokio::spawn(async move {
+            first_state
+                .observe_live(async {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                })
+                .await
+                .unwrap()
+                .1
+        });
+        started_rx.await.unwrap();
+        assert!(state.projection_state_for_test().try_lock().is_ok());
+        let polled = std::sync::atomic::AtomicBool::new(false);
+        let second = state.observe_live(async {
+            polled.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        tokio::pin!(second);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut second)
+                .await
+                .is_err()
+        );
+        assert!(!polled.load(std::sync::atomic::Ordering::SeqCst));
+        release_tx.send(()).unwrap();
+        let first_token = first.await.unwrap();
+        let ((), second_token) = second.await.unwrap();
+        assert!(second_token.succeeds(&first_token));
+        assert!(!first_token.succeeds(&second_token));
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                state.observe_live(std::future::pending::<()>())
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                state.observe_live(async {})
+            )
+            .await
+            .unwrap()
+            .is_ok()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn projection_capture_changed_clockless_advances() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let config = sample_config();
+        let mut repo = crate::test_fixtures::all_passing_evidence("repo");
+        repo.checks.security_policy.timestamp.clear();
+        repo.checks.secret_scanning.timestamp.clear();
+        repo.checks.dependabot_security_updates.timestamp.clear();
+        repo.checks.branch_protection.timestamp.clear();
+        repo.checks.codeowners.timestamp.clear();
+        state.lock_projection().load_baseline(vec![repo.clone()]);
+        assert!(warm_start_from_baseline(&config, &state).await);
+        repo.checks.codeowners.status = CodeownersStatus::Absent;
+        state.lock_projection().load_baseline(vec![repo]);
+        assert!(warm_start_from_baseline(&config, &state).await);
+        assert!(
+            matches!(
+                state.evidence().publication.lock().unwrap().as_ref(),
+                Some(AdmittedPublication::Current(_))
+            ),
+            "newer changed clockless projection must advance"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn projection_capture_late_render_and_live_overlay_are_rejected() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let config = sample_config();
+        let run = test_run_meta();
+        let repo = crate::test_fixtures::all_passing_evidence("repo");
+        state.lock_projection().load_baseline(vec![repo]);
+        let older = state.projection_render_snapshot().unwrap();
+        let newer = state.projection_render_snapshot().unwrap();
+        assert!(state.projection_state_for_test().try_lock().is_ok());
+        let evidence = admission_evidence(newer.repositories());
+        let candidate = build_sourced_publication_pages(
+            &config,
+            &evidence,
+            PublicationStage::Terminal,
+            None,
+            PublicationProvenance::Projection(newer.token()),
+        )
+        .await
+        .unwrap();
+        commit_cached_pages(&state, &run, candidate);
+        for provenance in [
+            PublicationProvenance::Projection(older.token()),
+            PublicationProvenance::LiveOverlay {
+                projection: older.token(),
+                live: state.observe_live(async {}).await.unwrap().1,
+            },
+        ] {
+            let late = build_sourced_publication_pages(
+                &config,
+                &evidence,
+                PublicationStage::Intermediate,
+                None,
+                provenance,
+            )
+            .await
+            .unwrap();
+            commit_cached_pages(&state, &run, late);
+            assert!(
+                matches!(state.evidence().publication.lock().unwrap().as_ref(),
+                Some(AdmittedPublication::Retained(candidate))
+                if matches!(&candidate.quality.provenance, PublicationProvenance::Projection(token)
+                    if token.succeeds(&newer.token()) && newer.token().succeeds(token)))
+            );
+        }
+        let other_source = AppState::new_with_cache_capacity(10).await;
+        assert!(
+            !other_source
+                .projection_render_snapshot()
+                .unwrap()
+                .token()
+                .succeeds(&newer.token())
+        );
+        let empty = admission_evidence(Vec::new());
+        let degraded = build_sourced_publication_pages(
+            &config,
+            &empty,
+            PublicationStage::Intermediate,
+            None,
+            PublicationProvenance::Projection(state.projection_render_snapshot().unwrap().token()),
+        )
+        .await
+        .unwrap();
+        commit_cached_pages(&state, &run, degraded);
+        assert!(matches!(
+            state.evidence().publication.lock().unwrap().as_ref(),
+            Some(AdmittedPublication::Retained(_))
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admission_cold_degraded_roster_recovers_without_downgrade() {
+        use crate::domain::metrics::{TeamRoster, TeamRosterStatus};
+        for status in [
+            TeamRosterStatus::PermissionDenied,
+            TeamRosterStatus::Deleted,
+            TeamRosterStatus::TransientError,
+        ] {
+            let state = AppState::new_with_cache_capacity(10).await;
+            let config = sample_config();
+            let run = test_run_meta();
+            let mut evidence = admission_evidence(Vec::new());
+            evidence.metrics.team_rosters.push(TeamRoster {
+                canonical_owner: "@org/team".into(),
+                team_slug: "team".into(),
+                status,
+                members: Vec::new(),
+                fetched_at: None,
+            });
+            let cold = build_cached_pages(&config, &evidence, PublicationStage::Intermediate)
+                .await
+                .unwrap();
+            assert!(
+                cold.quality.rosters.is_empty(),
+                "failed probe is not evidence"
+            );
+            commit_cached_pages(&state, &run, cold);
+            evidence.metrics.team_rosters[0].status = TeamRosterStatus::Complete;
+            evidence.metrics.team_rosters[0].fetched_at = Some("2026-09-06T12:00:00Z".into());
+            let recovered = build_cached_pages(&config, &evidence, PublicationStage::Intermediate)
+                .await
+                .unwrap();
+            commit_cached_pages(&state, &run, recovered);
+            {
+                let publication = state.evidence().publication.lock().unwrap();
+                assert!(
+                    matches!(publication.as_ref(), Some(AdmittedPublication::Current(candidate))
+                        if candidate.quality.rosters.contains_key("@org/team")),
+                    "successful second tick must replace cold degraded roster"
+                );
+            }
+            evidence.metrics.team_rosters[0].status = status;
+            evidence.metrics.team_rosters[0].fetched_at = None;
+            let degraded = build_cached_pages(&config, &evidence, PublicationStage::Intermediate)
+                .await
+                .unwrap();
+            commit_cached_pages(&state, &run, degraded);
+            assert!(matches!(
+                state.evidence().publication.lock().unwrap().as_ref(),
+                Some(AdmittedPublication::Retained(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn admission_captured_clock_improves_indeterminate_previous() {
+        let captured = CaptureTime::parse(Some("2026-09-06T12:00:00Z"));
+        for previous in [CaptureTime::Missing, CaptureTime::Malformed] {
+            assert!(captured.preserves(previous));
+            assert!(!previous.preserves(captured));
+            assert!(!previous.preserves(previous));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admission_page_capped_roster_retains_previous_complete() {
+        use crate::domain::metrics::{TeamRoster, TeamRosterStatus};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+
+        let server = MockServer::start().await;
+        let members_path = "/orgs/test-org/teams/team/members";
+        Mock::given(path(members_path))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "partial", "role": "member"}]))
+                    .insert_header(
+                        "link",
+                        format!("<{}{members_path}>; rel=\"next\"", server.uri()),
+                    ),
+            )
+            .expect(u64::try_from(config::MAX_PAGINATION_PAGES).unwrap())
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(
+            crate::github::auth::GitHubCredential {
+                mode: AuthMode::Pat,
+                token: secrecy::SecretString::from("test-token"),
+                expires_at: None,
+            },
+            &server.uri(),
+            "test-org",
+            None,
+            Arc::new(crate::github::budget::BudgetGate::new(
+                1000,
+                std::time::Duration::from_secs(1),
+            )),
+            Arc::new(crate::github::rate_limit::new_default()),
+        )
+        .unwrap();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let config = sample_config();
+        let run = test_run_meta();
+        let mut evidence = admission_evidence(Vec::new());
+        evidence.metrics.team_rosters.push(TeamRoster {
+            canonical_owner: "@test-org/team".into(),
+            team_slug: "team".into(),
+            status: TeamRosterStatus::Complete,
+            members: Vec::new(),
+            fetched_at: Some("2000-01-01T00:00:00Z".into()),
+        });
+        let previous = build_cached_pages(&config, &evidence, PublicationStage::Intermediate)
+            .await
+            .unwrap();
+        commit_cached_pages(&state, &run, previous);
+        evidence.metrics.team_rosters = crate::collector::team_membership::collect_team_rosters(
+            &client,
+            &[("@test-org/team".into(), "team".into())],
+        )
+        .await;
+        server.verify().await;
+        let incoming = build_cached_pages(&config, &evidence, PublicationStage::Intermediate)
+            .await
+            .unwrap();
+        commit_cached_pages(&state, &run, incoming);
+        assert!(matches!(
+            state.evidence().publication.lock().unwrap().as_ref(),
+            Some(AdmittedPublication::Retained(_))
+        ));
+    }
+
+    #[test]
+    fn admission_capture_ignores_failed_check_run_timestamp() {
+        let mut repo = failure_evidence(&arc_repo("repo"), "2026-09-06T12:00:00Z");
+        repo.checks.codeowners.status = CodeownersStatus::Absent;
+        repo.checks.codeowners.timestamp = "2026-01-01T00:00:00Z".into();
+        assert!(
+            matches!(CaptureTime::from_checks(&repo.checks), CaptureTime::Captured(at) if at == "2026-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap())
+        );
+        repo.checks.secret_scanning.reason = Some("pending".into());
+        assert_eq!(
+            crate::domain::evidence::RepositoryReadState::from_checks(&repo.checks),
+            crate::domain::evidence::RepositoryReadState::Observed
+        );
+    }
+
+    #[test]
+    fn admission_equal_clockless_repositories_preserve_but_changed_content_does_not() {
+        for timestamp in ["", "malformed"] {
+            let mut repo = crate::test_fixtures::all_passing_evidence("repo");
+            repo.checks.security_policy.timestamp = timestamp.into();
+            repo.checks.secret_scanning.timestamp = timestamp.into();
+            repo.checks.dependabot_security_updates.timestamp = timestamp.into();
+            repo.checks.branch_protection.timestamp = timestamp.into();
+            repo.checks.codeowners.timestamp = timestamp.into();
+            let quality =
+                PublicationQuality::from_evidence(&admission_evidence(vec![repo.clone()]), None);
+            assert!(
+                quality.preserves(&quality),
+                "identical protected evidence makes no freshness claim"
+            );
+            repo.checks.codeowners.status = CodeownersStatus::Absent;
+            assert!(
+                !PublicationQuality::from_evidence(&admission_evidence(vec![repo]), None)
+                    .preserves(&quality)
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admission_repeated_clockless_roster_is_current() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let config = sample_config();
+        let run = test_run_meta();
+        let mut evidence = admission_evidence(Vec::new());
+        evidence
+            .metrics
+            .team_rosters
+            .push(crate::domain::metrics::TeamRoster {
+                canonical_owner: "@org/team".into(),
+                team_slug: "team".into(),
+                status: crate::domain::metrics::TeamRosterStatus::Complete,
+                members: Vec::new(),
+                fetched_at: None,
+            });
+        for _ in 0..2 {
+            let candidate = build_cached_pages(&config, &evidence, PublicationStage::Intermediate)
+                .await
+                .unwrap();
+            commit_cached_pages(&state, &run, candidate);
+            assert!(matches!(
+                state.evidence().publication.lock().unwrap().as_ref(),
+                Some(AdmittedPublication::Current(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn admission_older_capture_is_rejected_without_completeness_change() {
+        let mut repo = crate::test_fixtures::all_passing_evidence("repo");
+        let previous =
+            PublicationQuality::from_evidence(&admission_evidence(vec![repo.clone()]), None);
+        repo.checks.security_policy.timestamp = "2000-01-01T00:00:00Z".into();
+        repo.checks.secret_scanning.timestamp = "2000-01-01T00:00:00Z".into();
+        repo.checks.dependabot_security_updates.timestamp = "2000-01-01T00:00:00Z".into();
+        repo.checks.branch_protection.timestamp = "2000-01-01T00:00:00Z".into();
+        repo.checks.codeowners.timestamp = "2000-01-01T00:00:00Z".into();
+        let incoming = PublicationQuality::from_evidence(&admission_evidence(vec![repo]), None);
+        assert!(
+            !incoming.preserves(&previous),
+            "older capture alone must reject admission"
+        );
+    }
+
+    #[test]
+    fn admission_cold_inventory_preserves_pending_and_failed_entries() {
+        let inventory = InventoryLoad {
+            active_repos: Vec::new(),
+            complete: false,
+            inventory_fetched_at: None,
+        };
+        let pending =
+            failure_evidence_with_reason(&arc_repo("pending"), "2026-09-06T12:00:00Z", "pending");
+        let failed = failure_evidence(&arc_repo("failed"), "2026-09-06T12:00:00Z");
+        let repositories = vec![pending, failed];
+        assert_eq!(
+            include_unread_repositories(repositories.clone(), &inventory, "2026-09-06T12:01:00Z"),
+            repositories
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_admission_keeps_metadata_pages_and_broadcasts_coherent() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut rx = state.ws_subscribe();
+        std::thread::scope(|scope| {
+            for count in 1..=8 {
+                let state = &state;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let pages = HashMap::from([(
+                        "index.html".to_string(),
+                        CachedPage::new("index.html", count.to_string().into_bytes()),
+                    )]);
+                    let quality = PublicationQuality {
+                        provenance: PublicationProvenance::Unordered,
+                        inventory_known: true,
+                        repositories: (0..count)
+                            .map(|key| {
+                                (
+                                    key.to_string(),
+                                    ProtectedEntry {
+                                        complete: true,
+                                        captured: CaptureTime::parse(Some("2026-09-06T12:00:00Z")),
+                                        content: crate::test_fixtures::all_passing_evidence(
+                                            &key.to_string(),
+                                        ),
+                                    },
+                                )
+                            })
+                            .collect(),
+                        rosters: std::collections::BTreeMap::default(),
+                    };
+                    barrier.wait();
+                    commit_cached_pages(
+                        state,
+                        &test_run_meta(),
+                        PublicationCandidate {
+                            retained_pages: pages.clone(),
+                            pages,
+                            quality,
+                            render_input: None,
+                            attempt: String::new(),
+                        },
+                    );
+                });
+            }
+        });
+        let publication = state.evidence().publication.lock().unwrap();
+        assert_eq!(
+            publication
+                .as_ref()
+                .unwrap()
+                .candidate()
+                .quality
+                .repositories
+                .len(),
+            8
+        );
+        let cache = state.html_cache().load_full();
+        assert_eq!(
+            cache.as_ref().as_ref().unwrap()["index.html"]
+                .body
+                .identity_bytes()
+                .unwrap()
+                .as_ref(),
+            b"8"
+        );
+        let mut updates = 0;
+        while rx.try_recv().is_ok() {
+            updates += 1;
+        }
+        assert!((1..=8).contains(&updates));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cold_partial_publication_discloses_unknown_inventory() {
+        let dir = tempfile::tempdir().unwrap();
+        let nats = crate::config::runtime::NatsStoreConfig::for_org(
+            "TestOrg",
+            crate::config::runtime::DEFAULT_NATS_URL,
+        )
+        .unwrap();
+        let state = AppState::with_stores(
+            &dir.path().join("events"),
+            crate::config::runtime::PardosaBackend::Pgno,
+            nats,
+        )
+        .await
+        .unwrap();
+        state
+            .record_team(
+                "TestOrg",
+                &crate::domain::metrics::TeamRoster {
+                    canonical_owner: "@TestOrg/platform".into(),
+                    team_slug: "platform".into(),
+                    status: crate::domain::metrics::TeamRosterStatus::Complete,
+                    fetched_at: Some("2026-09-06T12:00:00Z".into()),
+                    members: vec![crate::domain::metrics::TeamMember {
+                        login: "octocat".into(),
+                        role: crate::domain::metrics::TeamMemberRole::Member,
+                        in_org: Some(true),
+                    }],
+                },
+                "2026-09-06T12:00:00Z",
+                crate::event::OrgMembershipFetchStatus::Fetched,
+            )
+            .unwrap();
+        let pp = PartialPublishConfig {
+            pause_notify: Arc::new(tokio::sync::Notify::new()),
+            config: sample_config(),
+            run: test_run_meta(),
+            inventory_fetched_at: None,
+            inventory: InventoryLoad {
+                active_repos: Vec::new(),
+                complete: false,
+                inventory_fetched_at: None,
+            },
+            org_alert_summary: None,
+            auth_metadata: AuthMetadata {
+                token_tier: crate::domain::auth::TokenTier::Unknown,
+                token_scopes: String::new(),
+                auth_mode: crate::domain::auth::AuthMode::Unknown,
+            },
+            capabilities: CapabilitySet::default(),
+            state: Arc::clone(&state),
+        };
+        partial_render_once(&pp, &state).await;
+        assert!(
+            state
+                .evidence()
+                .publication
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .candidate()
+                .quality
+                .rosters
+                .contains_key("@TestOrg/platform"),
+            "partial_render_once must retain the seeded projected roster"
+        );
+        let cache = state.html_cache().load_full();
+        let index = &cache.as_ref().as_ref().unwrap()["index.html"];
+        let body = index.body.identity_bytes().unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(
+            html.contains("Inventory denominator unknown"),
+            "cold partial must not imply a known zero denominator"
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("unread-repo")],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+        let pp = PartialPublishConfig { inventory, ..pp };
+        partial_render_once(&pp, &state).await;
+        let cache = state.html_cache().load_full();
+        let index = &cache.as_ref().as_ref().unwrap()["index.html"];
+        let body = index.body.identity_bytes().unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("Inventory: 1 repositories; 1 not yet read"));
+        assert!(html.contains("Partial refresh"));
+        let repositories =
+            include_unread_repositories(Vec::new(), &pp.inventory, &pp.run.timestamp());
+        assert_eq!(repositories[0].repository.name, "unread-repo");
+        assert_eq!(
+            repositories[0].checks.secret_scanning.reason.as_deref(),
+            Some("pending")
+        );
+        assert!(!repositories[0].is_complete());
+        assert!(
+            state.projection_snapshot().is_empty(),
+            "render placeholders must not enter persistence/projection"
+        );
+        assert_seeded_roster_member_html(&pp, &state).await;
+    }
+
+    async fn assert_seeded_roster_member_html(pp: &PartialPublishConfig, state: &Arc<AppState>) {
+        let mut repo = crate::test_fixtures::all_passing_evidence("owned-repo");
+        repo.checks.codeowners.parsed = Some(crate::domain::codeowners::ParsedCodeowners {
+            entries: Vec::new(),
+            unique_owners: vec!["@TestOrg/platform".into()],
+            skipped_lines: 0,
+        });
+        state.lock_projection().load_baseline(vec![repo]);
+        partial_render_once(pp, state).await;
+        let cache = state.html_cache().load_full();
+        assert!(
+            cache.as_ref().as_ref().unwrap().iter().any(|(path, page)| {
+                path.starts_with("owners/")
+                    && page.body.identity_bytes().is_some_and(|body| {
+                        String::from_utf8_lossy(&body).contains("https://github.com/octocat")
+                    })
+            }),
+            "seeded projected member must reach owner HTML; pages: {:?}",
+            cache.as_ref().as_ref().unwrap().keys()
+        );
+        let original = cache.as_ref().as_ref().unwrap()["index.html"]
+            .body
+            .identity_bytes()
+            .unwrap();
+        let original = String::from_utf8_lossy(&original);
+        let original_capture = original
+            .split("Repository capture age as of ")
+            .nth(1)
+            .unwrap()
+            .split("</aside>")
+            .next()
+            .unwrap()
+            .to_string();
+        for (stage, timestamp) in [
+            (PublicationStage::Intermediate, "2026-09-08T12:00:00Z"),
+            (PublicationStage::Terminal, "2026-09-09T12:00:00Z"),
+        ] {
+            let mut rejected = admission_evidence(vec![failure_evidence(
+                &arc_repo("rejected-only"),
+                timestamp,
+            )]);
+            rejected.assessment_metadata.run_timestamp = timestamp.into();
+            let candidate = build_publication_pages(&pp.config, &rejected, stage, None)
+                .await
+                .unwrap();
+            commit_cached_pages(state, &pp.run, candidate);
+            let cache = state.html_cache().load_full();
+            let pages = cache.as_ref().as_ref().unwrap();
+            assert!(pages.iter().any(|(path, page)| {
+                path.starts_with("owners/")
+                    && String::from_utf8_lossy(&page.body.identity_bytes().unwrap())
+                        .contains("https://github.com/octocat")
+            }));
+            for (path, page) in pages {
+                if std::path::Path::new(path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+                {
+                    let bytes = page.body.identity_bytes().unwrap();
+                    let html = String::from_utf8_lossy(&bytes);
+                    assert!(
+                        html.contains(&format!(
+                            "Attempt assessed at {timestamp}. {}. Inventory denominator unknown",
+                            stage.label()
+                        )),
+                        "{path}"
+                    );
+                    assert!(html.contains("Refresh attempted at "), "{path}");
+                    assert!(
+                        html.contains(&original_capture),
+                        "original capture metadata changed: {path}"
+                    );
+                    assert!(html.contains("owned-repo"), "{path}");
+                    assert!(!html.contains("rejected-only"), "{path}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn publication_capture_age_uses_observation_not_publication_time() {
+        let mut repo = failure_evidence(&arc_repo("captured-repo"), "2026-09-06T12:00:00Z");
+        repo.checks.codeowners.status = CodeownersStatus::Absent;
+        let mut evidence = admission_evidence(vec![repo]);
+        evidence.assessment_metadata.run_timestamp = "2026-09-06T12:00:00Z".into();
+        for (timestamp, expected) in [
+            ("2026-09-04T12:00:00Z", "oldest known 172800 seconds"),
+            ("", "unknown for 1 of 1 repositories"),
+            ("invalid", "unknown for 1 of 1 repositories"),
+            ("2026-09-07T12:00:00Z", "unknown for 1 of 1 repositories"),
+        ] {
+            evidence.repositories[0].checks.codeowners.timestamp = timestamp.into();
+            let pages = build_publication_pages(
+                &sample_config(),
+                &evidence,
+                PublicationStage::Intermediate,
+                None,
+            )
+            .await
+            .unwrap();
+            let body = pages.pages["index.html"].body.identity_bytes().unwrap();
+            let html = String::from_utf8_lossy(&body);
+            assert!(
+                html.contains(expected),
+                "missing capture disclosure: {expected}"
+            );
+            assert!(html.contains("as of 2026-09-06T12:00:00Z"));
+            for (path, page) in &pages.pages {
+                if std::path::Path::new(path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+                {
+                    let bytes = page.body.identity_bytes().unwrap();
+                    let rendered = String::from_utf8_lossy(&bytes);
+                    assert!(
+                        rendered
+                            .contains("Repository evidence capture age (not GitHub inactivity)"),
+                        "{path}"
+                    );
+                    assert!(rendered.contains("captured-repo"), "{path}");
+                    let age = if timestamp == "2026-09-04T12:00:00Z" {
+                        "172800 seconds"
+                    } else {
+                        "Capture age unknown"
+                    };
+                    assert!(rendered.contains(age), "{path}: {age}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn publication_capture_age_does_not_authorize_malformed_reference() {
+        let mut evidence =
+            admission_evidence(vec![crate::test_fixtures::all_passing_evidence("repo")]);
+        evidence.assessment_metadata.run_timestamp = "invalid-reference".into();
+        let disclosure = repository_capture_age_disclosure(&evidence);
+        assert!(disclosure.contains("as of unknown assessment time"));
+        assert!(!disclosure.contains("invalid-reference"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn publication_two_page_sets_retention_measurement() {
+        for count in [1, 100] {
+            let repositories = (0..count)
+                .map(|index| {
+                    let mut repo =
+                        crate::test_fixtures::all_passing_evidence(&format!("repo-{index}"));
+                    repo.checks.codeowners.parsed =
+                        Some(crate::domain::codeowners::ParsedCodeowners {
+                            entries: Vec::new(),
+                            unique_owners: vec![format!("@TestOrg/team-{}", index % 10)],
+                            skipped_lines: 0,
+                        });
+                    repo
+                })
+                .collect();
+            let candidate = build_cached_pages(
+                &sample_config(),
+                &admission_evidence(repositories),
+                PublicationStage::Intermediate,
+            )
+            .await
+            .unwrap();
+            let mut backing = std::collections::BTreeMap::new();
+            let mut logical_bytes = 0usize;
+            let served = candidate.pages.clone();
+            for (name, pages) in [
+                ("current", &candidate.pages),
+                ("retained", &candidate.retained_pages),
+                ("served-clone", &served),
+            ] {
+                let mut stored = 0usize;
+                let mut raw = 0usize;
+                for page in pages.values() {
+                    let bytes = page
+                        .body
+                        .zstd()
+                        .cloned()
+                        .unwrap_or_else(|| page.body.identity_bytes().unwrap());
+                    stored += bytes.len();
+                    raw += page
+                        .content_length
+                        .to_str()
+                        .unwrap()
+                        .parse::<usize>()
+                        .unwrap();
+                    backing.insert(bytes.as_ptr() as usize, bytes.len());
+                }
+                logical_bytes += stored;
+                eprintln!(
+                    "RETENTION repos={count} set={name} pages={} map_capacity={} stored_payload_bytes={stored} decoded_bytes={raw}",
+                    pages.len(),
+                    pages.capacity()
+                );
+            }
+            eprintln!(
+                "RETENTION repos={count} unique_backing_payload_bytes={} logical_three_map_payload_bytes={logical_bytes}",
+                backing.values().sum::<usize>()
+            );
+            assert_eq!(candidate.pages.len(), candidate.retained_pages.len());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_publication_does_not_claim_unread_evidence_complete() {
+        let config = sample_config();
+        let run = test_run_meta();
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("unread-repo")],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: include_unread_repositories(Vec::new(), &inventory, &run.timestamp()),
+            deleted: Vec::new(),
+            org_state: None,
+            config: &config,
+            run: &run,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &AuthMetadata {
+                token_tier: crate::domain::auth::TokenTier::Unknown,
+                token_scopes: String::new(),
+                auth_mode: crate::domain::auth::AuthMode::Unknown,
+            },
+            capabilities: &CapabilitySet::default(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        });
+        let pages = build_publication_pages(
+            &config,
+            &evidence,
+            PublicationStage::Terminal,
+            Some(&inventory),
+        )
+        .await
+        .unwrap();
+        assert_eq!(evidence.collection_statistics.total_repos, 1);
+        assert!(!evidence.repositories[0].is_complete());
+        assert!(
+            evidence.repositories[0]
+                .checks
+                .secret_scanning
+                .timestamp
+                .parse::<jiff::Timestamp>()
+                .is_ok()
+        );
+        for (path, page) in &pages.pages {
+            if std::path::Path::new(path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+            {
+                let body = page.body.identity_bytes().unwrap();
+                let html = String::from_utf8_lossy(&body);
+                assert!(
+                    html.contains("1 not yet read"),
+                    "missing disclosure: {path}"
+                );
+                assert!(
+                    html.find("publication-status").unwrap() > html.find("top-nav").unwrap(),
+                    "disclosure must use shared navigation template: {path}"
+                );
+            }
+        }
+        let body = pages.pages["index.html"].body.identity_bytes().unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("Collection cycle finished; evidence may still be partial"));
+        assert!(html.contains("1 not yet read"));
+        assert!(html.contains("Evidence may be stale"));
     }
 }

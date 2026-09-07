@@ -26,6 +26,24 @@ jobs:
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: install pinned wasm-bindgen tools
+        run: cargo install --version 0.2.126 --locked wasm-bindgen-cli
+      - name: precompile host contract library under job deadline
+        env:
+          CARGO_TARGET_DIR: target
+        run: cargo build -p gh-report-web-client --lib --locked
+      - name: precompile browser tests under job deadline
+        env:
+          CARGO_TARGET_DIR: target
+        run: cargo test -p gh-report-web-client --target wasm32-unknown-unknown --locked --lib --no-run
+      - name: verify status vocabulary
+        run: python3.12 -B tools/verify_web_client.py status --ci
+      - name: verify directed-sort compiler contract
+        run: python3.12 -B tools/verify_web_client.py compiler --ci
+      - name: verify web-client in headless Chrome
+        run: python3.12 -B tools/verify_web_client.py browser --ci
+      - name: verify web-client guard regressions
+        run: python3.12 -B tools/test_web_client_verify.py
       - run: cargo build --workspace --all-features --locked
       # CHE-0087 R5/R6: the Leptos CSR client is wasm32-only and excluded from
       # the default build set. Its committed .wasm/.js artefacts are embedded
@@ -36,10 +54,11 @@ jobs:
       # Tripwire: assert the committed glue/wasm artefact pair still agrees on
       # the import-key contract (glue's import-object key == the wasm
       # module's expected import module == "./gh-report-web-client_bg.js").
+      # Byte comparison remains local pending hosted acceptance (ghr-6fg0y).
       # This is NOT a byte-diff: wasm32 release builds are not
       # byte-reproducible across hosts (LLVM codegen nondeterminism,
       # build-path embedding), so a regen-and-diff gate false-positives on
-      # every host that isn't bit-identical to the original build machine
+      # hosts that are not bit-identical to the original build machine
       # (blocked v0.1.39 and v0.1.40, both tagged, both CI-red — bd
       # ghr-ac704b9e). The prior hyphen/underscore import-key mismatch this
       # tripwire actually guards against is bd ghr-e32955e3.

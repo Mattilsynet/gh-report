@@ -23,7 +23,7 @@
     {% match vm.roster %}
     {% when crate::report::view_model::RosterSection::Team with (roster) %}
     <details>
-        <summary>Team Members ({{ roster.member_count }})</summary>
+        <summary>Team Members ({% if roster.is_complete %}{{ roster.member_count }}{% else %}unknown{% endif %})</summary>
         {% match roster.freshness %}
         {% when crate::report::view_model::RosterFreshness::Observed with { fetched_at, age_label, beyond_refresh_interval } %}
         <p class="meta{% if beyond_refresh_interval %} tier-warn{% endif %}">Roster last refreshed {{ age_label }} (<time datetime="{{ fetched_at }}">{{ fetched_at }}</time>).{% if beyond_refresh_interval %} This is older than the scheduled 24-hour roster refresh — membership shown here may be out of date.{% endif %} {% call tooltip::tooltip("Team rosters refresh on their own 24-hour cadence, separate from repository collection. This age is derived when the page is rendered from the timestamp recorded with the roster.") %}{% endcall %}</p>
@@ -34,7 +34,11 @@
         <p class="meta tier-warn">{{ notice }}</p>
         {% endif %}
         {% if roster.members.is_empty() %}
+        {% if roster.is_complete %}
         <p class="meta">No members found for this team.</p>
+        {% else %}
+        <p class="meta tier-warn">Membership could not be determined for this run.</p>
+        {% endif %}
         {% else %}
         <div class="table-wrapper">
             <table class="data-table" data-sortable>
@@ -54,7 +58,7 @@
                 </tbody>
             </table>
         </div>
-        <p class="meta">{{ roster.member_count }} member{% if roster.member_count != 1 %}s{% endif %}. <a
+        <p class="meta">{% if roster.is_complete %}{{ roster.member_count }} member{% if roster.member_count != 1 %}s{% endif %}.{% else %}{{ roster.member_count }} observed member{% if roster.member_count != 1 %}s{% endif %}; this list may be incomplete.{% endif %} <a
                 href="../report.html#add-a-team-member">How do I add or remove a member?</a></p>
         {% endif %}
     </details>
@@ -157,7 +161,7 @@
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
                     <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header("Repo Posture", "Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.") %}{% endcall %}</th>
                     {% for column in vm.control_columns %}
-                    <th scope="col" class="text-center" data-nosort>{% call tooltip::header(column.name, column.tooltip) %}{% endcall %}</th>
+                    <th scope="col" class="text-center" data-sort-type="status">{% call tooltip::header(column.name, column.tooltip) %}{% endcall %}</th>
                     {% endfor %}
                     <th scope="col" data-nosort>{% call tooltip::header("Description", "Repository description from GitHub, or — when none is set.") %}{% endcall %}</th>
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Language", "Primary language GitHub detected for the repository, or — when none is set.") %}{% endcall %}</th>
@@ -184,7 +188,7 @@
                         </div>
                     </td>
                     {% for dot in row.controls %}
-                    <td class="text-center"><span class="status-dot {{ dot.css_class }}" title="{{ dot.label }}"><span class="sr-only">{{ dot.label }}</span></span>
+                    <td class="text-center" data-sort-value="{{ dot.sort_key() }}"><span class="status-dot {{ dot.css_class() }}" title="{{ dot.label }}"><span class="sr-only">{{ dot.label }}</span></span>
                     </td>
                     {% endfor %}
                     <td class="cell-truncate" title="{{ row.description }}">{{ row.description }}</td>

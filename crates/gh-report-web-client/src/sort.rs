@@ -15,6 +15,8 @@ pub enum SortType {
     Date,
     /// Compare as plain text.
     Text,
+    /// Compare typed control states, keeping indeterminate values last.
+    Status,
 }
 
 /// Ascending or descending sort direction, toggled on repeat clicks.
@@ -45,6 +47,7 @@ pub fn parse_sort_type(attr: Option<&str>) -> Option<SortType> {
         Some("numeric") => Some(SortType::Numeric),
         Some("date") => Some(SortType::Date),
         Some("text") => Some(SortType::Text),
+        Some("status") => Some(SortType::Status),
         _ => None,
     }
 }
@@ -78,22 +81,73 @@ pub fn detect_sort_type<'a, I: IntoIterator<Item = &'a str>>(cells: I) -> SortTy
     }
 }
 
-/// Compare two cell strings under the given [`SortType`].
+fn compare_numeric(a: &str, b: &str) -> Ordering {
+    match (parse_numeric(a), parse_numeric(b)) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
+        (None, None) => a.cmp(b),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum KnownStatus {
+    Fail,
+    Partial,
+    Pass,
+}
+
+fn known_status(value: &str) -> Option<KnownStatus> {
+    match value {
+        "fail" => Some(KnownStatus::Fail),
+        "partial" => Some(KnownStatus::Partial),
+        "pass" => Some(KnownStatus::Pass),
+        _ => None,
+    }
+}
+
+fn directed(ordering: Ordering, direction: SortDirection) -> Ordering {
+    match direction {
+        SortDirection::Ascending => ordering,
+        SortDirection::Descending => ordering.reverse(),
+    }
+}
+
+fn compare_status(a: &str, b: &str, direction: SortDirection) -> Ordering {
+    match (known_status(a), known_status(b)) {
+        (Some(a), Some(b)) => directed(a.cmp(&b), direction),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// Compare cell values in a direction, leaving indeterminate statuses last.
+/// Numeric unparseable values sort below parseable values in ascending order;
+/// two unparseable values use text ordering. Descending reverses that order.
 ///
-/// Numeric comparison treats unparseable values (`N/A`, `—`, blank) as
-/// sorting below every parseable one, including below `0` and below
-/// negative values (both unparseable falls back to a text compare so
-/// the ordering stays a total order).
+/// A status comparison cannot omit its direction. The executable diagnostic-identity
+/// harness in `tools/test_web_client_verify.py` verifies the missing-direction error;
+/// run it with `python3.12 -B tools/test_web_client_verify.py` from the repository root.
+///
+/// ```
+/// use gh_report_web_client::sort::{SortType, SortDirection, compare_cells_directed};
+/// use std::cmp::Ordering;
+/// for direction in [SortDirection::Ascending, SortDirection::Descending] {
+///     assert_eq!(compare_cells_directed("unknown", "pass", SortType::Status, direction), Ordering::Greater);
+/// }
+/// ```
 #[must_use]
-pub fn compare_cells(a: &str, b: &str, sort_type: SortType) -> Ordering {
+pub fn compare_cells_directed(
+    a: &str,
+    b: &str,
+    sort_type: SortType,
+    direction: SortDirection,
+) -> Ordering {
     match sort_type {
-        SortType::Numeric => match (parse_numeric(a), parse_numeric(b)) {
-            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
-            (Some(_), None) => Ordering::Greater,
-            (None, Some(_)) => Ordering::Less,
-            (None, None) => a.cmp(b),
-        },
-        SortType::Date | SortType::Text => a.cmp(b),
+        SortType::Status => compare_status(a, b, direction),
+        SortType::Numeric => directed(compare_numeric(a, b), direction),
+        SortType::Date | SortType::Text => directed(a.cmp(b), direction),
     }
 }
 
@@ -123,8 +177,45 @@ fn is_iso_date_prefix(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{SortDirection, SortType, compare_cells, detect_sort_type, parse_sort_type};
+    use super::{
+        SortDirection, SortType, compare_cells_directed, detect_sort_type, parse_sort_type,
+    };
     use std::cmp::Ordering;
+
+    fn compare_cells(a: &str, b: &str, sort_type: SortType) -> Ordering {
+        compare_cells_directed(a, b, sort_type, SortDirection::Ascending)
+    }
+
+    #[test]
+    fn status_sort_type_is_explicit() {
+        assert!(parse_sort_type(Some("status")).is_some());
+    }
+
+    #[test]
+    fn status_sort_keeps_indeterminate_band_stable_in_both_directions() {
+        let input = [
+            "unknown",
+            "pass",
+            "permission-denied",
+            "partial",
+            "",
+            "fail",
+            "pending",
+            "N/A",
+        ];
+        for (direction, known) in [
+            (SortDirection::Ascending, ["fail", "partial", "pass"]),
+            (SortDirection::Descending, ["pass", "partial", "fail"]),
+        ] {
+            let mut rows = input;
+            rows.sort_by(|a, b| super::compare_cells_directed(a, b, SortType::Status, direction));
+            assert_eq!(&rows[..3], &known);
+            assert_eq!(
+                &rows[3..],
+                &["unknown", "permission-denied", "", "pending", "N/A"]
+            );
+        }
+    }
 
     #[test]
     fn parse_sort_type_recognises_numeric() {

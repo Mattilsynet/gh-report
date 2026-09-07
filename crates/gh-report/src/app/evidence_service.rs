@@ -27,6 +27,7 @@ pub struct EvidenceState {
     /// `Some(map)` → cache key is the relative path (e.g. `"index.html"`,
     /// `"report.html"`).
     pub(crate) html_cache: ArcSwap<Option<HashMap<String, CachedPage>>>,
+    pub(crate) publication: std::sync::Mutex<Option<super::collect::AdmittedPublication>>,
 
     /// Broadcast channel for notifying connected WebSocket clients of page
     /// updates. Each WebSocket handler subscribes via `.subscribe()`.
@@ -45,6 +46,14 @@ pub struct EvidenceState {
     /// `complete_one()` for each `ScheduledBatch` outcome. Set by the sweep,
     /// cleared when the batch completes.
     pub(crate) batch_tracker: ArcSwap<Option<Arc<BatchTracker>>>,
+    pub(crate) delivery_gate: tokio::sync::Mutex<()>,
+    pub(crate) scheduled_run: ArcSwap<Option<Arc<ScheduledRun>>>,
+}
+
+pub(crate) struct ScheduledRun {
+    pub(crate) id: uuid::Uuid,
+    pub(crate) tracker: Arc<BatchTracker>,
+    pub(crate) failure: std::sync::Mutex<Option<crate::error::PersistenceError>>,
 }
 
 impl EvidenceState {
@@ -53,9 +62,12 @@ impl EvidenceState {
         let (ws_broadcast, _) = tokio::sync::broadcast::channel::<PageUpdateEvent>(64);
         Self {
             html_cache: ArcSwap::from_pointee(None),
+            publication: std::sync::Mutex::new(None),
             ws_broadcast,
             org_summary: Arc::new(ArcSwap::from_pointee(None)),
             batch_tracker: ArcSwap::from_pointee(None),
+            delivery_gate: tokio::sync::Mutex::new(()),
+            scheduled_run: ArcSwap::from_pointee(None),
         }
     }
 }
