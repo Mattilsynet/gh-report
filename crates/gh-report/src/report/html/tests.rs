@@ -4749,20 +4749,26 @@ fn owners_table_freshness_column_is_rightmost_and_sortable() {
     let last = headers.last().expect("owners table must have headers");
 
     assert!(
-        last.contains("numeric\">Lifecycle: Freshness "),
-        "the Freshness column must be the RIGHTMOST owners-table column; headers:\n{headers:#?}"
+        last.contains("numeric\">Ownership "),
+        "the Ownership column must be the RIGHTMOST owners-table column; headers:\n{headers:#?}"
     );
     assert!(
         last.contains("data-sort-type=\"numeric\""),
-        "the Freshness header must opt into the existing wasm sorter with data-sort-type=\"numeric\"; header:\n{last}"
+        "the Ownership header must opt into the existing wasm sorter with data-sort-type=\"numeric\"; header:\n{last}"
+    );
+    assert!(
+        headers
+            .iter()
+            .any(|h| h.contains("numeric\">Lifecycle: Freshness ")),
+        "Freshness column must exist; headers:\n{headers:#?}"
     );
     assert_eq!(
         headers
             .iter()
-            .filter(|h| h.contains("numeric\">Lifecycle: Freshness "))
+            .filter(|h| h.contains("numeric\">Ownership "))
             .count(),
         1,
-        "exactly one Freshness column may exist; headers:\n{headers:#?}"
+        "exactly one Ownership column may exist; headers:\n{headers:#?}"
     );
 }
 
@@ -4855,8 +4861,8 @@ fn owners_overview_columns_and_cells_derive_from_one_canonical_collection() {
 
     assert_eq!(
         vm.control_columns.last().map(|c| c.name),
-        Some("Lifecycle: Freshness"),
-        "Freshness must be the RIGHTMOST member of the single canonical owners-overview column collection, not a column appended beside it; columns:\n{:#?}",
+        Some("Ownership"),
+        "Ownership must be the RIGHTMOST member of the single canonical owners-overview column collection; columns:\n{:#?}",
         vm.control_columns
     );
     assert!(
@@ -4976,10 +4982,12 @@ fn owners_column_and_detail_card_render_the_same_freshness_control_cell() {
         },
     );
 
-    let overview = owners_vm.rows[0]
-        .controls
-        .last()
-        .expect("rightmost owners-overview control cell");
+    let freshness_idx = owners_vm
+        .control_columns
+        .iter()
+        .position(|c| c.name == "Lifecycle: Freshness")
+        .expect("Freshness column must exist");
+    let overview = &owners_vm.rows[0].controls[freshness_idx];
     let detail = &detail_vms[0].1.non_stale_cell;
 
     assert_eq!(
@@ -5023,10 +5031,12 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
         .expect("owners view model for an enriched owner");
 
     let row = &vm.rows[0];
-    let freshness_cell = row
-        .controls
-        .last()
-        .expect("owners-overview controls must include the rightmost Freshness cell");
+    let freshness_idx = vm
+        .control_columns
+        .iter()
+        .position(|c| c.name == "Lifecycle: Freshness")
+        .expect("Freshness column must exist");
+    let freshness_cell = &row.controls[freshness_idx];
     assert_eq!(
         freshness_cell.rate_formatted,
         evidence.metrics.owner_metrics[0]
@@ -5036,10 +5046,7 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
             .to_string(),
         "the owners-column cell must reuse the same non_stale RateMetric the detail card renders, not a recomputation"
     );
-    assert_eq!(
-        vm.control_columns.last().map(|c| c.name),
-        Some("Lifecycle: Freshness")
-    );
+    assert_eq!(vm.control_columns.last().map(|c| c.name), Some("Ownership"));
     assert!(!vm.control_columns.last().unwrap().tooltip.is_empty());
 }
 
