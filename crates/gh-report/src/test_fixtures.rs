@@ -471,7 +471,7 @@ pub fn make_repo_with_updated_at(
             codeowners_with_owners(owners),
         ),
     );
-    repo.repository.updated_at = updated_at.map(ToString::to_string);
+    repo.repository.updated_at = updated_at.and_then(crate::domain::repository::UpdatedAt::new);
     repo
 }
 

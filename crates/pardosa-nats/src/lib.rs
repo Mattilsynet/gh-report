@@ -27,7 +27,7 @@ pub use async_nats::ServerInfo;
 pub use barrier::ConnectionBarrier;
 pub use config::{
     DEFAULT_OPERATION_TIMEOUT, Discard, JetStreamConfig, JetStreamConfigBuilder,
-    OPERATION_TIMEOUT_ENV, ServerInfoObserver, Storage,
+    OPERATION_TIMEOUT_ENV, ServerInfoObserver, Storage, TimeoutObserver,
 };
 pub use error::{JetStreamConfigError, JetStreamRuntimeError};
 pub use handle::{

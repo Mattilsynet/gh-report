@@ -53,11 +53,15 @@ impl LockMetadata {
     /// Create lock metadata for the current process.
     #[must_use]
     pub fn current(run_id: &str) -> Self {
+        Self::current_with_clock(run_id, Timestamp::now)
+    }
+
+    fn current_with_clock(run_id: &str, now: impl Fn() -> Timestamp) -> Self {
         Self {
             run_id: run_id.to_string(),
             pid: std::process::id(),
             hostname: current_hostname(),
-            created_at: Timestamp::now(),
+            created_at: now(),
         }
     }
 }
@@ -124,11 +128,15 @@ impl RunLock {
     /// underlying atomic write as [`PersistenceError::AtomicWriteFailed`]
     /// or [`PersistenceError::Io`].
     pub fn renew(&mut self) -> Result<(), PersistenceError> {
+        self.renew_with_clock(Timestamp::now)
+    }
+
+    fn renew_with_clock(&mut self, now: impl Fn() -> Timestamp) -> Result<(), PersistenceError> {
         let refreshed = LockMetadata {
             run_id: self.metadata.run_id.clone(),
             pid: self.metadata.pid,
             hostname: self.metadata.hostname.clone(),
-            created_at: Timestamp::now(),
+            created_at: now(),
         };
         let json =
             serde_json::to_string_pretty(&refreshed).map_err(|e| PersistenceError::LockFailed {
@@ -221,6 +229,24 @@ pub fn acquire(
     force: bool,
     lock_filename: &str,
 ) -> Result<RunLock, PersistenceError> {
+    acquire_with_clock(
+        lock_dir,
+        run_id,
+        stale_ttl,
+        force,
+        lock_filename,
+        Timestamp::now,
+    )
+}
+
+fn acquire_with_clock(
+    lock_dir: &Path,
+    run_id: &str,
+    stale_ttl: Duration,
+    force: bool,
+    lock_filename: &str,
+    now: impl Fn() -> Timestamp,
+) -> Result<RunLock, PersistenceError> {
     let lock_path = lock_dir.join(lock_filename);
 
     std::fs::create_dir_all(lock_dir).map_err(PersistenceError::Io)?;
@@ -229,7 +255,7 @@ pub fn acquire(
         force_remove_lock(&lock_path);
     }
 
-    let metadata = LockMetadata::current(run_id);
+    let metadata = LockMetadata::current_with_clock(run_id, &now);
 
     for _attempt in 0..MAX_ACQUIRE_ATTEMPTS {
         match create_lock_exclusive(&lock_path, &metadata) {
@@ -246,7 +272,7 @@ pub fn acquire(
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 if let Ok(existing) = read_lock(&lock_path) {
-                    if let Some(reclaim_reason) = reclaim_reason(&existing, stale_ttl) {
+                    if let Some(reclaim_reason) = reclaim_reason(&existing, stale_ttl, &now) {
                         let reason = reclaim_reason.as_str();
                         warn!(
                             run_id = %existing.run_id,
@@ -305,7 +331,7 @@ pub fn acquire(
 
 #[cfg(test)]
 fn is_stale(meta: &LockMetadata, ttl: Duration) -> bool {
-    reclaim_reason(meta, ttl).is_some()
+    reclaim_reason(meta, ttl, Timestamp::now).is_some()
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -323,11 +349,15 @@ impl ReclaimReason {
     }
 }
 
-fn reclaim_reason(meta: &LockMetadata, ttl: Duration) -> Option<ReclaimReason> {
+fn reclaim_reason(
+    meta: &LockMetadata,
+    ttl: Duration,
+    now: impl Fn() -> Timestamp,
+) -> Option<ReclaimReason> {
     if same_host_dead_holder(meta) {
         return Some(ReclaimReason::DeadHolderSameHost);
     }
-    if ttl_expired(meta, ttl) {
+    if ttl_expired(meta, ttl, now) {
         return Some(ReclaimReason::TtlExpired);
     }
     None
@@ -337,11 +367,11 @@ fn same_host_dead_holder(meta: &LockMetadata) -> bool {
     !meta.hostname.is_empty() && meta.hostname == current_hostname() && !pid_is_alive(meta.pid)
 }
 
-fn ttl_expired(meta: &LockMetadata, ttl: Duration) -> bool {
+fn ttl_expired(meta: &LockMetadata, ttl: Duration, now: impl Fn() -> Timestamp) -> bool {
     let ttl_jiff = SignedDuration::try_from(ttl).unwrap_or_else(|_| {
         SignedDuration::try_from(DEFAULT_LOCK_TTL).unwrap_or(SignedDuration::from_mins(15))
     });
-    Timestamp::now().duration_since(meta.created_at) > ttl_jiff
+    now().duration_since(meta.created_at) > ttl_jiff
 }
 
 #[cfg(unix)]
@@ -1086,30 +1116,252 @@ mod tests {
     #[test]
     fn renewed_lock_is_not_reclaimed_by_other_acquire() {
         let dir = TempDir::new().unwrap();
-        let mut lock = acquire(
+        let start: Timestamp = "2026-01-01T00:00:00Z".parse().unwrap();
+        let mut lock = acquire_with_clock(
             dir.path(),
             "long-running",
             Duration::from_secs(1),
             false,
             DEFAULT_LOCK_FILENAME,
+            || start,
         )
         .unwrap();
+        assert_eq!(
+            lock.metadata.created_at, start,
+            "acquire must use injected time"
+        );
+        let original = lock.metadata.clone();
+        let renewed_at = start + SignedDuration::from_millis(500);
+        lock.renew_with_clock(|| renewed_at).unwrap();
+        let expected = LockMetadata {
+            created_at: renewed_at,
+            ..original
+        };
+        assert_eq!(lock.metadata, expected);
+        assert_eq!(read_lock(lock.path()).unwrap(), expected);
 
-        std::thread::sleep(Duration::from_millis(500));
-        lock.renew().unwrap();
-        std::thread::sleep(Duration::from_millis(700));
+        for elapsed_ms in [1200, 1500] {
+            let result = acquire_with_clock(
+                dir.path(),
+                "other",
+                Duration::from_secs(1),
+                false,
+                DEFAULT_LOCK_FILENAME,
+                || start + SignedDuration::from_millis(elapsed_ms),
+            );
+            assert!(
+                matches!(result, Err(PersistenceError::LockFailed { .. })),
+                "renewed lock must remain held before and exactly at TTL"
+            );
+            assert_eq!(read_lock(lock.path()).unwrap(), expected);
+        }
 
-        let result = acquire(
+        let after_ttl = renewed_at + SignedDuration::from_secs(1) + SignedDuration::from_nanos(1);
+        let replacement = acquire_with_clock(
             dir.path(),
             "other",
             Duration::from_secs(1),
             false,
             DEFAULT_LOCK_FILENAME,
-        );
+            || after_ttl,
+        )
+        .expect("renewed lock must expire strictly after TTL");
+        assert_eq!(replacement.metadata.run_id, "other");
+        assert_eq!(replacement.metadata.created_at, after_ttl);
+        assert_eq!(read_lock(replacement.path()).unwrap(), replacement.metadata);
+    }
+
+    #[test]
+    fn capture_survives_wrong_thread_first_registration() {
+        for order in [
+            RegistrationOrder::CompetitorFirst,
+            RegistrationOrder::CaptureFirst,
+        ] {
+            let mut command = capture_child_command("lock::tests::capture_registration_child");
+            command.env(REGISTRATION_ORDER, order.as_str());
+            let mut child = command.spawn().unwrap();
+            let outcome = wait_for_capture_child(&mut child, CAPTURE_CHILD_TIMEOUT).unwrap();
+            assert!(
+                matches!(outcome, CaptureChildOutcome::Exited(status) if status.success()),
+                "{order:?}: {outcome:?}; retained child output max=0 bytes"
+            );
+            eprintln!("verified-order={}", order.as_str());
+        }
+    }
+
+    const REGISTRATION_ORDER: &str = "CHERRY_PIT_CAPTURE_REGISTRATION_ORDER";
+    const CAPTURE_CHILD_TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RegistrationOrder {
+        CompetitorFirst,
+        CaptureFirst,
+    }
+
+    impl RegistrationOrder {
+        fn parse(value: &str) -> Result<Self, &'static str> {
+            match value {
+                "competitor-first" => Ok(Self::CompetitorFirst),
+                "capture-first" => Ok(Self::CaptureFirst),
+                _ => Err("unknown capture registration order"),
+            }
+        }
+
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::CompetitorFirst => "competitor-first",
+                Self::CaptureFirst => "capture-first",
+            }
+        }
+    }
+
+    fn capture_child_command(target: &str) -> std::process::Command {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", target, "--ignored", "--nocapture"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        command
+    }
+
+    #[derive(Debug)]
+    enum CaptureChildOutcome {
+        Exited(std::process::ExitStatus),
+        TimedOut(std::process::ExitStatus),
+    }
+
+    fn wait_for_capture_child(
+        child: &mut std::process::Child,
+        timeout: Duration,
+    ) -> std::io::Result<CaptureChildOutcome> {
+        let started = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(CaptureChildOutcome::Exited(status)),
+                Ok(None) if started.elapsed() >= timeout => {
+                    return kill_and_reap_capture_child(child).map(CaptureChildOutcome::TimedOut);
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+                Err(error) => {
+                    kill_and_reap_capture_child(child)?;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn kill_and_reap_capture_child(
+        child: &mut std::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        let killed = match child.kill() {
+            Ok(()) => Ok(()),
+            Err(error) => match child.try_wait() {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => Err(error),
+                Err(wait_error) => Err(wait_error),
+            },
+        };
+        let reaped = child.wait();
+        killed?;
+        reaped
+    }
+
+    #[test]
+    fn capture_child_timeout_kills_and_reaps() {
+        let mut child = capture_child_command("lock::tests::capture_timeout_child")
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let outcome = wait_for_capture_child(&mut child, Duration::from_millis(50)).unwrap();
         assert!(
-            result.is_err(),
-            "renewed lock should still be live (post-renew elapsed < TTL)"
+            matches!(outcome, CaptureChildOutcome::TimedOut(status) if !status.success()),
+            "must kill and reap timed-out child: {outcome:?}"
         );
+        assert!(child.try_wait().unwrap().is_some());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn capture_timeout_child_exits_without_parent_kill() {
+        let mut child = capture_child_command("lock::tests::capture_timeout_child")
+            .spawn()
+            .unwrap();
+        let outcome = wait_for_capture_child(&mut child, Duration::from_secs(3)).unwrap();
+        assert!(
+            matches!(outcome, CaptureChildOutcome::Exited(status) if status.success()),
+            "fixture must self-terminate: {outcome:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "dedicated subprocess deadline fixture"]
+    fn capture_timeout_child() {
+        std::thread::sleep(Duration::from_secs(2));
+    }
+
+    #[test]
+    fn capture_registration_order_rejects_unknown() {
+        assert_eq!(
+            RegistrationOrder::parse("unknown"),
+            Err("unknown capture registration order")
+        );
+    }
+
+    #[test]
+    #[ignore = "parent executes both registration orders in fresh processes"]
+    fn capture_registration_child() {
+        let order = RegistrationOrder::parse(&std::env::var(REGISTRATION_ORDER).unwrap()).unwrap();
+
+        let events = capture_lock_events(|| {
+            if order == RegistrationOrder::CaptureFirst {
+                reclaim_dead_holder("captured-first");
+            }
+            std::thread::spawn(|| reclaim_dead_holder("uncaptured-competitor"))
+                .join()
+                .unwrap();
+            let max_level = tracing::metadata::LevelFilter::current();
+            eprintln!("order={order:?} max_level={max_level}");
+            assert!(max_level >= tracing::metadata::LevelFilter::WARN);
+            reclaim_dead_holder("captured-after");
+        });
+        let expected_host = format!("host={} ", LockMetadata::current("host-probe").hostname);
+        assert!(
+            events.lines().any(|event| [
+                "run_id=captured-after",
+                "level=WARN",
+                "pid=999999999",
+                &expected_host,
+                "reason=\"dead-holder-same-host\""
+            ]
+            .iter()
+            .all(|field| event.contains(field))),
+            "got: {events}"
+        );
+        assert!(!events.contains("uncaptured-competitor"), "got: {events}");
+        if order == RegistrationOrder::CaptureFirst {
+            assert!(events.contains("run_id=captured-first"), "got: {events}");
+        }
+    }
+
+    fn reclaim_dead_holder(run_id: &str) {
+        let dir = TempDir::new().unwrap();
+        let meta = LockMetadata {
+            run_id: run_id.to_owned(),
+            pid: 999_999_999,
+            hostname: LockMetadata::current("host-probe").hostname,
+            created_at: Timestamp::now(),
+        };
+        write_lock(&dir.path().join(DEFAULT_LOCK_FILENAME), &meta).unwrap();
+        let lock = acquire(
+            dir.path(),
+            "replacement",
+            DEFAULT_LOCK_TTL,
+            false,
+            DEFAULT_LOCK_FILENAME,
+        )
+        .unwrap();
+        assert_eq!(lock.metadata.run_id, "replacement");
     }
 
     fn capture_lock_events(f: impl FnOnce()) -> String {
@@ -1184,7 +1436,9 @@ mod tests {
 
         let subscriber = CaptureSubscriber::default();
         let events = Arc::clone(&subscriber.events);
+        let registration_dispatch = tracing::Dispatch::new(subscriber.clone());
         tracing::subscriber::with_default(subscriber, f);
+        drop(registration_dispatch);
         events.lock().unwrap().clone()
     }
 }

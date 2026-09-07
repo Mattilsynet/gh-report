@@ -284,7 +284,7 @@ conversion_pair!(sr::Repository => Repository {
         default_branch: r.default_branch.as_str().to_string(),
         archived: r.archived,
         inventory_key: r.inventory_key.as_str().to_string(),
-        updated_at: ts_to_string_opt(r.updated_at),
+        updated_at: ts_to_string_opt(r.updated_at).and_then(sr::UpdatedAt::new),
         has_issues: r.has_issues,
         pushed_at: ts_to_string_opt(r.pushed_at),
         created_at: ts_to_string_opt(r.created_at),

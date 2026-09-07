@@ -152,6 +152,11 @@ impl JetStreamHandle {
     pub fn config(&self) -> &JetStreamConfig {
         &self.config
     }
+    /// Replace the diagnostic sink without resetting connection or fence state.
+    /// The sink must obey [`crate::TimeoutObserver`]'s nonblocking, no-reentry contract.
+    pub fn set_timeout_observer(&mut self, observer: crate::TimeoutObserver) {
+        self.config.set_timeout_observer(observer);
+    }
     /// Publish `bytes`; return [`JetStreamAckPosition`] from
     /// `PubAck.seq` (ADR-0022 §D2). Bytes verbatim (ADR-0022 §D5).
     /// `Nats-Msg-Id` = BLAKE3-hex(payload) for dedup. Lazy connect.
@@ -213,14 +218,16 @@ impl JetStreamHandle {
             .clone();
         let cfg = &self.config;
         let nats_msg_id = blake3_hex(bytes);
-        let timeout = cfg.operation_timeout();
-        let (seq, duplicate) = run_op(&runtime, timeout, async {
+        let stage = StageCursor::new(TimeoutStage::Gate);
+        let (seq, duplicate) = run_op(&runtime, cfg, &stage, async {
             let _permit = self
                 .append_gate
                 .acquire()
                 .await
                 .expect("append_gate semaphore is never closed");
-            let js = ensure_state(&self.state, cfg).await?;
+            let js = stage
+                .during(TimeoutStage::Connect, ensure_state(&self.state, cfg))
+                .await?;
             let fence_enabled = cfg.single_writer_fence_enabled();
             let last_ack_seq = current_last_ack_seq(&self.state);
             let expected_last_subject_sequence =
@@ -232,6 +239,7 @@ impl JetStreamHandle {
                 &nats_msg_id,
                 replay_tag,
                 expected_last_subject_sequence,
+                &stage,
             )
             .await
         })?;
@@ -289,9 +297,15 @@ impl JetStreamHandle {
             .ok_or(JetStreamRuntimeError::Detached)?
             .clone();
         let cfg = &self.config;
-        let records = run_op(&runtime, cfg.operation_timeout(), async {
+        let stage = StageCursor::new(TimeoutStage::Connect);
+        let records = run_op(&runtime, cfg, &stage, async {
             let js = ensure_state(&self.state, cfg).await?;
-            replay_once(&js, cfg.stream_name(), cfg.subject()).await
+            stage
+                .during(
+                    TimeoutStage::Replay,
+                    replay_once(&js, cfg.stream_name(), cfg.subject()),
+                )
+                .await
         })?;
         let replay_seed = records.last().map_or(0, |r| r.ack.as_u64());
         let mut guard = self.state_locked();
@@ -326,9 +340,15 @@ impl JetStreamHandle {
             .ok_or(JetStreamRuntimeError::Detached)?
             .clone();
         let cfg = &self.config;
-        run_op(&runtime, cfg.operation_timeout(), async {
+        let stage = StageCursor::new(TimeoutStage::Connect);
+        run_op(&runtime, cfg, &stage, async {
             let js = ensure_state(&self.state, cfg).await?;
-            read_stream_description_once(&js, cfg.stream_name()).await
+            stage
+                .during(
+                    TimeoutStage::Replay,
+                    read_stream_description_once(&js, cfg.stream_name()),
+                )
+                .await
         })
     }
     /// Read every currently-durable record in `PubAck.seq` order without
@@ -358,9 +378,15 @@ impl JetStreamHandle {
             .ok_or(JetStreamRuntimeError::Detached)?
             .clone();
         let cfg = &self.config;
-        run_op(&runtime, cfg.operation_timeout(), async {
+        let stage = StageCursor::new(TimeoutStage::Connect);
+        run_op(&runtime, cfg, &stage, async {
             let js = connect_only(cfg).await?;
-            replay_once(&js, cfg.stream_name(), cfg.subject()).await
+            stage
+                .during(
+                    TimeoutStage::Replay,
+                    replay_once(&js, cfg.stream_name(), cfg.subject()),
+                )
+                .await
         })
     }
     fn state_locked(&self) -> MutexGuard<'_, Option<LiveState>> {
@@ -403,18 +429,94 @@ fn blake3_hex(bytes: &[u8]) -> String {
     let hash = blake3::hash(bytes);
     hash.to_hex().to_string()
 }
-fn run_op<F, T>(rt: &Handle, timeout: Duration, fut: F) -> Result<T, JetStreamRuntimeError>
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimeoutStage {
+    Gate,
+    Connect,
+    Publish,
+    Ack,
+    Replay,
+}
+
+impl TimeoutStage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Gate => "gate",
+            Self::Connect => "connect",
+            Self::Publish => "publish",
+            Self::Ack => "ack",
+            Self::Replay => "replay",
+        }
+    }
+}
+
+struct StageCursor(Mutex<TimeoutStage>);
+
+impl StageCursor {
+    fn new(stage: TimeoutStage) -> Self {
+        Self(Mutex::new(stage))
+    }
+
+    async fn during<F: std::future::IntoFuture>(
+        &self,
+        stage: TimeoutStage,
+        future: F,
+    ) -> F::Output {
+        *self.0.lock().expect("stage lock poisoned") = stage;
+        future.await
+    }
+}
+
+#[derive(Debug)]
+struct OperationTimeout {
+    stage: TimeoutStage,
+    source: JetStreamRuntimeError,
+}
+
+impl std::fmt::Display for OperationTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "operation deadline expired during {}: {}; remote outcome may be unknown",
+            self.stage.label(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for OperationTimeout {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn run_op<F, T>(
+    rt: &Handle,
+    cfg: &JetStreamConfig,
+    stage: &StageCursor,
+    fut: F,
+) -> Result<T, JetStreamRuntimeError>
 where
     F: std::future::Future<Output = Result<T, JetStreamRuntimeError>> + Send,
     T: Send,
 {
     let start = std::time::Instant::now();
+    let timeout = cfg.operation_timeout();
     match rt.block_on(async move { tokio::time::timeout(timeout, fut).await }) {
         Ok(inner) => inner,
-        Err(_elapsed) => Err(JetStreamRuntimeError::Timeout {
-            elapsed: start.elapsed(),
-            configured: timeout,
-        }),
+        Err(_elapsed) => {
+            let error = OperationTimeout {
+                stage: *stage.0.lock().expect("stage lock poisoned"),
+                source: JetStreamRuntimeError::Timeout {
+                    elapsed: start.elapsed(),
+                    configured: timeout,
+                },
+            };
+            if let Some(observer) = cfg.timeout_observer() {
+                observer.observe(&error);
+            }
+            Err(error.source)
+        }
     }
 }
 async fn connect_only(
@@ -589,16 +691,21 @@ async fn publish_once(
     nats_msg_id: &str,
     replay_tag: Option<&str>,
     expected_last_subject_sequence: Option<u64>,
+    stage: &StageCursor,
 ) -> Result<(u64, bool), JetStreamRuntimeError> {
     let headers = build_publish_headers(nats_msg_id, replay_tag, expected_last_subject_sequence);
     let payload = bytes::Bytes::copy_from_slice(bytes);
-    let publish_ack_future = js
-        .publish_with_headers(subject.to_string(), headers, payload)
+    let publish_ack_future = stage
+        .during(
+            TimeoutStage::Publish,
+            js.publish_with_headers(subject.to_string(), headers, payload),
+        )
         .await
         .map_err(|e| JetStreamRuntimeError::Publish {
             source: Box::new(e),
         })?;
-    let pub_ack = publish_ack_future
+    let pub_ack = stage
+        .during(TimeoutStage::Ack, publish_ack_future)
         .await
         .map_err(|e| runtime_error_from_publish_ack(e, expected_last_subject_sequence))?;
     Ok((pub_ack.sequence, pub_ack.duplicate))
@@ -607,11 +714,23 @@ fn runtime_error_from_publish_ack(
     err: async_nats::jetstream::context::PublishError,
     expected_seq: Option<u64>,
 ) -> JetStreamRuntimeError {
+    use async_nats::jetstream::ErrorCode;
     use async_nats::jetstream::context::PublishErrorKind;
-    if err.kind() == PublishErrorKind::WrongLastSequence {
-        let actual_seq = std::error::Error::source(&err)
-            .and_then(|source| source.downcast_ref::<async_nats::jetstream::Error>())
-            .and_then(|api_err| parse_broker_actual_seq(&api_err.to_string()));
+    let api_error = std::error::Error::source(&err)
+        .and_then(|source| source.downcast_ref::<async_nats::jetstream::Error>());
+    let code = api_error.map(async_nats::jetstream::Error::error_code);
+    if err.kind() == PublishErrorKind::WrongLastSequence
+        || matches!(
+            code,
+            Some(
+                ErrorCode::STREAM_WRONG_LAST_SEQUENCE
+                    | ErrorCode::STREAM_WRONG_LAST_SEQUENCE_CONSTANT
+            )
+        )
+    {
+        let actual_seq = api_error
+            .filter(|error| error.error_code() == ErrorCode::STREAM_WRONG_LAST_SEQUENCE)
+            .and_then(|error| parse_broker_actual_seq(&error.to_string()));
         JetStreamRuntimeError::WrongLastSequence {
             expected_seq,
             actual_seq,
@@ -750,6 +869,393 @@ fn build_replay_pull_config(subject: &str) -> async_nats::jetstream::consumer::p
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn phase_acceptance_production_callsite_anchors() {
+        let source = include_str!("handle.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let compact: String = source.split_whitespace().collect();
+        for anchor in [
+            "StageCursor::new(TimeoutStage::Gate)",
+            ".append_gate.acquire().await",
+            ".during(TimeoutStage::Connect,ensure_state(&self.state,cfg))",
+            "letjs=ensure_state(&self.state,cfg).await?;stage.during(TimeoutStage::Replay,replay_once(&js,cfg.stream_name(),cfg.subject()),)",
+            "letjs=connect_only(cfg).await?;stage.during(TimeoutStage::Replay,replay_once(&js,cfg.stream_name(),cfg.subject()),)",
+            ".during(TimeoutStage::Replay,read_stream_description_once(&js,cfg.stream_name()),)",
+            ".during(TimeoutStage::Publish,js.publish_with_headers(subject.to_string(),headers,payload),)",
+            ".during(TimeoutStage::Ack,publish_ack_future)",
+            "letjs=connect_only(cfg).await?;provision_stream(&js,cfg).await?;",
+            "crate::barrier::observe_connection(&client,&observer,||{client.statistics().connects.load(Ordering::Relaxed)}).await;Ok(client)",
+            "js.get_or_create_stream(stream_cfg.clone()).await",
+            "js.update_stream(stream_cfg).await",
+            "stream.create_consumer(build_replay_pull_config(subject)).await",
+            "consumer.messages().await",
+            "whileletSome(item)=messages.next().await",
+        ] {
+            assert!(
+                compact.contains(anchor),
+                "production phase anchor missing: {anchor}"
+            );
+        }
+        assert_eq!(compact.matches("tokio::time::timeout(").count(), 1);
+        assert_eq!(compact.matches("run_op(&runtime,cfg,&stage,").count(), 4);
+    }
+
+    #[test]
+    fn phase_acceptance_four_pending_stage_models_keep_context_and_cancel() {
+        for expected in [
+            TimeoutStage::Connect,
+            TimeoutStage::Publish,
+            TimeoutStage::Ack,
+            TimeoutStage::Replay,
+        ] {
+            let name = expected.label();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let drop_at_callback = dropped.clone();
+            let config = timeout_config(
+                &runtime,
+                crate::TimeoutObserver::new(move |error| {
+                    assert!(drop_at_callback.load(Ordering::SeqCst));
+                    sink.lock().unwrap().push(error.to_string());
+                }),
+            );
+            let cursor = StageCursor::new(TimeoutStage::Gate);
+            let gate = Semaphore::new(1);
+            let result: Result<(), _> = run_op(runtime.handle(), &config, &cursor, async {
+                let _permit = gate.acquire().await.unwrap();
+                let _witness = DropWitness(dropped.clone());
+                cursor
+                    .during(expected, async {
+                        std::future::pending::<()>().await;
+                        panic!("cancelled {name} advanced to its successor")
+                    })
+                    .await
+            });
+            assert!(
+                matches!(result, Err(JetStreamRuntimeError::Timeout { .. })),
+                "{name}"
+            );
+            assert_eq!(gate.available_permits(), 1, "{name}");
+            let messages = seen.lock().unwrap();
+            assert_eq!(messages.len(), 1, "{name}");
+            assert!(
+                messages[0].contains(&format!("during {}:", expected.label())),
+                "{name}: {}",
+                messages[0]
+            );
+        }
+    }
+
+    #[test]
+    fn phase_acceptance_delayed_gate_spends_same_budget_before_ack() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let config = timeout_config(
+            &runtime,
+            crate::TimeoutObserver::new(move |error| {
+                sink.lock().unwrap().push(error.to_string());
+            }),
+        )
+        .to_builder()
+        .operation_timeout(Duration::from_millis(200))
+        .build()
+        .unwrap();
+        let cursor = StageCursor::new(TimeoutStage::Gate);
+        let gate = Semaphore::new(1);
+        let held = gate.try_acquire().unwrap();
+        let reached_ack = std::sync::atomic::AtomicBool::new(false);
+        let result = run_op(runtime.handle(), &config, &cursor, async {
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                drop(held);
+            };
+            let work = async {
+                let _permit = gate.acquire().await.unwrap();
+                cursor
+                    .during(TimeoutStage::Connect, std::future::ready(()))
+                    .await;
+                cursor
+                    .during(TimeoutStage::Publish, std::future::ready(()))
+                    .await;
+                cursor
+                    .during(TimeoutStage::Ack, async {
+                        reached_ack.store(true, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(120)).await;
+                    })
+                    .await;
+            };
+            tokio::join!(release, work);
+            Ok(())
+        });
+        assert!(matches!(result, Err(JetStreamRuntimeError::Timeout { .. })));
+        assert!(reached_ack.load(Ordering::SeqCst));
+        assert_eq!(gate.available_permits(), 1);
+        assert!(seen.lock().unwrap()[0].contains("during ack:"));
+    }
+
+    #[test]
+    fn phase_acceptance_cancelled_real_gate_waiter_does_not_take_next_permit() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let handle = JetStreamHandle::new(timeout_config(
+            &runtime,
+            crate::TimeoutObserver::new(|_| {}),
+        ));
+        let held = handle.append_gate.try_acquire().unwrap();
+        for _ in 0..3 {
+            assert!(matches!(
+                handle.append(b"waiter"),
+                Err(JetStreamRuntimeError::Timeout { .. })
+            ));
+        }
+        assert!(handle.state.lock().unwrap().is_none());
+        drop(held);
+        let next = handle
+            .append_gate
+            .try_acquire()
+            .expect("cancelled waiters must leave admission available");
+        drop(next);
+        assert_eq!(handle.append_gate.available_permits(), 1);
+    }
+
+    #[test]
+    fn production_cached_ack_and_replay_timeout_wiring() {
+        let Some(server) = crate::test_support::LiveNatsServer::try_acquire()
+            .ready_or_skip("production_cached_ack_and_replay_timeout_wiring")
+        else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let (client, _publishes, _requests) = runtime.block_on(async {
+            let client = async_nats::connect(server.url()).await.unwrap();
+            let publishes = client.subscribe("timeout").await.unwrap();
+            let requests = client.subscribe("timeout.api.>").await.unwrap();
+            client.flush().await.unwrap();
+            (client, publishes, requests)
+        });
+        let config = timeout_config(&runtime, crate::TimeoutObserver::new(|_| {}))
+            .to_builder()
+            .nats_url(server.url())
+            .build()
+            .unwrap();
+        let mut handle = JetStreamHandle::new(config);
+        *handle.state.lock().unwrap() = Some(LiveState {
+            js: async_nats::jetstream::with_prefix(client, "timeout.api"),
+            last_ack_seq: 7,
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        handle.set_timeout_observer(crate::TimeoutObserver::new(move |error| {
+            sink.lock().unwrap().push(error.to_string());
+        }));
+        assert_eq!(handle.sync().unwrap().as_u64(), 7);
+        for (result, expected) in [
+            (handle.append(b"payload").map(|_| ()), "ack"),
+            (handle.replay_all().map(|_| ()), "replay"),
+            (handle.read_stream_description().map(|_| ()), "replay"),
+        ] {
+            assert!(matches!(result, Err(JetStreamRuntimeError::Timeout { .. })));
+            let message = seen.lock().unwrap().remove(0);
+            assert!(
+                message.contains(&format!("during {expected}:")),
+                "{message}"
+            );
+        }
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(handle.sync().unwrap().as_u64(), 7);
+        assert_eq!(handle.append_gate.available_permits(), 1);
+    }
+    #[test]
+    fn production_cold_operations_report_connect_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let config = timeout_config(
+            &runtime,
+            crate::TimeoutObserver::new(move |error| {
+                sink.lock().unwrap().push(error.to_string());
+            }),
+        )
+        .to_builder()
+        .nats_url(format!("nats://{}", listener.local_addr().unwrap()))
+        .build()
+        .unwrap();
+        let handle = JetStreamHandle::new(config);
+        let results = [
+            handle.append(b"payload").map(|_| ()),
+            handle.replay_all().map(|_| ()),
+            handle.read_stream_description().map(|_| ()),
+            handle.replay_readonly().map(|_| ()),
+        ];
+        assert!(
+            results
+                .iter()
+                .all(|result| matches!(result, Err(JetStreamRuntimeError::Timeout { .. })))
+        );
+        let messages = seen.lock().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.contains("during connect:")),
+            "{messages:?}"
+        );
+    }
+    struct DropWitness(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for DropWitness {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    fn timeout_config(
+        runtime: &tokio::runtime::Runtime,
+        observer: crate::TimeoutObserver,
+    ) -> JetStreamConfig {
+        JetStreamConfig::builder()
+            .stream_name("timeout")
+            .subject("timeout")
+            .durable_consumer("timeout")
+            .runtime_handle(crate::RuntimeHandle::from_tokio(runtime.handle().clone()))
+            .operation_timeout(Duration::from_millis(30))
+            .timeout_observer(observer)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn timeout_stages_are_exact_isolated_and_drop_permits() {
+        std::thread::scope(|scope| {
+            for expected in [
+                TimeoutStage::Gate,
+                TimeoutStage::Connect,
+                TimeoutStage::Publish,
+                TimeoutStage::Ack,
+                TimeoutStage::Replay,
+            ] {
+                scope.spawn(move || {
+                    let runtime = tokio::runtime::Runtime::new().unwrap();
+                    let seen = Arc::new(Mutex::new(Vec::new()));
+                    let sink = seen.clone();
+                    let config = timeout_config(&runtime, crate::TimeoutObserver::new(move |error| {
+                        sink.lock().unwrap().push(error.to_string());
+                    }));
+                    let cursor = StageCursor::new(TimeoutStage::Gate);
+                    let semaphore = Semaphore::new(1);
+                    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let result: Result<(), _> = run_op(runtime.handle(), &config, &cursor, async {
+                        let _permit = semaphore.acquire().await.unwrap();
+                        let _witness = DropWitness(dropped.clone());
+                        cursor.during(expected, std::future::pending::<()>()).await;
+                        panic!("a cancelled phase must not advance")
+                    });
+                    assert!(matches!(result, Err(JetStreamRuntimeError::Timeout { configured, elapsed }) if configured == Duration::from_millis(30) && elapsed >= configured));
+                    assert!(dropped.load(Ordering::SeqCst));
+                    assert_eq!(semaphore.available_permits(), 1);
+                    let messages = seen.lock().unwrap();
+                    assert_eq!(messages.len(), 1);
+                    assert!(messages[0].contains(&format!("during {}:", expected.label())), "{}", messages[0]);
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn timeout_cumulative_budget_does_not_restart_between_stages() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let config = timeout_config(&runtime, crate::TimeoutObserver::new(|_| {}))
+            .to_builder()
+            .operation_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let cursor = StageCursor::new(TimeoutStage::Gate);
+        let result = run_op(runtime.handle(), &config, &cursor, async {
+            cursor
+                .during(
+                    TimeoutStage::Connect,
+                    tokio::time::sleep(Duration::from_millis(60)),
+                )
+                .await;
+            cursor
+                .during(
+                    TimeoutStage::Ack,
+                    tokio::time::sleep(Duration::from_millis(60)),
+                )
+                .await;
+            Ok(())
+        });
+        assert!(
+            matches!(result, Err(JetStreamRuntimeError::Timeout { .. })),
+            "two sub-budget phases must exhaust the total budget"
+        );
+    }
+
+    #[test]
+    fn timeout_success_and_dependency_errors_do_not_notify() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let config = timeout_config(
+            &runtime,
+            crate::TimeoutObserver::new(|_| panic!("not an outer timeout")),
+        );
+        let cursor = StageCursor::new(TimeoutStage::Connect);
+        assert_eq!(
+            run_op(runtime.handle(), &config, &cursor, async { Ok(7) }).unwrap(),
+            7
+        );
+        let result: Result<(), _> = run_op(runtime.handle(), &config, &cursor, async {
+            Err(JetStreamRuntimeError::Connect {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "dependency",
+                )),
+            })
+        });
+        assert!(matches!(result, Err(JetStreamRuntimeError::Connect { .. })));
+    }
+    #[test]
+    fn timeout_observer_delivers_gate_and_preserves_legacy_timeout() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let config = JetStreamConfig::builder()
+            .stream_name("timeout")
+            .subject("timeout")
+            .durable_consumer("timeout")
+            .runtime_handle(crate::RuntimeHandle::from_tokio(runtime.handle().clone()))
+            .operation_timeout(Duration::from_millis(10))
+            .timeout_observer(crate::TimeoutObserver::new(move |error| {
+                sink.lock().unwrap().push(error.to_string());
+                assert!(matches!(
+                    error
+                        .source()
+                        .unwrap()
+                        .downcast_ref::<JetStreamRuntimeError>(),
+                    Some(JetStreamRuntimeError::Timeout { .. })
+                ));
+            }))
+            .build()
+            .unwrap();
+        let handle = JetStreamHandle::new(config.to_builder().build().unwrap());
+        let permit = handle.append_gate.try_acquire().unwrap();
+        let error = handle.append(b"payload").unwrap_err();
+        assert!(
+            matches!(error, JetStreamRuntimeError::Timeout { configured, .. } if configured == Duration::from_millis(10))
+        );
+        assert!(std::error::Error::source(&error).is_none());
+        drop(permit);
+        assert_eq!(handle.append_gate.available_permits(), 1);
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "one timeout diagnostic must reach the observer"
+        );
+        assert!(seen.lock().unwrap()[0].contains("gate"));
+    }
     #[test]
     fn replay_pull_config_sets_inactive_threshold_30s() {
         let cfg = build_replay_pull_config("pardosa.test.subject");
@@ -989,6 +1495,65 @@ mod tests {
         }
     }
     #[test]
+    fn source_less_ack_classification_needs_no_server() {
+        use async_nats::jetstream::context::{PublishError, PublishErrorKind};
+
+        for (kind, conflict) in [
+            (PublishErrorKind::WrongLastSequence, true),
+            (PublishErrorKind::Other, false),
+        ] {
+            let mapped = runtime_error_from_publish_ack(PublishError::new(kind), Some(3));
+            assert_eq!(
+                matches!(mapped, JetStreamRuntimeError::WrongLastSequence { .. }),
+                conflict
+            );
+        }
+    }
+    #[test]
+    fn typed_server_sequence_errors_preserve_conflict_and_unknown_errors() {
+        let Some(server) = crate::test_support::LiveNatsServer::try_acquire()
+            .ready_or_skip("typed_server_sequence_errors_preserve_conflict_and_unknown_errors")
+        else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+        let client = async_nats::connect(server.url()).await.expect("connect");
+        let mut requests = client.subscribe("typed.ack").await.expect("subscribe");
+        client.flush().await.expect("subscription ready");
+        let js = async_nats::jetstream::new(client.clone());
+        for (code, description, actual) in [
+            (10164, "opaque 999", None),
+            (10071, "wrong last sequence: 5", Some(5)),
+            (10071, "opaque", None),
+            (10008, "wrong last sequence: 5", None),
+        ] {
+            let pending = js.publish("typed.ack", Bytes::new()).await.expect("publish");
+            let request = requests.next().await.expect("request");
+            let response = format!(
+                "{{\"error\":{{\"code\":400,\"err_code\":{code},\"description\":\"{description}\"}}}}"
+            );
+            client.publish(request.reply.expect("reply"), Bytes::from(response)).await.expect("error response");
+            let error = pending.await.expect_err("server rejection");
+            let rendered = error.to_string();
+            let mapped = runtime_error_from_publish_ack(error, Some(3));
+            match mapped {
+                JetStreamRuntimeError::WrongLastSequence { expected_seq, actual_seq, source } => {
+                    assert!(code == 10071 || code == 10164, "unknown code became conflict");
+                    assert_eq!(expected_seq, Some(3));
+                    assert_eq!(actual_seq, actual);
+                    assert_eq!(source.to_string(), rendered);
+                }
+                JetStreamRuntimeError::Publish { source } => {
+                    assert_eq!(code, 10008, "typed sequence rejection must be conflict");
+                    assert_eq!(source.to_string(), rendered);
+                }
+                other => panic!("unexpected mapping: {other:?}"),
+            }
+        }
+        });
+    }
+    #[test]
     fn parse_broker_actual_seq_extracts_trailing_sequence_number() {
         assert_eq!(
             parse_broker_actual_seq("wrong last sequence: 5 (code 400, error code 10071)"),
@@ -1064,6 +1629,17 @@ mod tests {
             }
             other => panic!("expected Publish, got {other:?}"),
         }
+    }
+    #[test]
+    fn untyped_conflict_description_stays_publish() {
+        let error = async_nats::jetstream::context::PublishError::with_source(
+            async_nats::jetstream::context::PublishErrorKind::Other,
+            std::io::Error::other("wrong last sequence: 10164"),
+        );
+        assert!(matches!(
+            runtime_error_from_publish_ack(error, Some(3)),
+            JetStreamRuntimeError::Publish { .. }
+        ));
     }
     #[test]
     fn replay_pull_config_filters_to_caller_subject() {

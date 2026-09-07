@@ -265,6 +265,26 @@ These are load-bearing; violating them is an abort-class change:
   `#[allow(.., reason=..)]` only where `#[expect]` would be unfulfilled (e.g. a
   lint that fires under `--test` but not `--all-features`).
 
+## Rustling review examples
+
+Selective TigerStyle adopt/adapt/reject decisions and the construction-path
+inventory are canonical in fleet `~/.config/opencode/AGENTS.md` § Rustling —
+selective TigerStyle adaptation. Use its existing `illegal-state-representable`
+artefact in both Linus and generic review; do not add a repo regex or duplicate
+the resource/control-flow doctrine. Joint acceptance: `ghr-jwl9c`, `ghr-2gefa`.
+
+These are scoped review samples, not an exhaustive type audit or an API change:
+
+| Case | Invariant, route and read-level assessment |
+|---|---|
+| `ControlCell` (`crates/gh-report/src/report/view_model.rs`; builder in `report/html.rs`) | Exclusion count and formatted text must agree. The builder derives a consistent pair, but public fields permit setting `excluded_total = 1` while retaining `excluded_formatted = "0 unmeasured"`. Reject this mutation/struct-literal route under `illegal-state-representable`; private fields plus a deriving constructor/accessors are the separate `ghr-p84jq` remedy. A downstream compile-fail mutation test would check that remedy; none is claimed here. |
+| `UpdatedAt` (`crates/gh-report/src/domain/repository.rs`) | Nonempty spelling, NOT timestamp syntax. Accept `new("") == None`, including wire normalization through `deserialize_updated_at`; accept nonempty `"not-a-timestamp"`. Private storage and read-only dereference constrain outside callers. Audit conversions and defining-module construction too; an unchecked deserializer admitting empty would be a reject example, not a claim that one currently exists. Existing constructor/wire/native-roundtrip tests are runtime boundary oracles. |
+| `SweepTimeout` (`crates/gh-report/src/config/mod.rs`) | Nonzero seconds fitting `u32`. Accept `new(0) == None`, `new(1)` and the current 7200-second default. `Default` constructs directly, so review its constant separately; private storage is not a global proof of nonzero. Existing zero/default/duration tests are boundary oracles, not evidence that arbitrary defining-module code cannot create zero. |
+| Independent repository flags (`crates/gh-report/src/domain/repository.rs`) | `archived`, `has_issues`, `fork`, `is_empty` are independent attributes, not exclusive states. Accept their booleans; no enum conversion is justified merely by their count. |
+
+Refresh these implementations when reviewing a diff. Record actual test exits
+if executed; these examples alone are neither compiler nor CI proof.
+
 ## Intent (why this repo exists — the gh-report stance)
 
 This workspace lays down a *small, observable, ratified* set of enabling

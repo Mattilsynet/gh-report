@@ -1,3 +1,4 @@
+use super::nats_cluster::Cluster;
 use gh_report::app::state::AppState;
 use gh_report::config::runtime::{NatsStoreConfig, PardosaBackend};
 use gh_report::domain::checks::{
@@ -10,7 +11,6 @@ use gh_report::domain::repository::{Repository, Visibility};
 use gh_report::error::{AppError, PersistenceError};
 use gh_report::event::DomainEvent;
 use pardosa::store::{BackendError, PardosaError};
-use pardosa_nats::test_support::LiveNatsServer;
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 use std::error::Error;
 use std::path::Path;
@@ -186,20 +186,25 @@ async fn purge_stream(nats_url: &str, stream_name: &str) {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep fence assertions and explicit post-cleanup verdict in one scenario"
+)]
 fn two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge() {
-    let Some(server) = LiveNatsServer::try_acquire()
-        .ready_or_skip("two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge")
-    else {
+    let Some(server) = Cluster::acquire(
+        "two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge",
+    ) else {
         return;
     };
+    server.ready();
     let rt = Runtime::new().expect("tokio runtime");
     let org = unique_org();
     let nats = NatsStoreConfig::for_org(&org, server.url().to_owned()).expect("nats config");
-    let _repo_cleanup = StreamCleanup {
+    let repo_cleanup = StreamCleanup {
         nats_url: server.url().to_owned(),
         stream_name: nats.stream_name.clone(),
     };
-    let _org_cleanup = StreamCleanup {
+    let org_cleanup = StreamCleanup {
         nats_url: server.url().to_owned(),
         stream_name: nats.org_events().stream_name,
     };
@@ -207,6 +212,8 @@ fn two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge() {
     rt.block_on(async {
         let first_tmp = tempfile::tempdir().expect("first tempdir");
         let first = open_state(first_tmp.path(), nats.clone()).await;
+        server.replicate(&nats.stream_name).await;
+        server.replicate(&nats.org_events().stream_name).await;
         first
             .event_store
             .record("fence/repo-a", event("fence/repo-a", "repo-a", 1))
@@ -217,7 +224,19 @@ fn two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge() {
             .expect("single writer second sync uses updated expect seq");
 
         let second_tmp = tempfile::tempdir().expect("second tempdir");
-        let second = open_state(second_tmp.path(), nats.clone()).await;
+        let mut second_config = nats.clone();
+        second_config.nats_url = server.node_url(1).to_owned();
+        let second = open_state(second_tmp.path(), second_config).await;
+        server.replicate(&nats.stream_name).await;
+        server.replicate(&nats.org_events().stream_name).await;
+        let client = async_nats::connect(server.url()).await.expect("connect");
+        let js = async_nats::jetstream::new(client);
+        let stream = js.get_stream(&nats.stream_name).await.expect("stream");
+        let info = stream.get_info().await.expect("stream info");
+        assert_eq!(
+            info.config.num_replicas, 3,
+            "fence stream replicated three ways"
+        );
         first
             .event_store
             .record("fence/repo-c", event("fence/repo-c", "repo-c", 3))
@@ -260,7 +279,7 @@ fn two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge() {
             "loser event must not be authoritatively appended"
         );
         assert_eq!(
-            subject_message_count(server.url(), &nats.stream_name).await,
+            subject_message_count(server.node_url(2), &nats.stream_name).await,
             3,
             "JetStream subject contains exactly the winner's messages"
         );
@@ -268,6 +287,8 @@ fn two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge() {
         purge_stream(server.url(), &nats.stream_name).await;
         let after_purge_tmp = tempfile::tempdir().expect("post-purge tempdir");
         let after_purge = open_state(after_purge_tmp.path(), nats.clone()).await;
+        server.replicate(&nats.stream_name).await;
+        server.replicate(&nats.org_events().stream_name).await;
         after_purge
             .event_store
             .record(
@@ -281,4 +302,7 @@ fn two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge() {
             "post-purge append re-establishes exactly one authoritative message"
         );
     });
+    drop(org_cleanup);
+    drop(repo_cleanup);
+    server.finish();
 }

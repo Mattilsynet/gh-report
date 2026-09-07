@@ -47,6 +47,9 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
         .subject(args.subject)
         .durable_consumer(args.durable_consumer)
         .nats_url(args.nats_url)
+        .timeout_observer(pardosa_nats::TimeoutObserver::new(|error| {
+            eprintln!("error: {error}");
+        }))
         .runtime_handle(RuntimeHandle::from_tokio(runtime.handle().clone()));
     if let Some(creds) = args.creds {
         builder = builder.credentials_path(creds);
@@ -63,4 +66,45 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    #[test]
+    fn cli_captures_production_connect_timeout() {
+        const CHILD_URL: &str = "PARDOSA_TIMEOUT_TEST_URL";
+        if let Ok(url) = std::env::var(CHILD_URL) {
+            let result = super::run(super::Args {
+                nats_url: url,
+                creds: None,
+                stream: "timeout".into(),
+                subject: "timeout".into(),
+                durable_consumer: "timeout".into(),
+                allow_plaintext: false,
+            });
+            assert!(result.is_err());
+            return;
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "timeout_tests::cli_captures_production_connect_timeout",
+                "--nocapture",
+            ])
+            .env(
+                CHILD_URL,
+                format!("nats://{}", listener.local_addr().unwrap()),
+            )
+            .env("PARDOSA_NATS_OPERATION_TIMEOUT_SECS", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains("error: operation deadline expired during connect:"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("remote outcome may be unknown"));
+    }
 }

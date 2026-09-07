@@ -11,6 +11,60 @@ use super::metrics::{
 };
 use super::repository::Repository;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RepositoryReadState {
+    Pending,
+    Failed,
+    Observed,
+}
+
+impl RepositoryReadState {
+    pub(crate) const PENDING_REASON: &str = "pending";
+
+    pub(crate) fn from_checks(checks: &RepositoryChecks) -> Self {
+        let has_observation = Self::observed_check_timestamps(checks)
+            .into_iter()
+            .any(|at| at.is_some());
+        let pending = [
+            checks.secret_scanning.reason.as_deref(),
+            checks.dependabot_security_updates.reason.as_deref(),
+            checks.branch_protection.details.reason.as_deref(),
+        ]
+        .into_iter()
+        .all(|reason| reason == Some(Self::PENDING_REASON));
+        match (has_observation, pending) {
+            (true, _) => Self::Observed,
+            (false, true) => Self::Pending,
+            (false, false) => Self::Failed,
+        }
+    }
+
+    pub(crate) fn observed_check_timestamps(checks: &RepositoryChecks) -> [Option<&str>; 5] {
+        use super::checks::{
+            BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
+            SecurityPolicyStatus,
+        };
+        [
+            matches!(
+                checks.security_policy.status,
+                SecurityPolicyStatus::Pass | SecurityPolicyStatus::Fail
+            )
+            .then_some(checks.security_policy.timestamp.as_str()),
+            matches!(
+                checks.secret_scanning.status,
+                SecretScanningStatus::Enabled | SecretScanningStatus::Disabled
+            )
+            .then_some(checks.secret_scanning.timestamp.as_str()),
+            (checks.dependabot_security_updates.status != DependabotStatus::Unknown)
+                .then_some(checks.dependabot_security_updates.timestamp.as_str()),
+            (checks.branch_protection.status != BranchProtectionStatus::Unknown)
+                .then_some(checks.branch_protection.timestamp.as_str()),
+            (checks.codeowners.status != CodeownersStatus::Unknown)
+                .then_some(checks.codeowners.timestamp.as_str()),
+        ]
+    }
+}
+
 /// Information about the most recent commit on a repository's default branch.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LastCommitInfo {

@@ -48,13 +48,13 @@
                         <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
                                 target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}</td>
                         <td>{{ row.visibility }}</td>
-                        <td class="text-center"><span class="status-dot {{ row.has_pr.css_class }}" title="{{ row.has_pr.label }}"><span class="sr-only">{{ row.has_pr.label }}</span></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.has_pr.css_class() }}" title="{{ row.has_pr.label }}"><span class="sr-only">{{ row.has_pr.label }}</span></span></td>
                         <td class="text-center">{{ row.required_reviewers_formatted }}</td>
-                        <td class="text-center"><span class="status-dot {{ row.has_status_checks.css_class }}" title="{{ row.has_status_checks.label }}"><span class="sr-only">{{ row.has_status_checks.label }}</span></span></td>
-                        <td class="text-center"><span class="status-dot {{ row.admin_equivalent.css_class }}" title="{{ row.admin_equivalent.label }}"><span class="sr-only">{{ row.admin_equivalent.label }}</span></span></td>
-                        <td class="text-center"><span class="status-dot {{ row.has_broad_bypass.css_class }}" title="{{ row.has_broad_bypass.label }}"><span class="sr-only">{{ row.has_broad_bypass.label }}</span></span></td>
-                        <td class="text-center"><span class="status-dot {{ row.force_push_blocked.css_class }}" title="{{ row.force_push_blocked.label }}"><span class="sr-only">{{ row.force_push_blocked.label }}</span></span></td>
-                        <td class="text-center"><span class="status-dot {{ row.deletion_blocked.css_class }}" title="{{ row.deletion_blocked.label }}"><span class="sr-only">{{ row.deletion_blocked.label }}</span></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.has_status_checks.css_class() }}" title="{{ row.has_status_checks.label }}"><span class="sr-only">{{ row.has_status_checks.label }}</span></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.admin_equivalent.css_class() }}" title="{{ row.admin_equivalent.label }}"><span class="sr-only">{{ row.admin_equivalent.label }}</span></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.has_broad_bypass.css_class() }}" title="{{ row.has_broad_bypass.label }}"><span class="sr-only">{{ row.has_broad_bypass.label }}</span></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.force_push_blocked.css_class() }}" title="{{ row.force_push_blocked.label }}"><span class="sr-only">{{ row.force_push_blocked.label }}</span></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.deletion_blocked.css_class() }}" title="{{ row.deletion_blocked.label }}"><span class="sr-only">{{ row.deletion_blocked.label }}</span></span></td>
                     </tr>
                     {% endfor %}
                 </tbody>

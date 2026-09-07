@@ -21,6 +21,7 @@
 //!
 //! [`REPO_CACHE_TTL_HOURS`]: crate::config::REPO_CACHE_TTL_HOURS
 
+#[cfg(test)]
 use std::collections::HashMap;
 use std::error::Error;
 use std::future::Future;
@@ -45,6 +46,90 @@ pub type EventStoreImpl = crate::store::NativeStore;
 pub type OrgEventStoreImpl = crate::store::NativeOrgStore;
 pub type TeamEventStoreImpl = crate::store::NativeTeamStore;
 pub(crate) type ProjectionState<P> = Arc<Mutex<P>>;
+
+static RENDER_CAPTURE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Clone)]
+pub(crate) struct ProjectionCaptureToken {
+    source: std::sync::Weak<Mutex<crate::projection::EvidenceProjection>>,
+    sequence: u64,
+    deleted_keys: Arc<std::collections::BTreeSet<String>>,
+}
+
+impl ProjectionCaptureToken {
+    pub(crate) fn witnesses_deletion(&self, key: &str) -> bool {
+        self.deleted_keys.contains(key)
+    }
+
+    pub(crate) fn succeeds(&self, previous: &Self) -> bool {
+        self.source.ptr_eq(&previous.source) && self.sequence >= previous.sequence
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct LiveObservationToken {
+    source: std::sync::Weak<Mutex<crate::projection::EvidenceProjection>>,
+    sequence: u64,
+}
+
+impl LiveObservationToken {
+    pub(crate) fn succeeds(&self, previous: &Self) -> bool {
+        self.source.ptr_eq(&previous.source) && self.sequence >= previous.sequence
+    }
+
+    pub(crate) fn belongs_to(&self, projection: &ProjectionCaptureToken) -> bool {
+        self.source.ptr_eq(&projection.source)
+    }
+}
+
+pub(crate) struct ProjectionRenderSnapshot {
+    token: ProjectionCaptureToken,
+    projection: crate::projection::EvidenceProjection,
+}
+
+impl ProjectionRenderSnapshot {
+    pub(crate) fn token(&self) -> ProjectionCaptureToken {
+        self.token.clone()
+    }
+
+    pub(crate) fn repositories(&self) -> Vec<RepositoryEvidence> {
+        self.projection.sorted_snapshot()
+    }
+
+    pub(crate) fn deleted(&self) -> Vec<crate::projection::DeletedRepoRecord> {
+        self.projection.deleted.values().cloned().collect()
+    }
+
+    pub(crate) fn org_state(&self) -> Option<crate::projection::OrgReadModel> {
+        self.projection.org_state.clone()
+    }
+
+    pub(crate) fn team_rosters(&self) -> Vec<crate::domain::metrics::TeamRoster> {
+        self.projection
+            .team_rosters
+            .values()
+            .chain(
+                self.projection
+                    .team_ghost_rosters
+                    .iter()
+                    .filter(|(key, _)| !self.projection.team_rosters.contains_key(*key))
+                    .map(|(_, roster)| roster),
+            )
+            .cloned()
+            .collect()
+    }
+}
+
+fn next_render_capture(sequence: &std::sync::atomic::AtomicU64) -> Result<u64, std::io::Error> {
+    sequence
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |previous| previous.checked_add(1),
+        )
+        .map(|previous| previous + 1)
+        .map_err(|_| std::io::Error::other("projection render capture sequence exhausted"))
+}
 pub(crate) type SchedulerEventStoreImpl =
     crate::app::ephemeral_store::EphemeralEventStore<cherry_pit_core::SchedulerEvent>;
 pub(crate) type SweepTimeoutEventStoreImpl =
@@ -166,6 +251,7 @@ pub(crate) type WorkerPoolHandles =
 pub(crate) type WorkerShutdownToken = tokio_util::sync::CancellationToken;
 
 pub struct AppState {
+    live_observation: tokio::sync::Mutex<u64>,
     /// When this service instance started.
     pub started_at: Timestamp,
     /// Per-process UUID-v7 identity used in fence-abort audit logs.
@@ -281,6 +367,38 @@ impl LastRecoveryStatus {
 }
 
 impl AppState {
+    pub(crate) async fn observe_live<T>(
+        &self,
+        fetch: impl Future<Output = T>,
+    ) -> Result<(T, LiveObservationToken), std::io::Error> {
+        let mut sequence = self.live_observation.lock().await;
+        *sequence = sequence
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("live observation sequence exhausted"))?;
+        let token = LiveObservationToken {
+            source: Arc::downgrade(&self.projection_state),
+            sequence: *sequence,
+        };
+        let observed = fetch.await;
+        drop(sequence);
+        Ok((observed, token))
+    }
+
+    pub(crate) fn projection_render_snapshot(
+        &self,
+    ) -> Result<ProjectionRenderSnapshot, std::io::Error> {
+        let projection = self.lock_projection();
+        let sequence = next_render_capture(&RENDER_CAPTURE_SEQUENCE)?;
+        Ok(ProjectionRenderSnapshot {
+            token: ProjectionCaptureToken {
+                source: Arc::downgrade(&self.projection_state),
+                sequence,
+                deleted_keys: Arc::new(projection.deleted.keys().cloned().collect()),
+            },
+            projection: projection.clone(),
+        })
+    }
+
     /// Access webhook ingestion fields (secret, replay cache, debounce cache).
     #[inline]
     pub(crate) fn webhook(&self) -> &WebhookState {
@@ -356,6 +474,7 @@ impl AppState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn set_html_cache(
         &self,
         pages: HashMap<String, CachedPage>,
@@ -608,6 +727,7 @@ impl AppState {
         serde_json::to_vec(&snapshot).ok().map(|bytes| bytes.len())
     }
 
+    #[cfg(test)]
     pub(crate) fn projection_deleted_snapshot(
         &self,
     ) -> Vec<(String, crate::projection::DeletedRepoRecord)> {
@@ -627,18 +747,6 @@ impl AppState {
         self.projection_deleted_snapshot()
             .iter()
             .any(|(deleted_key, _)| deleted_key == key)
-    }
-
-    pub(crate) fn projection_org_state(&self) -> Option<crate::projection::OrgReadModel> {
-        resolve_projection(&self.projection_state, |projection| {
-            match crate::projection::EvidenceProjectionReadPort::resolve(
-                projection,
-                crate::projection::EvidenceProjectionQuery::OrgState,
-            ) {
-                crate::projection::EvidenceProjectionResponse::OrgState(org_state) => *org_state,
-                _ => None,
-            }
-        })
     }
 
     /// Snapshot of all team rosters materialised in `projection_state`,
@@ -1337,6 +1445,7 @@ impl AppState {
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
         Arc::new(Self {
+            live_observation: tokio::sync::Mutex::new(0),
             started_at: Timestamp::now(),
             owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),
@@ -1425,6 +1534,7 @@ impl AppState {
             team_event_store.as_ref(),
         )?));
         Ok(Arc::new(Self {
+            live_observation: tokio::sync::Mutex::new(0),
             started_at: Timestamp::now(),
             owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),
@@ -1946,6 +2056,23 @@ mod tests {
     use tracing_subscriber::layer::{Context, SubscriberExt};
 
     const SYNTHETIC_RECOVERY_RECORDS: u64 = 7;
+
+    #[test]
+    fn projection_capture_overflow_is_explicit_and_never_wraps() {
+        let sequence = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
+        assert_eq!(next_render_capture(&sequence).unwrap(), u64::MAX);
+        assert!(
+            next_render_capture(&sequence)
+                .unwrap_err()
+                .to_string()
+                .contains("exhausted")
+        );
+        assert!(next_render_capture(&sequence).is_err());
+        assert_eq!(
+            sequence.load(std::sync::atomic::Ordering::Relaxed),
+            u64::MAX
+        );
+    }
 
     #[tokio::test]
     async fn primary_rate_regulator_defaults_to_token_bucket_and_conserves() {
@@ -3092,8 +3219,8 @@ mod tests {
         assert_eq!(org.assessment_metadata.run_id, metadata.run_id);
         assert_eq!(org.alert_summary.total_open_secret_alerts, 9);
         assert!(
-            restarted.is_ready(),
-            "a cold instance with repo or org events must be ready without a live GitHub run",
+            !restarted.is_ready(),
+            "replayed repo and org events are not ready before root publication",
         );
         let evidence = crate::domain::evidence::Evidence {
             assessment_metadata: org.assessment_metadata,
@@ -3128,7 +3255,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn org_only_event_log_is_ready_after_coldstart() {
+    async fn org_only_event_log_is_not_ready_before_root_publication() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
         let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
@@ -3164,13 +3291,13 @@ mod tests {
             );
         }
         assert!(
-            restarted.is_ready(),
-            "org-only event-log projection should be ready without repo events or GitHub API",
+            !restarted.is_ready(),
+            "org-only event-log projection is not ready before root publication",
         );
     }
 
     #[tokio::test]
-    async fn cold_start_from_three_empty_stores_reaches_ready_after_first_run() {
+    async fn cold_start_from_three_empty_stores_reaches_ready_after_root_publication() {
         use cherry_pit_web::serve::ServerState;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3203,7 +3330,7 @@ mod tests {
 
         assert!(
             !state.is_ready(),
-            "an empty cold start is not ready until the first collection run lands evidence"
+            "an empty cold start is not ready before root publication"
         );
 
         let mut metadata = crate::test_fixtures::make_metadata();
@@ -3219,9 +3346,16 @@ mod tests {
             .expect("first run records org state");
 
         assert!(
+            !state.is_ready(),
+            "recording org evidence alone must not claim content readiness"
+        );
+        state.set_html_cache(HashMap::from([(
+            "index.html".to_string(),
+            CachedPage::new("index.html", b"<html>report</html>".to_vec()),
+        )]));
+        assert!(
             state.is_ready(),
-            "cold start from three empty stores must reach ready on the first completed \
-             run, without any pre-seeded repository evidence"
+            "published root content makes the cold start ready"
         );
     }
 
