@@ -40,15 +40,8 @@ expression: "&pages[\"index.html\"]"
             </div>
         </div>
         <div class="scorecard-group">
-            <a href="security_policy.html" class="card tier-warn" title="Percentage of public repos with a SECURITY.md or GitHub security-policy setting enabled. Click through for the repositories behind this percentage.">
-                <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ<span class="sr-only">Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.</span></span></p>
-                <p class="card-value">66.7% (2/3)</p>
-                <div class="progress-bar">
-                    <div class="progress-fill tier-warn w-65"></div>
-                </div>
-            </a>
-            <a href="secret_scanning.html" class="card tier-pass" title="Percentage of public repos with GitHub secret scanning enabled to detect leaked credentials. Click through for the repositories behind this percentage.">
-                <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.">ⓘ<span class="sr-only">Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.</span></span></p>
+            <a href="secret_scanning.html" class="card tier-pass" title="Percentage of non-archived repos with GitHub secret scanning enabled to detect leaked credentials. Click through for the repositories behind this percentage.">
+                <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts all non-archived repositories, mirroring the organisation-wide Secret Scanning figure.">ⓘ<span class="sr-only">Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts all non-archived repositories, mirroring the organisation-wide Secret Scanning figure.</span></span></p>
                 <p class="card-value">80.0% (4/5)</p>
                 <p class="card-detail">0 open org alerts · success</p>
                 <div class="progress-bar">
@@ -57,8 +50,14 @@ expression: "&pages[\"index.html\"]"
                     </div>
                 </div>
             </a>
-        </div>
-        <div class="scorecard-group">
+            <div class="card tier-warn" title="Percentage of observable repositories with no open secret scanning alerts (secret scanning enabled and alerts observable). Higher is better. One of seven controls behind the Org Governance score. N/A when no repositories are observable.">
+                <p class="card-label">Alert-Free Status</p>
+                <p class="card-value">75.0% (3/4)</p>
+                <div class="progress-bar">
+                    <div class="progress-fill tier-warn w-75"></div>
+                </div>
+                <p class="card-detail">1 unmeasured</p>
+            </div>
             <a href="dependabot_status.html" class="card tier-warn" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies). Click through for the repositories behind this percentage.">
                 <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ<span class="sr-only">Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.</span></span></p>
                 <p class="card-value">60.0% (3/5)</p>
@@ -87,6 +86,13 @@ expression: "&pages[\"index.html\"]"
             </a>
         </div>
         <div class="scorecard-group">
+            <a href="security_policy.html" class="card tier-warn" title="Percentage of public repos with a SECURITY.md or GitHub security-policy setting enabled. Click through for the repositories behind this percentage.">
+                <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ<span class="sr-only">Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.</span></span></p>
+                <p class="card-value">66.7% (2/3)</p>
+                <div class="progress-bar">
+                    <div class="progress-fill tier-warn w-65"></div>
+                </div>
+            </a>
             <div class="card tier-na" title="Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better. One of seven controls behind the Org Governance score. It asks whether dead work has been retired, the later stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the per-owner Lifecycle: Freshness, which asks whether work is still happening and divides by all of an owner&#39;s repos rather than by stale-lifecycle repos only.">
                 <p class="card-label">Lifecycle: Retirement</p>
                 <p class="card-value">N/A (0/0)</p>
@@ -94,14 +100,6 @@ expression: "&pages[\"index.html\"]"
                 <div class="progress-bar">
                     <div class="progress-fill tier-na w-0"></div>
                 </div>
-            </div>
-            <div class="card tier-warn" title="Percentage of observable repositories with no open secret scanning alerts (secret scanning enabled and alerts observable). Higher is better. One of seven controls behind the Org Governance score. N/A when no repositories are observable.">
-                <p class="card-label">Alert-Free Status</p>
-                <p class="card-value">75.0% (3/4)</p>
-                <div class="progress-bar">
-                    <div class="progress-fill tier-warn w-75"></div>
-                </div>
-                <p class="card-detail">1 unmeasured</p>
             </div>
         </div>
     </div>

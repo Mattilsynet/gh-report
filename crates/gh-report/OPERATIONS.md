@@ -372,7 +372,7 @@ The owner/team detail page (`owners/<slug>.html`) surfaces the headline **Team H
 | Card label | Value | Feeds Team Health as |
 |------------|-------|----------------------|
 | **Security Policy** | Public repos with `SECURITY.md` or security-policy setting enabled | Security Policy |
-| **Secret Scanning** | Public repos with secret scanning enabled | Secret Scanning |
+| **Secret Scanning** | Non-archived repos with secret scanning enabled | Secret Scanning |
 | **Dependabot Status** | Repos with Dependabot security updates enabled | Dependabot Security Updates |
 | **Branch Protection** | Observable repos with BPR2+ integrity rules on the default branch | Branch Protection |
 | **Alert-Free Status** | Observable repos with zero open secret-scanning alerts | Alert-Free |

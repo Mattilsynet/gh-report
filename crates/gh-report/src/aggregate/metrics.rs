@@ -85,8 +85,10 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 ///   including archived, since archived public repos with a policy on
 ///   file still reflect published policy surface. Denominator is total
 ///   public repos (archived + active).
-/// - **Secret scanning**: same **all public** population as security
-///   policy.
+/// - **Secret scanning**: counted over the observable subset of
+///   non-archived repos (pass + fail); repos excluded for a
+///   measurement-failure reason (`permission_denied`, `unknown`) feed the
+///   health-score floor, not this denominator.
 /// - **Dependabot, CODEOWNERS**: counted over the observable subset of
 ///   non-archived repos (pass + fail); repos excluded for a
 ///   measurement-failure reason feed the health-score floor, not this
@@ -111,7 +113,7 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         .collect();
 
     let policy_counts = count_policy_statuses(&public_policy);
-    let secret_counts = count_secret_scanning_statuses(&public_policy);
+    let secret_counts = count_secret_scanning_statuses(&active);
     let dependabot_counts = count_dependabot_statuses(&active);
     let branch_counts = count_branch_protection_statuses(&active);
     let codeowners_counts = count_codeowners_statuses(&active);
@@ -517,19 +519,19 @@ fn count_statuses<T: Default>(
     counts
 }
 
-/// Count secret scanning statuses across public repos.
-fn count_secret_scanning_statuses(public_repos: &[&RepositoryEvidence]) -> SecretScanningCounts {
-    count_statuses(
-        public_repos,
-        |repo, counts: &mut SecretScanningCounts| match repo.checks.secret_scanning.status {
-            SecretScanningStatus::Enabled => counts.enabled = counts.enabled.saturating_add(1),
-            SecretScanningStatus::Disabled => counts.disabled = counts.disabled.saturating_add(1),
-            SecretScanningStatus::PermissionDenied => {
-                counts.permission_denied = counts.permission_denied.saturating_add(1);
-            }
-            SecretScanningStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
-        },
-    )
+fn count_secret_scanning_statuses(active: &[&RepositoryEvidence]) -> SecretScanningCounts {
+    count_statuses(active, |repo, counts: &mut SecretScanningCounts| match repo
+        .checks
+        .secret_scanning
+        .status
+    {
+        SecretScanningStatus::Enabled => counts.enabled = counts.enabled.saturating_add(1),
+        SecretScanningStatus::Disabled => counts.disabled = counts.disabled.saturating_add(1),
+        SecretScanningStatus::PermissionDenied => {
+            counts.permission_denied = counts.permission_denied.saturating_add(1);
+        }
+        SecretScanningStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
+    })
 }
 
 /// Count Dependabot security updates statuses across active repos.
@@ -801,19 +803,17 @@ impl CoverageControl {
     #[must_use]
     pub fn population_description(self) -> &'static str {
         match self {
-            Self::SecurityPolicy | Self::SecretScanning => {
-                "every public repository, archived included"
+            Self::SecurityPolicy => "every public repository, archived included",
+            Self::SecretScanning | Self::Dependabot | Self::Codeowners => {
+                "every non-archived repository"
             }
-            Self::Dependabot | Self::Codeowners => "every non-archived repository",
         }
     }
 
     fn in_population(self, repo: &RepositoryEvidence) -> bool {
         match self {
-            Self::SecurityPolicy | Self::SecretScanning => {
-                repo.repository.visibility == Visibility::Public
-            }
-            Self::Dependabot | Self::Codeowners => !repo.repository.archived,
+            Self::SecurityPolicy => repo.repository.visibility == Visibility::Public,
+            Self::SecretScanning | Self::Dependabot | Self::Codeowners => !repo.repository.archived,
         }
     }
 
@@ -1156,27 +1156,6 @@ struct OwnerControlCoverage {
     score_exclusion_counts: Vec<ScoreExclusionCount>,
 }
 
-/// Build per-control pass-rate metrics for a set of repositories,
-/// converged to the same exclusion model `compute_repo_score` and the
-/// org-level aggregate use: each control classifies via the shared
-/// `ScoreCategory` funnel. `Pass`/`Fail` count toward the rate;
-/// `Excluded(reason)` drops out of both numerator and denominator and
-/// is tallied into `score_exclusion_counts`.
-///
-/// - **`security_policy`**: `Pass`/`Fail` per status; `Unknown` and
-///   `NotApplicable` both exclude (non-public repos structurally
-///   classify `NotApplicable`, so no separate visibility filter is
-///   needed).
-/// - **`secret_scanning`**: population is the owner's **public** repos
-///   only; `PermissionDenied`/`Unknown` exclude.
-/// - **`dependabot_security_updates`**: `Pass`/`Fail` per status;
-///   `Unknown` excludes.
-/// - **`branch_protection`**: uses
-///   `BranchProtectionResult::score_category()` (tier-based); an
-///   unreadable/permission-suspected repo excludes rather than
-///   folding into T0 fail.
-/// - **`codeowners`**: numerator is `Conforming` OR `NonConforming`
-///   (file present); only `Unknown` excludes from the denominator.
 fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> OwnerControlCoverage {
     let mut sp_pass = 0u32;
     let mut sp_fail = 0u32;
@@ -1205,12 +1184,10 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> OwnerControlCove
             ScoreCategory::Excluded(reason) => sp_tally.record(reason),
         }
 
-        if repo.repository.visibility == Visibility::Public {
-            match ScoreCategory::from(repo.checks.secret_scanning.status) {
-                ScoreCategory::Pass => secret_pass = secret_pass.saturating_add(1),
-                ScoreCategory::Fail => secret_fail = secret_fail.saturating_add(1),
-                ScoreCategory::Excluded(reason) => secret_tally.record(reason),
-            }
+        match ScoreCategory::from(repo.checks.secret_scanning.status) {
+            ScoreCategory::Pass => secret_pass = secret_pass.saturating_add(1),
+            ScoreCategory::Fail => secret_fail = secret_fail.saturating_add(1),
+            ScoreCategory::Excluded(reason) => secret_tally.record(reason),
         }
 
         match ScoreCategory::from(repo.checks.dependabot_security_updates.status) {
@@ -1920,7 +1897,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_metrics_secret_scanning_denominator_counts_public_including_archived() {
+    fn aggregate_metrics_secret_scanning_denominator_counts_all_non_archived() {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
         let public_repo_count = count_as_u32(
@@ -1950,11 +1927,14 @@ mod tests {
         assert_eq!(metrics.security_policy_coverage.denominator, 3);
         assert_eq!(metrics.secret_scanning_coverage.numerator, 2);
         assert_eq!(
-            metrics.secret_scanning_coverage.denominator,
-            public_repo_count - 1,
-            "denominator = public repos minus the 1 excluded (permission_denied); \
-             archived-1 (a passing archived public repo) still contributes to the numerator"
+            metrics.secret_scanning_coverage.denominator, 3,
+            "denominator = active repos (5) minus 2 excluded (permission_denied + unknown); \
+             archived-1 is excluded because it is archived"
         );
+        assert_eq!(metrics.secret_scanning_counts.enabled, 2);
+        assert_eq!(metrics.secret_scanning_counts.disabled, 1);
+        assert_eq!(metrics.secret_scanning_counts.permission_denied, 1);
+        assert_eq!(metrics.secret_scanning_counts.unknown, 1);
     }
 
     #[test]
@@ -1965,17 +1945,17 @@ mod tests {
         assert_eq!(metrics.secret_scanning_counts.enabled, 2);
         assert_eq!(metrics.secret_scanning_counts.disabled, 1);
         assert_eq!(metrics.secret_scanning_counts.permission_denied, 1);
-        assert_eq!(metrics.secret_scanning_counts.unknown, 0);
+        assert_eq!(metrics.secret_scanning_counts.unknown, 1);
 
         assert_eq!(metrics.secret_scanning_coverage.numerator, 2);
         assert_eq!(
             metrics.secret_scanning_coverage.denominator, 3,
-            "public-3's secret_permission_denied() excludes it from the denominator (3, not 4)"
+            "public-3 permission_denied and private-1 unknown exclude them from the denominator (3, not 5)"
         );
         assert_eq!(
             metrics.secret_scanning_coverage.rate,
             Some(66.7),
-            "excluding the 1 unmeasured repo raises the rate from 50.0% (2/4) to 66.7% (2/3)"
+            "excluding the 2 unmeasured repos raises the rate from 40.0% (2/5) to 66.7% (2/3)"
         );
     }
 
@@ -3026,13 +3006,8 @@ mod tests {
         assert_eq!(branch_protection.rate, Some(33.3));
     }
 
-    /// ghr-f7218363 item1 CRITICAL GUARD: `secret_scanning` filters non-public
-    /// repos *before* classification (metrics.rs guard at the top of
-    /// `build_per_control_coverage`'s loop), so an all-private team never
-    /// records any `secret_scanning` outcome — the tally is empty, not a
-    /// measurement failure — and the rate must stay `None`, not floor to 0.0.
     #[test]
-    fn owner_control_coverage_all_private_secret_scanning_stays_none() {
+    fn owner_control_coverage_all_private_secret_scanning_measured() {
         let repos = vec![
             make_repository_evidence(
                 "repo-1",
@@ -3062,9 +3037,9 @@ mod tests {
         let result = build_owner_metrics(&repos);
         let team = &result[0];
         let secret_scanning = team.per_control_coverage.get("secret_scanning").unwrap();
-        assert_eq!(secret_scanning.numerator, 0);
-        assert_eq!(secret_scanning.denominator, 0);
-        assert_eq!(secret_scanning.rate, None);
+        assert_eq!(secret_scanning.numerator, 2);
+        assert_eq!(secret_scanning.denominator, 2);
+        assert_eq!(secret_scanning.rate, Some(100.0));
     }
 
     /// item9 Part B (M1, ghr-a1fa33bd): mirrors
@@ -3167,13 +3142,8 @@ mod tests {
         );
     }
 
-    /// UF2-7: an owner's secret-scanning denominator must count only the
-    /// owner's PUBLIC repos, mirroring the org-page population and the
-    /// existing `sp_total` custom-denominator idiom for `security_policy`.
-    /// Before UF2-7 this used the shared `total` (all of the owner's
-    /// non-archived repos, every visibility) — this test pins the flip.
     #[test]
-    fn owner_secret_scanning_denominator_counts_public_only() {
+    fn owner_secret_scanning_denominator_counts_all_non_archived() {
         let repos = vec![
             make_repository_evidence(
                 "pub-repo",
@@ -3210,11 +3180,10 @@ mod tests {
 
         let secret_scanning = team.per_control_coverage.get("secret_scanning").unwrap();
         assert_eq!(
-            secret_scanning.denominator, 1,
-            "secret_scanning denominator must count only the owner's public \
-             repos (mirrors sp_total idiom), got {secret_scanning:?}"
+            secret_scanning.denominator, 2,
+            "secret_scanning denominator must count all non-archived repos, got {secret_scanning:?}"
         );
-        assert_eq!(secret_scanning.numerator, 1);
+        assert_eq!(secret_scanning.numerator, 2);
 
         let dependabot = team
             .per_control_coverage
@@ -3226,23 +3195,6 @@ mod tests {
         );
     }
 
-    /// UF2-8: cross-page consistency guard for the DECIDED population matrix
-    /// (single source: bd bead `ghr-110e1382`). Builds ONE repo set — an
-    /// owner with one public and one private non-archived repo — and
-    /// asserts the VISIBILITY axis holds on BOTH the org page
-    /// (`aggregate_metrics`) and the owner page (`build_owner_metrics`)
-    /// from the SAME underlying data: `security_policy` + `secret_scanning`
-    /// are public-only on both scopes; `dependabot_security_updates` +
-    /// `branch_protection` + `codeowners` are all-visibilities on both
-    /// scopes. Does NOT assert archived-parity between org-wide and
-    /// owner-attributed scopes — those are legitimately different
-    /// denominator universes, guarded instead by the four named
-    /// archived-axis regression tests
-    /// (`warm_start_replay_preserves_archived_public_security_policy_in_aggregate_metrics`,
-    /// `aggregate_metrics_archived_public_repo_included_in_security_policy`,
-    /// `aggregate_metrics_secret_scanning_denominator_counts_public_including_archived`,
-    /// `aggregate_metrics_includes_archived_public_repos_with_security_policy`)
-    /// plus `owner_metrics_excludes_archived` for the owner-side exclusion.
     #[test]
     fn population_matrix_visibility_axis_consistent_org_and_owner() {
         let repos = vec![
@@ -3283,8 +3235,8 @@ mod tests {
             "org security_policy must be public-only"
         );
         assert_eq!(
-            org_metrics.secret_scanning_coverage.denominator, 1,
-            "org secret_scanning must be public-only"
+            org_metrics.secret_scanning_coverage.denominator, 2,
+            "org secret_scanning counts all non-archived repos"
         );
         assert_eq!(
             org_metrics.dependabot_security_updates_coverage.denominator, 2,
@@ -3309,8 +3261,8 @@ mod tests {
         );
         assert_eq!(
             coverage.get("secret_scanning").unwrap().denominator,
-            1,
-            "owner secret_scanning must be public-only"
+            2,
+            "owner secret_scanning must be all-visibilities"
         );
         assert_eq!(
             coverage

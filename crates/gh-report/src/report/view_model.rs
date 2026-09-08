@@ -2680,7 +2680,7 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
             "Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab's Reporting → Security policy → Start setup for a guided pull request.",
         ),
         "secret_scanning" => Some(
-            "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.",
+            "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts all non-archived repositories, mirroring the organisation-wide Secret Scanning figure.",
         ),
         "dependabot_security_updates" => Some(
             "Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.",
@@ -2739,7 +2739,7 @@ pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str>
             "Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub's security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).",
         ),
         "secret_scanning" => Some(
-            "GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric's rate counts public repos only; the check itself runs regardless of visibility).",
+            "GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric's rate counts all non-archived repositories; the check itself runs regardless of visibility).",
         ),
         "dependabot_security_updates" => Some(
             "Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.",
@@ -3586,7 +3586,7 @@ mod tests {
         assert_eq!(
             coverage_control_how_to_fix("secret_scanning"),
             Some(
-                "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure."
+                "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts all non-archived repositories, mirroring the organisation-wide Secret Scanning figure."
             )
         );
         assert_eq!(
@@ -3627,7 +3627,7 @@ mod tests {
         assert_eq!(
             coverage_control_column_tooltip("secret_scanning"),
             Some(
-                "GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric's rate counts public repos only; the check itself runs regardless of visibility)."
+                "GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric's rate counts all non-archived repositories; the check itself runs regardless of visibility)."
             )
         );
         assert_eq!(

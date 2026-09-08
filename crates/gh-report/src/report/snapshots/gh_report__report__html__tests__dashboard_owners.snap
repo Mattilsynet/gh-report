@@ -48,7 +48,7 @@ expression: "&pages[\"owners.html\"]"
             
             <th scope="col" class="text-center" data-sort-type="numeric">Security Policy <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).">ⓘ<span class="sr-only">Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).</span></span></th>
             
-            <th scope="col" class="text-center" data-sort-type="numeric">Secret Scanning <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).">ⓘ<span class="sr-only">GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).</span></span></th>
+            <th scope="col" class="text-center" data-sort-type="numeric">Secret Scanning <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts all non-archived repositories; the check itself runs regardless of visibility).">ⓘ<span class="sr-only">GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts all non-archived repositories; the check itself runs regardless of visibility).</span></span></th>
             
             <th scope="col" class="text-center" data-sort-type="numeric">Dependabot Status <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.">ⓘ<span class="sr-only">Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.</span></span></th>
             
@@ -66,12 +66,12 @@ expression: "&pages[\"owners.html\"]"
             <td><a href="owners/org-team-a.html" title="@org/team-a">team-a</a></td>
             <td>Team</td>
             <td>2</td>
-            <td class="text-center" data-sort-value="59.5">
+            <td class="text-center" data-sort-value="50">
                 <div class="score-bar-inline">
                     <div class="progress-bar">
-                        <div class="progress-fill tier-warn w-60"></div>
+                        <div class="progress-fill tier-warn w-50"></div>
                     </div>
-                    <span class="score-label">60%</span>
+                    <span class="score-label">50%</span>
                 </div>
             </td>
             
@@ -80,9 +80,9 @@ expression: "&pages[\"owners.html\"]"
                 50% (1/2)
             </td>
             
-            <td class="text-center" data-sort-value="100">
-                <span class="status-dot status-pass" title="100% (1/1)"><span class="sr-only">100% (1/1)</span></span>
-                100% (1/1)
+            <td class="text-center" data-sort-value="50">
+                <span class="status-dot status-warn" title="50% (1/2)"><span class="sr-only">50% (1/2)</span></span>
+                50% (1/2)
             </td>
             
             <td class="text-center" data-sort-value="50">

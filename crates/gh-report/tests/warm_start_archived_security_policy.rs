@@ -132,10 +132,8 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
     );
     assert_eq!(
         metrics.secret_scanning_coverage.denominator, 2,
-        "secret_scanning_coverage denominator must include the archived \
-         public repo, mirroring the security_policy policy-surface axis \
-         (org-page secret-scanning is public-only, archived included; \
-         UF2-D/UF2-7 only flips the OWNER-page denominator, not this org-page one)",
+        "secret_scanning_coverage denominator must include all non-archived \
+         repositories (active-only axis), matching dependabot and codeowners",
     );
     assert_eq!(
         metrics.dependabot_security_updates_coverage.denominator, 2,

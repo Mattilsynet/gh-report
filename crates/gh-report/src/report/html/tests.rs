@@ -2838,10 +2838,6 @@ fn render_owner_detail_html_contains_control_name_labels() {
     assert!(detail_page.contains("Branch Protection"));
 }
 
-/// UF2-7(c): the owner-detail Secret Scanning card carries generalized
-/// descriptive copy (answering "do we scan for leaked secrets?") that
-/// states its population is public-only, scoped to that ONE card via
-/// `SummaryCard::key` (not the human `label`, which could reword).
 #[test]
 fn render_owner_detail_html_secret_scanning_card_has_population_tooltip() {
     let evidence = evidence_with_owner_repos();
@@ -2858,12 +2854,41 @@ fn render_owner_detail_html_secret_scanning_card_has_population_tooltip() {
         "expected the secret-scanning how-to-fix tooltip on the owner detail page"
     );
     assert!(
-        detail_page.contains("public repositories only"),
-        "expected the secret-scanning tooltip to state the public-only population"
+        detail_page.contains("all non-archived repositories"),
+        "expected the secret-scanning tooltip to state the all-non-archived population"
     );
     assert!(
         !detail_page.to_lowercase().contains("mattilsynet"),
         "generalized copy must not hardcode the org name (UF2-A seam)"
+    );
+}
+
+#[test]
+fn render_owner_detail_html_secret_scanning_card_measures_private_repos() {
+    let evidence = evidence_with_owner_repos();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    let secret_card_start = detail_page
+        .find("Secret Scanning <span class=\"tooltip-trigger\"")
+        .expect("expected secret scanning card");
+    let secret_card_end = detail_page[secret_card_start..]
+        .find("</a>")
+        .expect("expected closing anchor tag for secret scanning card");
+    let secret_card =
+        &detail_page[secret_card_start..secret_card_start + secret_card_end + "</a>".len()];
+    assert!(
+        secret_card.contains("all non-archived repositories"),
+        "expected the secret-scanning tooltip to state the all-non-archived population"
+    );
+    assert!(
+        secret_card.contains("50.0% (1/2)"),
+        "expected secret scanning on owner detail to measure both public and private repos (1 pass out of 2 total), got: {secret_card}"
     );
 }
 
@@ -7073,7 +7098,7 @@ fn denominator_population_semantics_differ_per_control() {
     ];
 
     assert_eq!(names(CoverageControl::SecurityPolicy), public_population);
-    assert_eq!(names(CoverageControl::SecretScanning), public_population);
+    assert_eq!(names(CoverageControl::SecretScanning), active_population);
     assert_eq!(names(CoverageControl::Dependabot), active_population);
     assert_eq!(names(CoverageControl::Codeowners), active_population);
     assert_ne!(
