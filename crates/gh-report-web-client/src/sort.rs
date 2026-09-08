@@ -342,6 +342,8 @@ mod tests {
             Ordering::Greater
         );
     }
+
+    #[test]
     fn compare_cells_numeric_unparseable_sorts_below_zero() {
         assert_eq!(compare_cells("N/A", "0", SortType::Numeric), Ordering::Less);
         assert_eq!(
