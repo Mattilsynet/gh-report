@@ -46,6 +46,14 @@ pub struct EvidenceState {
     /// `complete_one()` for each `ScheduledBatch` outcome. Set by the sweep,
     /// cleared when the batch completes.
     pub(crate) batch_tracker: ArcSwap<Option<Arc<BatchTracker>>>,
+    pub(crate) delivery_gate: tokio::sync::Mutex<()>,
+    pub(crate) scheduled_run: ArcSwap<Option<Arc<ScheduledRun>>>,
+}
+
+pub(crate) struct ScheduledRun {
+    pub(crate) id: uuid::Uuid,
+    pub(crate) tracker: Arc<BatchTracker>,
+    pub(crate) failure: std::sync::Mutex<Option<crate::error::PersistenceError>>,
 }
 
 impl EvidenceState {
@@ -58,6 +66,8 @@ impl EvidenceState {
             ws_broadcast,
             org_summary: Arc::new(ArcSwap::from_pointee(None)),
             batch_tracker: ArcSwap::from_pointee(None),
+            delivery_gate: tokio::sync::Mutex::new(()),
+            scheduled_run: ArcSwap::from_pointee(None),
         }
     }
 }

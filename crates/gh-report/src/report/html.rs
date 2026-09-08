@@ -203,6 +203,7 @@ enum ControlKey {
     NonStale,
     NonOrphaned,
     AlertFree,
+    Codeowners,
 }
 
 impl ControlKey {
@@ -215,12 +216,14 @@ impl ControlKey {
             Self::NonStale => "non_stale",
             Self::NonOrphaned => "non_orphaned",
             Self::AlertFree => "alert_free",
+            Self::Codeowners => "codeowners",
         }
     }
 
     fn drill_down_page(self) -> Option<DrillDownPage> {
         match self {
             Self::BranchProtection => Some(DrillDownPage::BranchProtection),
+            Self::Codeowners => Some(DrillDownPage::Codeowners),
             Self::SecurityPolicy
             | Self::SecretScanning
             | Self::DependabotSecurityUpdates
@@ -239,6 +242,7 @@ impl ControlKey {
             Self::NonStale => "Lifecycle: Freshness",
             Self::NonOrphaned => "Ownership",
             Self::AlertFree => "Alert-Free",
+            Self::Codeowners => "CODEOWNERS",
         }
     }
 }
@@ -281,7 +285,7 @@ const DENOMINATOR_DRILL_DOWNS: &[DenominatorDrillDown] = &[
     DenominatorDrillDown {
         control: CoverageControl::Codeowners,
         page: DrillDownPage::Codeowners,
-        display_name: "CODEOWNERS",
+        display_name: ControlKey::Codeowners.display_name(),
     },
 ];
 
@@ -335,8 +339,10 @@ const OWNER_DETAIL_SUMMARY_CARD_CONTROLS: &[ControlKey] = &[
 const REPO_STATUS_DOT_CONTROLS: &[ControlKey] = &[
     ControlKey::SecurityPolicy,
     ControlKey::SecretScanning,
+    ControlKey::AlertFree,
     ControlKey::DependabotSecurityUpdates,
     ControlKey::BranchProtection,
+    ControlKey::Codeowners,
 ];
 
 /// The 6 of the 7 per-owner Team Health controls whose rates are READ from
@@ -360,8 +366,8 @@ const REPO_STATUS_DOT_CONTROLS: &[ControlKey] = &[
 /// and secret scanning cleanliness per owner.
 ///
 /// This plus [`NON_ORPHANED_CONTROL`] is the OWNER-level set of seven. The
-/// ORG-level governance set is a different, six-control set (it keeps
-/// `codeowners` and `archival_coverage`, and has no per-owner orphan
+/// ORG-level governance set is a different, seven-control set (it keeps
+/// `codeowners`, `archival_coverage`, and `alert_free`, and has no per-owner orphan
 /// attribution to draw on).
 ///
 /// [`OwnerMetrics::per_control_coverage`]: crate::domain::metrics::OwnerMetrics::per_control_coverage
@@ -1060,26 +1066,12 @@ fn build_owners_view_model(
                 })
                 .collect();
 
-            let mut sec_rates: Vec<Option<f64>> = SEC_SCORE_MAP_CONTROLS
-                .iter()
-                .map(|&key| {
-                    m.per_control_coverage
-                        .get(key.as_str())
-                        .and_then(|rm| rm.rate)
-                })
-                .collect();
-            sec_rates.push(o.non_orphaned.rate());
-            let sec_score = compute_health_score(&sec_rates);
-            let sec_score_formatted = match sec_score {
-                Some(s) => format!("{s:.1}%"),
-                None => "N/A".to_string(),
-            };
+            let (sec_score, sec_score_formatted, sec_score_tier, sec_score_width_class) =
+                compute_owner_sec_score(m, &o.non_orphaned, tiers);
             let sec_score_table_formatted = match sec_score {
                 Some(s) => format!("{s:.0}%"),
                 None => "N/A".to_string(),
             };
-            let sec_score_tier = CoverageTier::from_rate(sec_score, tiers);
-            let sec_score_width_class = rate_to_width_class(sec_score);
 
             OwnerOverviewRow {
                 owner: m.display_name.clone(),
@@ -1104,6 +1096,36 @@ fn build_owners_view_model(
     })
 }
 
+fn compute_owner_sec_score(
+    metrics: &crate::domain::metrics::OwnerMetrics,
+    non_orphaned: &NonOrphanedControl,
+    tiers: &CoverageTiers,
+) -> (Option<f64>, String, CoverageTier, &'static str) {
+    let mut sec_rates: Vec<Option<f64>> = SEC_SCORE_MAP_CONTROLS
+        .iter()
+        .map(|&key| {
+            metrics
+                .per_control_coverage
+                .get(key.as_str())
+                .and_then(|rm| rm.rate)
+        })
+        .collect();
+    sec_rates.push(non_orphaned.rate());
+    let sec_score = compute_health_score(&sec_rates);
+    let sec_score_formatted = match sec_score {
+        Some(s) => format!("{s:.1}%"),
+        None => "N/A".to_string(),
+    };
+    let sec_score_tier = CoverageTier::from_rate(sec_score, tiers);
+    let sec_score_width_class = rate_to_width_class(sec_score);
+    (
+        sec_score,
+        sec_score_formatted,
+        sec_score_tier,
+        sec_score_width_class,
+    )
+}
+
 fn team_health_tooltip() -> String {
     let roster = SEC_SCORE_MAP_CONTROLS
         .iter()
@@ -1113,7 +1135,7 @@ fn team_health_tooltip() -> String {
         .join(", ");
     let non_stale_label = ControlKey::NonStale.display_name();
     format!(
-        "Geometric mean of measured control rates across seven controls for this owner's repos — {roster}. The four control-presence columns and the {non_stale_label} column below show five of those inputs; Alert-Free and Ownership feed the score but are not shown as columns. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different six-control set. N/A when no control is scorable."
+        "Geometric mean of measured control rates across seven controls for this owner's repos — {roster}. The four control-presence columns and the {non_stale_label} column below show five of those inputs; Alert-Free and Ownership feed the score but are not shown as columns. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different seven-control set. N/A when no control is scorable."
     )
 }
 
@@ -1423,6 +1445,29 @@ fn build_owner_detail_view_models(
         .collect()
 }
 
+fn build_owner_summary_cards(
+    metrics: &crate::domain::metrics::OwnerMetrics,
+    tiers: &CoverageTiers,
+) -> Vec<SummaryCard> {
+    OWNER_DETAIL_SUMMARY_CARD_CONTROLS
+        .iter()
+        .map(|&key| SummaryCard {
+            key: key.as_str(),
+            drill_down_href: key
+                .drill_down_page()
+                .map(|page| page.link(DashboardHref::Nested)),
+            label: key.display_name().to_string(),
+            cell: build_control_cell(
+                &metrics.per_control_coverage,
+                &metrics.score_exclusion_counts,
+                key.as_str(),
+                tiers,
+            ),
+            how_to_fix: coverage_control_how_to_fix(key.as_str()).unwrap_or_default(),
+        })
+        .collect()
+}
+
 /// Build a single owner's detail view model (the per-item body factored
 /// out of [`build_owner_detail_view_models`] to keep both functions under
 /// the pedantic line-count bar).
@@ -1433,23 +1478,7 @@ fn build_one_owner_detail_view_model(
     ctx: &OwnerDetailBuildContext<'_>,
 ) -> (String, OwnerDetailViewModel) {
     let m = owner.metrics;
-    let summary_cards: Vec<SummaryCard> = OWNER_DETAIL_SUMMARY_CARD_CONTROLS
-        .iter()
-        .map(|&key| SummaryCard {
-            key: key.as_str(),
-            drill_down_href: key
-                .drill_down_page()
-                .map(|page| page.link(DashboardHref::Nested)),
-            label: key.display_name().to_string(),
-            cell: build_control_cell(
-                &m.per_control_coverage,
-                &m.score_exclusion_counts,
-                key.as_str(),
-                ctx.tiers,
-            ),
-            how_to_fix: coverage_control_how_to_fix(key.as_str()).unwrap_or_default(),
-        })
-        .collect();
+    let summary_cards = build_owner_summary_cards(m, ctx.tiers);
 
     let canonical_key = m.owner.clone();
     let org_encoded = utf8_percent_encode(ctx.organization, PATH_SEGMENT).to_string();
@@ -1471,6 +1500,8 @@ fn build_one_owner_detail_view_model(
     let owner_type_label = m.owner_type.to_string();
 
     let has_stale_repos = repo_rows.iter().any(|r| r.is_stale);
+    let (sec_score, sec_score_formatted, sec_score_tier, sec_score_width_class) =
+        compute_owner_sec_score(m, &owner.non_orphaned, ctx.tiers);
     let non_stale_cell = build_control_cell(
         &m.per_control_coverage,
         &m.score_exclusion_counts,
@@ -1481,6 +1512,12 @@ fn build_one_owner_detail_view_model(
         &owner.non_orphaned,
         &m.score_exclusion_counts,
         NON_ORPHANED_CONTROL.as_str(),
+        ctx.tiers,
+    );
+    let alert_free_cell = build_control_cell(
+        &m.per_control_coverage,
+        &m.score_exclusion_counts,
+        ControlKey::AlertFree.as_str(),
         ctx.tiers,
     );
 
@@ -1516,11 +1553,17 @@ fn build_one_owner_detail_view_model(
         control_columns: control_columns.to_vec(),
         summary_cards,
         has_stale_repos,
+        sec_score,
+        sec_score_formatted,
+        sec_score_tier,
+        sec_score_width_class,
+        team_health_tooltip: team_health_tooltip(),
         non_stale_cell,
         non_stale_label: ControlKey::NonStale.display_name().to_string(),
         non_stale_tooltip: crate::report::view_model::NON_STALE_TOOLTIP,
         non_orphaned_cell,
         non_orphaned_label: NON_ORPHANED_CONTROL.display_name().to_string(),
+        alert_free_cell,
         roster,
         github_url,
         security_url,
@@ -1676,9 +1719,20 @@ fn compute_repo_score(
     checks: &crate::domain::checks::RepositoryChecks,
     tiers: &CoverageTiers,
 ) -> (Option<f64>, String, CoverageTier, &'static str) {
+    let alert_free_cat = if checks.secret_scanning.alerts_observable {
+        match checks.secret_scanning.has_open_alerts {
+            Some(false) => ScoreCategory::Pass,
+            Some(true) => ScoreCategory::Fail,
+            None => ScoreCategory::Excluded(crate::domain::checks::ExclusionReason::Unknown),
+        }
+    } else {
+        ScoreCategory::Excluded(crate::domain::checks::ExclusionReason::NotApplicable)
+    };
+
     let categories = [
         ScoreCategory::from(checks.security_policy.status),
         ScoreCategory::from(checks.secret_scanning.status),
+        alert_free_cat,
         ScoreCategory::from(checks.dependabot_security_updates.status),
         checks.branch_protection.score_category(),
         ScoreCategory::from(checks.codeowners.status),
@@ -1988,8 +2042,10 @@ fn unknown_or_pending_dot(pending: bool) -> StatusDot {
 /// Returns one [`StatusDot`] per control in [`REPO_STATUS_DOT_CONTROLS`] order:
 /// 1. Security Policy
 /// 2. Secret Scanning
-/// 3. Dependabot Status
-/// 4. Branch Protection
+/// 3. Alert-Free
+/// 4. Dependabot Status
+/// 5. Branch Protection
+/// 6. CODEOWNERS
 ///
 /// Uses exhaustive `match` arms (no wildcards) so the compiler catches
 /// any new status variants added in the future.
@@ -2012,6 +2068,18 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
         SecretScanningStatus::Unknown => unknown_or_pending_dot(pending),
     };
 
+    let alert_dot = if pending || checks.secret_scanning.status == SecretScanningStatus::Unknown {
+        unknown_or_pending_dot(pending)
+    } else if checks.secret_scanning.alerts_observable {
+        match checks.secret_scanning.has_open_alerts {
+            Some(false) => StatusDot::new(DotState::Pass, "alert-free"),
+            Some(true) => StatusDot::new(DotState::Fail, "open alerts"),
+            None => unknown_or_pending_dot(pending),
+        }
+    } else {
+        StatusDot::new(DotState::NotApplicable, "N/A")
+    };
+
     let dependabot_dot = match checks.dependabot_security_updates.status {
         DependabotStatus::Enabled => StatusDot::new(DotState::Pass, "enabled"),
         DependabotStatus::Paused => StatusDot::new(DotState::Partial, "paused"),
@@ -2026,7 +2094,21 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
         BranchProtectionStatus::Unknown => unknown_or_pending_dot(pending),
     };
 
-    vec![policy_dot, secret_dot, dependabot_dot, branch_dot]
+    let codeowners_dot = match checks.codeowners.status {
+        CodeownersStatus::Conforming => StatusDot::new(DotState::Pass, "conforming"),
+        CodeownersStatus::NonConforming => StatusDot::new(DotState::Fail, "non-conforming"),
+        CodeownersStatus::Absent => StatusDot::new(DotState::Fail, "absent"),
+        CodeownersStatus::Unknown => unknown_or_pending_dot(pending),
+    };
+
+    vec![
+        policy_dot,
+        secret_dot,
+        alert_dot,
+        dependabot_dot,
+        branch_dot,
+        codeowners_dot,
+    ]
 }
 
 /// Map an `Option<bool>` signal to a status dot: `Some(true)` pass,
