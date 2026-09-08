@@ -369,14 +369,9 @@ impl FenceSignal {
     }
 }
 
-/// The outcome of delivering one job outcome to durable storage.
-///
-/// `Fenced` is the only variant that aborts the run; every other
-/// persist failure stays `Delivered` and keeps its existing
-/// severity-based logging and batch accounting, so propagation is not
-/// widened from the fence to all durable-write failures.
 enum DeliveryStep {
     Delivered,
+    Unpersisted(PersistenceError),
     Fenced(FenceSignal),
 }
 
@@ -1039,19 +1034,40 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
     recorder: Arc<R>,
 ) {
     while let Some(outcome) = rx.recv().await {
-        let (source, duration) = match &outcome {
+        let (source, duration, correlation) = match &outcome {
             JobOutcome::Success {
-                source, duration, ..
+                source,
+                duration,
+                correlation,
+                ..
             }
             | JobOutcome::Failure {
-                source, duration, ..
-            } => (source.clone(), *duration),
+                source,
+                duration,
+                correlation,
+                ..
+            } => (source.clone(), *duration, correlation.correlation_id()),
             _ => {
                 warn!("delivery_loop: unhandled JobOutcome variant, skipping");
                 continue;
             }
         };
 
+        let _gate = state.evidence().delivery_gate.lock().await;
+        let active = state.evidence().scheduled_run.load_full();
+        let owner = match &source {
+            JobSource::ScheduledBatch => match active.as_ref() {
+                Some(owner) if Some(owner.id) == correlation => Some(Arc::clone(owner)),
+                _ => {
+                    warn!(
+                        ?correlation,
+                        "discarding stale scheduled delivery: no matching run owner"
+                    );
+                    continue;
+                }
+            },
+            _ => None,
+        };
         if state.run_is_fenced() {
             warn!(
                 source = ?source,
@@ -1072,7 +1088,7 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
                     &source,
                     duration,
                 );
-                apply_delivery_step(&state, step, &source);
+                apply_owned_delivery_step(&state, step, owner.as_deref());
             }
             JobOutcome::Failure {
                 domain_key, error, ..
@@ -1085,7 +1101,7 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
                     &source,
                     duration,
                 );
-                apply_delivery_step(&state, step, &source);
+                apply_owned_delivery_step(&state, step, owner.as_deref());
             }
             _ => {
                 warn!("delivery_loop: unhandled JobOutcome variant, skipping");
@@ -1103,10 +1119,39 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
 /// as a unit rather than counted down member by member. Every other
 /// outcome — success or a non-fence persist failure — keeps the
 /// pre-existing per-record countdown.
-fn apply_delivery_step(state: &Arc<AppState>, step: DeliveryStep, source: &JobSource) {
+fn apply_owned_delivery_step(
+    state: &AppState,
+    step: DeliveryStep,
+    owner: Option<&super::evidence_service::ScheduledRun>,
+) {
     match step {
         DeliveryStep::Fenced(signal) => state.fence_active_run(signal),
         DeliveryStep::Delivered => {
+            if let Some(owner) = owner {
+                owner.tracker.retire(1);
+            }
+        }
+        DeliveryStep::Unpersisted(error) => {
+            if let Some(owner) = owner {
+                let mut failure = owner
+                    .failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if failure.is_none() {
+                    *failure = Some(error);
+                }
+                drop(failure);
+                owner.tracker.retire(1);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn apply_delivery_step(state: &Arc<AppState>, step: DeliveryStep, source: &JobSource) {
+    match step {
+        DeliveryStep::Fenced(signal) => state.fence_active_run(signal),
+        DeliveryStep::Delivered | DeliveryStep::Unpersisted(_) => {
             if matches!(source, JobSource::ScheduledBatch) {
                 state.complete_active_batch();
             }
@@ -1158,7 +1203,7 @@ fn classify_persist_failure(
     log_job_persist_failure(&failure, domain_key, repo_name, source, duration);
     match FenceSignal::from_failure(failure) {
         Ok(signal) => DeliveryStep::Fenced(signal),
-        Err(_) => DeliveryStep::Delivered,
+        Err(failure) => DeliveryStep::Unpersisted(failure.error),
     }
 }
 
@@ -1266,7 +1311,7 @@ fn classify_failure_state_persist_failure(
     );
     match FenceSignal::from_failure(write_failure) {
         Ok(signal) => DeliveryStep::Fenced(signal),
-        Err(_) => DeliveryStep::Delivered,
+        Err(failure) => DeliveryStep::Unpersisted(failure.error),
     }
 }
 
@@ -2421,8 +2466,8 @@ mod fence_propagation_tests {
         for failure in [transient_failure(), structural_failure()] {
             let category = failure.category;
             assert!(
-                matches!(classify(failure), DeliveryStep::Delivered),
-                "{category:?} must keep its existing log-and-continue handling"
+                !matches!(classify(failure), DeliveryStep::Delivered),
+                "{category:?} must not count an unpersisted snapshot as applied"
             );
         }
     }
@@ -2434,6 +2479,73 @@ mod fence_propagation_tests {
         let tracker = crate::app::work_queue::BatchTracker::new(count);
         state.set_active_batch_tracker(Some(Arc::clone(&tracker)));
         (state, tracker)
+    }
+
+    #[tokio::test]
+    async fn stale_scheduled_outcome_cannot_append_or_retire_next_batch() {
+        let (state, tracker) = state_with_batch(2).await;
+        state.evidence().scheduled_run.store(Arc::new(Some(Arc::new(
+            super::super::evidence_service::ScheduledRun {
+                id: uuid::Uuid::now_v7(),
+                tracker: Arc::clone(&tracker),
+                failure: std::sync::Mutex::new(None),
+            },
+        ))));
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(JobOutcome::Success {
+            domain_key: "stale-repo".to_string(),
+            result: crate::test_fixtures::all_passing_evidence("stale-repo"),
+            source: JobSource::ScheduledBatch,
+            duration: Duration::ZERO,
+            correlation: cherry_pit_core::CorrelationContext::correlated(uuid::Uuid::now_v7()),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        delivery_loop(rx, Arc::clone(&state)).await;
+        assert!(
+            !state.projection_contains("stale-repo"),
+            "Run A must not append during Run B"
+        );
+        assert_eq!(tracker.remaining(), 2, "Run A must not retire Run B");
+    }
+
+    #[tokio::test]
+    async fn unpersisted_delivery_retires_owned_slot_and_retains_error() {
+        let state = AppState::new().await;
+        let tracker = crate::app::work_queue::BatchTracker::new(1);
+        let owner = Arc::new(super::super::evidence_service::ScheduledRun {
+            id: uuid::Uuid::now_v7(),
+            tracker: Arc::clone(&tracker),
+            failure: std::sync::Mutex::new(None),
+        });
+        state
+            .evidence()
+            .scheduled_run
+            .store(Arc::new(Some(Arc::clone(&owner))));
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(JobOutcome::Success {
+            domain_key: "repo".to_string(),
+            result: crate::test_fixtures::all_passing_evidence("repo"),
+            source: JobSource::ScheduledBatch,
+            duration: Duration::ZERO,
+            correlation: cherry_pit_core::CorrelationContext::correlated(owner.id),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        delivery_loop_with_recorder(
+            rx,
+            Arc::clone(&state),
+            ScriptedRecorder::failing(transient_failure()),
+        )
+        .await;
+        assert_eq!(tracker.remaining(), 0);
+        assert!(matches!(
+            *owner.failure.lock().unwrap(),
+            Some(PersistenceError::BackendUnavailable { .. })
+        ));
+        assert!(!state.run_is_fenced());
     }
 
     /// `GAP-1`: a record whose persist was fenced must not complete a batch
@@ -2716,7 +2828,7 @@ mod fence_propagation_tests {
             assert!(
                 matches!(
                     failure_step(&state, &recorder, &domain_key),
-                    DeliveryStep::Delivered
+                    DeliveryStep::Unpersisted(_)
                 ),
                 "{category:?} must keep its existing log-and-continue handling"
             );

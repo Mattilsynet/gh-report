@@ -55,6 +55,13 @@ expression: "&pages[\"owners/org-team-a.html\"]"
 
 
     <div class="scorecard">
+        <div class="card health-score-card tier-warn" title="Geometric mean of measured control rates across seven controls for this owner&#39;s repos — Security Policy, Secret Scanning, Dependabot Status, Branch Protection, Lifecycle: Freshness, Alert-Free, Ownership. The four control-presence columns, the Lifecycle: Freshness column, and the Ownership column below show six of those inputs; Alert-Free feeds the score but is not shown as a column. Unmeasured controls are excluded from each rate&#39;s denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different seven-control set. N/A when no control is scorable.">
+            <p class="card-label">Team Health Score</p>
+            <p class="card-value">59.5%</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-warn w-60"></div>
+            </div>
+        </div>
         
         
         <div class="card tier-warn">
@@ -110,6 +117,13 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                 <div class="progress-fill tier-na w-0"></div>
             </div>
         </div>
+        <div class="card tier-na">
+            <p class="card-label">Alert-Free Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Percentage of this owner&#39;s observable repos with no open secret scanning alerts (secret scanning enabled and alerts observable). One of seven controls behind the Team Health score. N/A when no repositories are observable.">ⓘ<span class="sr-only">Percentage of this owner&#39;s observable repos with no open secret scanning alerts (secret scanning enabled and alerts observable). One of seven controls behind the Team Health score. N/A when no repositories are observable.</span></span></p>
+            <p class="card-value">N/A</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-na w-0"></div>
+            </div>
+        </div>
     </div>
 
     
@@ -120,15 +134,19 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                 <tr>
                     <th scope="col" data-sort-type="text">Repository <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known.">ⓘ<span class="sr-only">Repository name; links to it on GitHub when a URL is known.</span></span></th>
                     <th scope="col" data-sort-type="text">Visibility <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The repository&#39;s GitHub visibility: Public, Internal, or Private.">ⓘ<span class="sr-only">The repository&#39;s GitHub visibility: Public, Internal, or Private.</span></span></th>
-                    <th scope="col" class="text-center" data-sort-type="numeric">Repo Posture <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.">ⓘ<span class="sr-only">Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.</span></span></th>
+                    <th scope="col" class="text-center" data-sort-type="numeric">Repo Posture <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Arithmetic mean: 100 × passing / measured controls, across six controls — Security Policy, Secret Scanning, Alert-Free, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.">ⓘ<span class="sr-only">Arithmetic mean: 100 × passing / measured controls, across six controls — Security Policy, Secret Scanning, Alert-Free, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.</span></span></th>
                     
                     <th scope="col" class="text-center" data-sort-type="status">Security Policy <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).">ⓘ<span class="sr-only">Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).</span></span></th>
                     
                     <th scope="col" class="text-center" data-sort-type="status">Secret Scanning <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).">ⓘ<span class="sr-only">GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).</span></span></th>
                     
+                    <th scope="col" class="text-center" data-sort-type="status">Alert-Free <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Alert-free status — zero open secret scanning alerts on repositories where secret scanning is enabled and alerts are observable. Same per-repo check behind both this column and the org-wide Alert-Free Status metric (repositories where alerts are not observable are excluded as not applicable).">ⓘ<span class="sr-only">Alert-free status — zero open secret scanning alerts on repositories where secret scanning is enabled and alerts are observable. Same per-repo check behind both this column and the org-wide Alert-Free Status metric (repositories where alerts are not observable are excluded as not applicable).</span></span></th>
+                    
                     <th scope="col" class="text-center" data-sort-type="status">Dependabot Status <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.">ⓘ<span class="sr-only">Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.</span></span></th>
                     
                     <th scope="col" class="text-center" data-sort-type="status">Branch Protection <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.">ⓘ<span class="sr-only">Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.</span></span></th>
+                    
+                    <th scope="col" class="text-center" data-sort-type="status">CODEOWNERS <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="CODEOWNERS presence — a CODEOWNERS file in a recognized location (.github/CODEOWNERS or CODEOWNERS) identifying responsible teams or individuals. Same per-repo check behind both this column and the org-wide CODEOWNERS Coverage metric.">ⓘ<span class="sr-only">CODEOWNERS presence — a CODEOWNERS file in a recognized location (.github/CODEOWNERS or CODEOWNERS) identifying responsible teams or individuals. Same per-repo check behind both this column and the org-wide CODEOWNERS Coverage metric.</span></span></th>
                     
                     <th scope="col" data-nosort>Description <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository description from GitHub, or — when none is set.">ⓘ<span class="sr-only">Repository description from GitHub, or — when none is set.</span></span></th>
                     <th scope="col" data-sort-type="text">Language <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Primary language GitHub detected for the repository, or — when none is set.">ⓘ<span class="sr-only">Primary language GitHub detected for the repository, or — when none is set.</span></span></th>
@@ -161,10 +179,16 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                     <td class="text-center" data-sort-value="fail"><span class="status-dot status-fail" title="disabled"><span class="sr-only">disabled</span></span>
                     </td>
                     
+                    <td class="text-center" data-sort-value="indeterminate"><span class="status-dot status-na" title="N/A"><span class="sr-only">N/A</span></span>
+                    </td>
+                    
                     <td class="text-center" data-sort-value="fail"><span class="status-dot status-fail" title="disabled"><span class="sr-only">disabled</span></span>
                     </td>
                     
                     <td class="text-center" data-sort-value="fail"><span class="status-dot status-fail" title="fail"><span class="sr-only">fail</span></span>
+                    </td>
+                    
+                    <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="conforming"><span class="sr-only">conforming</span></span>
                     </td>
                     
                     <td class="cell-truncate" title="—">—</td>
@@ -196,10 +220,16 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                     <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="enabled"><span class="sr-only">enabled</span></span>
                     </td>
                     
+                    <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="alert-free"><span class="sr-only">alert-free</span></span>
+                    </td>
+                    
                     <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="enabled"><span class="sr-only">enabled</span></span>
                     </td>
                     
                     <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="pass"><span class="sr-only">pass</span></span>
+                    </td>
+                    
+                    <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="conforming"><span class="sr-only">conforming</span></span>
                     </td>
                     
                     <td class="cell-truncate" title="—">—</td>

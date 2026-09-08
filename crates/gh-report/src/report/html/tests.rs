@@ -683,12 +683,12 @@ fn render_dashboard_index_contains_health_score() {
         "index should contain health-score CSS class"
     );
     assert!(
-        index.contains("68.8%"),
-        "health score should display the geometric mean: 68.8%"
+        index.contains("69.8%"),
+        "health score should display the geometric mean: 69.8%"
     );
     assert!(
         index.contains("tier-warn"),
-        "health score 68.6% should be classified as warn tier (< 80 threshold)"
+        "health score 69.8% should be classified as warn tier (< 80 threshold)"
     );
 }
 
@@ -699,18 +699,38 @@ fn render_dashboard_index_org_governance_tooltip_states_formula_and_exclusion_ru
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("Geometric mean of measured control rates across six controls"),
+        index.contains("Geometric mean of measured control rates across seven controls"),
         "Org Governance tooltip must state its exact formula; index.html:\n{index}"
     );
     assert!(
-            index.contains(
-                "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Lifecycle: Retirement"
-            ),
-            "Org Governance tooltip must state its six-control set"
-        );
+        index.contains(
+            "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Lifecycle: Retirement, Alert-Free Status"
+        ),
+        "Org Governance tooltip must state its seven-control set"
+    );
     assert!(
         index.contains("Unmeasured controls are excluded from each rate's denominator"),
         "Org Governance tooltip must state the exclusion rule"
+    );
+}
+
+#[test]
+fn render_dashboard_index_contains_alert_free_card() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("<p class=\"card-label\">Alert-Free Status</p>"),
+        "index must render Alert-Free Status card"
+    );
+    assert!(
+        index.contains("75.0% (3/4)"),
+        "Alert-Free Status card must display formatted rate"
+    );
+    assert!(
+        index.contains(crate::report::view_model::ALERT_FREE_TOOLTIP),
+        "Alert-Free Status card must carry canonical tooltip"
     );
 }
 
@@ -736,6 +756,8 @@ fn render_dashboard_index_health_score_na_when_all_zero_denom() {
     evidence.metrics.dependabot_security_updates_coverage = RateMetric::new(0, 0);
     evidence.metrics.branch_protection_coverage = RateMetric::new(0, 0);
     evidence.metrics.codeowners_coverage = RateMetric::new(0, 0);
+    evidence.metrics.secret_alert_counts = crate::domain::metrics::SecretAlertCounts::default();
+    evidence.metrics.open_secret_alert_prevalence = RateMetric::new(0, 0);
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let index = &pages["index.html"];
@@ -880,16 +902,19 @@ struct StatusDotsCase {
     secret: SecretScanningStatus,
     dependabot: DependabotStatus,
     branch: BranchProtectionStatus,
+    codeowners: CodeownersStatus,
+    alerts_observable: bool,
+    has_open_alerts: Option<bool>,
     pending: bool,
     not_applicable_policy: bool,
-    expected: [(&'static str, &'static str); 4],
+    expected: [(&'static str, &'static str); 6],
 }
 
 #[expect(
     clippy::too_many_lines,
-    reason = "exhaustive parametric case table (7 rows); length is inherent to row enumeration"
+    reason = "exhaustive parametric case table (9 rows); length is inherent to row enumeration"
 )]
-fn status_dots_cases() -> [StatusDotsCase; 7] {
+fn status_dots_cases() -> [StatusDotsCase; 9] {
     [
         StatusDotsCase {
             name: "all_passing",
@@ -897,13 +922,18 @@ fn status_dots_cases() -> [StatusDotsCase; 7] {
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Pass,
+            codeowners: CodeownersStatus::Conforming,
+            alerts_observable: true,
+            has_open_alerts: Some(false),
             pending: false,
             not_applicable_policy: false,
             expected: [
                 ("status-pass", "pass"),
                 ("status-pass", "enabled"),
+                ("status-pass", "alert-free"),
                 ("status-pass", "enabled"),
                 ("status-pass", "pass"),
+                ("status-pass", "conforming"),
             ],
         },
         StatusDotsCase {
@@ -912,13 +942,18 @@ fn status_dots_cases() -> [StatusDotsCase; 7] {
             secret: SecretScanningStatus::Disabled,
             dependabot: DependabotStatus::Disabled,
             branch: BranchProtectionStatus::Fail,
+            codeowners: CodeownersStatus::Absent,
+            alerts_observable: true,
+            has_open_alerts: Some(true),
             pending: false,
             not_applicable_policy: false,
             expected: [
                 ("status-fail", "fail"),
                 ("status-fail", "disabled"),
+                ("status-fail", "open alerts"),
                 ("status-fail", "disabled"),
                 ("status-fail", "fail"),
+                ("status-fail", "absent"),
             ],
         },
         StatusDotsCase {
@@ -927,9 +962,14 @@ fn status_dots_cases() -> [StatusDotsCase; 7] {
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Unknown,
             branch: BranchProtectionStatus::Unknown,
+            codeowners: CodeownersStatus::Unknown,
+            alerts_observable: false,
+            has_open_alerts: None,
             pending: false,
             not_applicable_policy: false,
             expected: [
+                ("status-unknown", "unknown"),
+                ("status-unknown", "unknown"),
                 ("status-unknown", "unknown"),
                 ("status-unknown", "unknown"),
                 ("status-unknown", "unknown"),
@@ -942,13 +982,18 @@ fn status_dots_cases() -> [StatusDotsCase; 7] {
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Partial,
+            codeowners: CodeownersStatus::Conforming,
+            alerts_observable: true,
+            has_open_alerts: Some(false),
             pending: false,
             not_applicable_policy: false,
             expected: [
                 ("status-pass", "pass"),
                 ("status-pass", "enabled"),
+                ("status-pass", "alert-free"),
                 ("status-pass", "enabled"),
                 ("status-warn", "partial"),
+                ("status-pass", "conforming"),
             ],
         },
         StatusDotsCase {
@@ -957,13 +1002,18 @@ fn status_dots_cases() -> [StatusDotsCase; 7] {
             secret: SecretScanningStatus::PermissionDenied,
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Pass,
+            codeowners: CodeownersStatus::Conforming,
+            alerts_observable: false,
+            has_open_alerts: None,
             pending: false,
             not_applicable_policy: false,
             expected: [
                 ("status-pass", "pass"),
                 ("status-unknown", "permission denied"),
+                ("status-na", "N/A"),
                 ("status-pass", "enabled"),
                 ("status-pass", "pass"),
+                ("status-pass", "conforming"),
             ],
         },
         StatusDotsCase {
@@ -972,9 +1022,14 @@ fn status_dots_cases() -> [StatusDotsCase; 7] {
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Unknown,
             branch: BranchProtectionStatus::Unknown,
+            codeowners: CodeownersStatus::Unknown,
+            alerts_observable: false,
+            has_open_alerts: None,
             pending: true,
             not_applicable_policy: false,
             expected: [
+                ("status-pending", "Pending"),
+                ("status-pending", "Pending"),
                 ("status-pending", "Pending"),
                 ("status-pending", "Pending"),
                 ("status-pending", "Pending"),
@@ -987,13 +1042,58 @@ fn status_dots_cases() -> [StatusDotsCase; 7] {
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Pass,
+            codeowners: CodeownersStatus::Conforming,
+            alerts_observable: false,
+            has_open_alerts: None,
             pending: false,
             not_applicable_policy: true,
             expected: [
                 ("status-na", "N/A"),
                 ("status-pass", "enabled"),
+                ("status-na", "N/A"),
                 ("status-pass", "enabled"),
                 ("status-pass", "pass"),
+                ("status-pass", "conforming"),
+            ],
+        },
+        StatusDotsCase {
+            name: "codeowners_non_conforming",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: CodeownersStatus::NonConforming,
+            alerts_observable: true,
+            has_open_alerts: Some(false),
+            pending: false,
+            not_applicable_policy: false,
+            expected: [
+                ("status-pass", "pass"),
+                ("status-pass", "enabled"),
+                ("status-pass", "alert-free"),
+                ("status-pass", "enabled"),
+                ("status-pass", "pass"),
+                ("status-fail", "non-conforming"),
+            ],
+        },
+        StatusDotsCase {
+            name: "open_alerts_renders_fail",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: CodeownersStatus::Conforming,
+            alerts_observable: true,
+            has_open_alerts: Some(true),
+            pending: false,
+            not_applicable_policy: false,
+            expected: [
+                ("status-pass", "pass"),
+                ("status-pass", "enabled"),
+                ("status-fail", "open alerts"),
+                ("status-pass", "enabled"),
+                ("status-pass", "pass"),
+                ("status-pass", "conforming"),
             ],
         },
     ]
@@ -1004,6 +1104,9 @@ fn status_dots_match_expected_css_and_label_per_case() {
     for case in status_dots_cases() {
         let mut checks =
             make_checks_with_statuses(case.policy, case.secret, case.dependabot, case.branch);
+        checks.codeowners.status = case.codeowners;
+        checks.secret_scanning.alerts_observable = case.alerts_observable;
+        checks.secret_scanning.has_open_alerts = case.has_open_alerts;
         if case.pending {
             checks.codeowners.status = crate::domain::checks::CodeownersStatus::Unknown;
             checks.secret_scanning.reason = Some("pending".to_string());
@@ -1016,7 +1119,7 @@ fn status_dots_match_expected_css_and_label_per_case() {
 
         let dots = build_status_dots(&checks);
 
-        assert_eq!(dots.len(), 4, "case {}: dot count", case.name);
+        assert_eq!(dots.len(), 6, "case {}: dot count", case.name);
         for (i, (css, label)) in case.expected.iter().enumerate() {
             assert_eq!(
                 dots[i].css_class(),
@@ -1047,7 +1150,7 @@ fn owner_control_dots_emit_sortable_headers_and_keys() {
     let pages =
         render_dashboard(&evidence_with_owner_repos(), &DashboardConfig::default()).unwrap();
     let page = &pages["owners/org-team-a.html"];
-    assert_eq!(page.matches("data-sort-type=\"status\"").count(), 4);
+    assert_eq!(page.matches("data-sort-type=\"status\"").count(), 6);
     assert!(page.contains("data-sort-value=\"pass\""));
 }
 
@@ -1060,8 +1163,8 @@ fn paused_dependabot_emits_partial_sort_key() {
         BranchProtectionStatus::Partial,
     );
     let dots = build_status_dots(&checks);
-    assert_eq!(dots[2].sort_key(), "partial");
-    assert_eq!(dots[2].label, "paused");
+    assert_eq!(dots[3].sort_key(), "partial");
+    assert_eq!(dots[3].label, "paused");
 }
 
 use crate::domain::codeowners::ParsedCodeowners;
@@ -1476,8 +1579,10 @@ fn detail_vm_control_columns_populated() {
         vec![
             "Security Policy",
             "Secret Scanning",
+            "Alert-Free",
             "Dependabot Status",
-            "Branch Protection"
+            "Branch Protection",
+            "CODEOWNERS",
         ]
     );
     assert_eq!(
@@ -1546,8 +1651,8 @@ fn detail_vm_repo_rows_populated() {
 
     let (_, vm) = &detail_vms[0];
     assert_eq!(vm.repo_rows.len(), 2);
-    assert_eq!(vm.repo_rows[0].controls.len(), 4);
-    assert_eq!(vm.repo_rows[1].controls.len(), 4);
+    assert_eq!(vm.repo_rows[0].controls.len(), 6);
+    assert_eq!(vm.repo_rows[1].controls.len(), 6);
     for row in &vm.repo_rows {
         assert!(
             row.repo_url
@@ -1604,14 +1709,66 @@ fn detail_vm_repo_rows_status_dots_correct() {
     let alpha = &vm.repo_rows[0];
     assert_eq!(alpha.controls[0].css_class(), "status-fail");
     assert_eq!(alpha.controls[1].css_class(), "status-fail");
-    assert_eq!(alpha.controls[2].css_class(), "status-fail");
+    assert_eq!(alpha.controls[2].css_class(), "status-na");
+    assert_eq!(alpha.controls[2].label, "N/A");
     assert_eq!(alpha.controls[3].css_class(), "status-fail");
+    assert_eq!(alpha.controls[4].css_class(), "status-fail");
+    assert_eq!(alpha.controls[5].css_class(), "status-pass");
+    assert_eq!(alpha.controls[5].label, "conforming");
 
     let beta = &vm.repo_rows[1];
     assert_eq!(beta.controls[0].css_class(), "status-pass");
     assert_eq!(beta.controls[1].css_class(), "status-pass");
     assert_eq!(beta.controls[2].css_class(), "status-pass");
+    assert_eq!(beta.controls[2].label, "alert-free");
     assert_eq!(beta.controls[3].css_class(), "status-pass");
+    assert_eq!(beta.controls[4].css_class(), "status-pass");
+    assert_eq!(beta.controls[5].css_class(), "status-pass");
+    assert_eq!(beta.controls[5].label, "conforming");
+}
+
+#[test]
+fn detail_vm_carries_team_health_and_alert_free() {
+    let evidence = evidence_with_owner_repos();
+    let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
+    let detail_vms = build_owner_detail_view_models(
+        &fixture.owners,
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &fixture.rosters,
+            orphaned_by_team: &[],
+        },
+    );
+
+    let (_, vm) = &detail_vms[0];
+    assert!(vm.sec_score.is_some());
+    assert!(vm.sec_score_formatted.contains('%'));
+    assert!(!vm.sec_score_width_class.is_empty());
+    assert_eq!(vm.team_health_tooltip, team_health_tooltip());
+    assert!(
+        vm.alert_free_cell.rate_formatted.contains('%')
+            || vm.alert_free_cell.rate_formatted.contains("N/A")
+    );
+}
+
+#[test]
+fn owner_detail_page_renders_headline_team_health_score_and_alert_free() {
+    let evidence = evidence_with_owner_repos();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    assert!(detail_page.contains("health-score-card"));
+    assert!(detail_page.contains("Team Health Score"));
+    assert!(detail_page.contains("Alert-Free Status"));
+    assert!(detail_page.contains("One of seven controls behind the Team Health score"));
 }
 
 #[test]
@@ -4177,6 +4334,8 @@ struct RepoScoreCase {
     dependabot: DependabotStatus,
     branch: BranchProtectionStatus,
     codeowners: Option<CodeownersStatus>,
+    alerts_observable: bool,
+    has_open_alerts: Option<bool>,
     not_applicable_policy: bool,
     expected_score: Option<f64>,
     expected_fmt: Option<&'static str>,
@@ -4186,9 +4345,9 @@ struct RepoScoreCase {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "exhaustive parametric case table (15 rows); length is inherent to row enumeration"
+    reason = "exhaustive parametric case table (18 rows); length is inherent to row enumeration"
 )]
-fn repo_score_cases() -> [RepoScoreCase; 15] {
+fn repo_score_cases() -> [RepoScoreCase; 18] {
     [
         RepoScoreCase {
             name: "all_passing",
@@ -4197,6 +4356,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Pass,
             codeowners: None,
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(100.0),
             expected_fmt: Some("100.0%"),
@@ -4210,6 +4371,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Disabled,
             branch: BranchProtectionStatus::Fail,
             codeowners: None,
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(20.0),
             expected_fmt: None,
@@ -4223,6 +4386,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Unknown,
             branch: BranchProtectionStatus::Unknown,
             codeowners: Some(CodeownersStatus::Unknown),
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: None,
             expected_fmt: Some("N/A"),
@@ -4236,6 +4401,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Disabled,
             branch: BranchProtectionStatus::Unknown,
             codeowners: None,
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(66.7),
             expected_fmt: None,
@@ -4249,6 +4416,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Paused,
             branch: BranchProtectionStatus::Partial,
             codeowners: None,
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(60.0),
             expected_fmt: None,
@@ -4262,6 +4431,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Pass,
             codeowners: None,
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(100.0),
             expected_fmt: Some("100.0%"),
@@ -4275,6 +4446,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Pass,
             codeowners: Some(CodeownersStatus::NonConforming),
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(80.0),
             expected_fmt: Some("80.0%"),
@@ -4288,6 +4461,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Pass,
             codeowners: Some(CodeownersStatus::Absent),
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(80.0),
             expected_fmt: None,
@@ -4301,6 +4476,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Disabled,
             branch: BranchProtectionStatus::Fail,
             codeowners: Some(CodeownersStatus::Absent),
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(0.0),
             expected_fmt: Some("0.0%"),
@@ -4314,6 +4491,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Unknown,
             branch: BranchProtectionStatus::Unknown,
             codeowners: Some(CodeownersStatus::Unknown),
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(100.0),
             expected_fmt: Some("100.0%"),
@@ -4327,6 +4506,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Paused,
             branch: BranchProtectionStatus::Unknown,
             codeowners: Some(CodeownersStatus::Unknown),
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(0.0),
             expected_fmt: Some("0.0%"),
@@ -4340,6 +4521,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Paused,
             branch: BranchProtectionStatus::Partial,
             codeowners: None,
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(60.0),
             expected_fmt: None,
@@ -4353,6 +4536,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Disabled,
             branch: BranchProtectionStatus::Pass,
             codeowners: Some(CodeownersStatus::NonConforming),
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(20.0),
             expected_fmt: None,
@@ -4366,6 +4551,8 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Disabled,
             branch: BranchProtectionStatus::Unknown,
             codeowners: None,
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: false,
             expected_score: Some(66.7),
             expected_fmt: None,
@@ -4379,11 +4566,58 @@ fn repo_score_cases() -> [RepoScoreCase; 15] {
             dependabot: DependabotStatus::Enabled,
             branch: BranchProtectionStatus::Pass,
             codeowners: None,
+            alerts_observable: false,
+            has_open_alerts: None,
             not_applicable_policy: true,
             expected_score: Some(100.0),
             expected_fmt: None,
             expected_tier: Some(CoverageTier::Pass),
             expected_wc: None,
+        },
+        RepoScoreCase {
+            name: "all_six_controls_pass",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: Some(CodeownersStatus::Conforming),
+            alerts_observable: true,
+            has_open_alerts: Some(false),
+            not_applicable_policy: false,
+            expected_score: Some(100.0),
+            expected_fmt: Some("100.0%"),
+            expected_tier: Some(CoverageTier::Pass),
+            expected_wc: Some("w-100"),
+        },
+        RepoScoreCase {
+            name: "open_alerts_fails_sixth_control",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: Some(CodeownersStatus::Conforming),
+            alerts_observable: true,
+            has_open_alerts: Some(true),
+            not_applicable_policy: false,
+            expected_score: Some(83.3),
+            expected_fmt: Some("83.3%"),
+            expected_tier: Some(CoverageTier::Pass),
+            expected_wc: Some("w-85"),
+        },
+        RepoScoreCase {
+            name: "all_six_controls_fail",
+            policy: SecurityPolicyStatus::Fail,
+            secret: SecretScanningStatus::Disabled,
+            dependabot: DependabotStatus::Disabled,
+            branch: BranchProtectionStatus::Fail,
+            codeowners: Some(CodeownersStatus::Absent),
+            alerts_observable: true,
+            has_open_alerts: Some(true),
+            not_applicable_policy: false,
+            expected_score: Some(0.0),
+            expected_fmt: Some("0.0%"),
+            expected_tier: Some(CoverageTier::Fail),
+            expected_wc: Some("w-0"),
         },
     ]
 }
@@ -4393,6 +4627,8 @@ fn repo_score_matches_expected_value_per_case() {
     for case in repo_score_cases() {
         let mut checks =
             make_checks_with_statuses(case.policy, case.secret, case.dependabot, case.branch);
+        checks.secret_scanning.alerts_observable = case.alerts_observable;
+        checks.secret_scanning.has_open_alerts = case.has_open_alerts;
         if let Some(codeowners) = case.codeowners {
             checks.codeowners.status = codeowners;
         }
@@ -4486,9 +4722,9 @@ fn render_owner_detail_html_repo_posture_tooltip_states_formula_and_exclusion_ru
     );
     assert!(
         detail_page.contains(
-            "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS"
+            "Security Policy, Secret Scanning, Alert-Free, Dependabot, Branch Protection, CODEOWNERS"
         ),
-        "Repo Posture tooltip must state its five-control set"
+        "Repo Posture tooltip must state its six-control set"
     );
     assert!(
         detail_page.contains("excluded from the denominator"),
@@ -6295,6 +6531,7 @@ const ALL_CONTROL_KEYS: &[ControlKey] = &[
     ControlKey::NonStale,
     ControlKey::NonOrphaned,
     ControlKey::AlertFree,
+    ControlKey::Codeowners,
 ];
 
 fn extract_card_key_literals(template_source: &str) -> Vec<String> {

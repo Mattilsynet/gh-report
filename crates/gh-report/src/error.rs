@@ -8,6 +8,14 @@ pub use cherry_pit_storage::PersistenceError;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum AppError {
+    /// The scheduled run no longer owns its delivery batch.
+    #[error("scheduled run no longer owns its delivery batch")]
+    RunOwnershipLost,
+
+    /// The in-memory run identity could not be parsed as a UUID.
+    #[error("invalid scheduled run identity: {0}")]
+    InvalidRunIdentity(uuid::Error),
+
     /// An error occurred during inventory collection or validation.
     #[error("inventory error: {0}")]
     Inventory(#[from] InventoryError),

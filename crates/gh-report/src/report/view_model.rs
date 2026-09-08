@@ -574,6 +574,20 @@ pub struct OwnerDetailViewModel {
     pub summary_cards: Vec<SummaryCard>,
     /// Whether any repo row is flagged as stale (drives footnote rendering).
     pub has_stale_repos: bool,
+    /// Composite Team Health score (geometric mean of the owner-level set of
+    /// 7 control rates, 0.1% floor): `security_policy`, `secret_scanning`,
+    /// `dependabot_security_updates`, `branch_protection`, `non_stale`,
+    /// `alert_free`, `non_orphaned`.
+    pub sec_score: Option<f64>,
+    /// Formatted sec score string at prose precision (e.g., `"72.3%"` or
+    /// `"N/A"`), fed to the headline Team Health Score card.
+    pub sec_score_formatted: String,
+    /// Coverage tier for the sec score.
+    pub sec_score_tier: CoverageTier,
+    /// CSS width class for the sec score progress bar.
+    pub sec_score_width_class: &'static str,
+    /// Header/card tooltip copy explaining the Team Health Score formula.
+    pub team_health_tooltip: String,
     /// Freshness control cell for the "Freshness" card — the
     /// `non_stale` per-control coverage rate `(total - stale) / total`,
     /// the same value that feeds this owner's Team Health score.
@@ -613,6 +627,10 @@ pub struct OwnerDetailViewModel {
     /// Tooltip copy for the `non_orphaned_cell` card, resolved from
     /// [`NON_ORPHANED_TOOLTIP`] so card and column cannot drift.
     pub non_orphaned_tooltip: &'static str,
+    /// Alert-free status control cell for the "Alert-Free Status" card —
+    /// the `alert_free` per-control coverage rate, the percentage of the owner's
+    /// observable repos with no open secret scanning alerts.
+    pub alert_free_cell: ControlCell,
     /// Team member roster section (B1, CHE-0082:R5). Always one of three
     /// distinct visible states — see [`RosterSection`] — never a silent
     /// `None` omission.
@@ -1595,12 +1613,12 @@ pub struct ReportViewModel {
     /// Governance Score" card. "Org Governance" is the internal short name
     /// for that same score.
     ///
-    /// `None` when all 6 control rates are N/A (`security_policy`,
+    /// `None` when all 7 control rates are N/A (`security_policy`,
     /// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
-    /// `codeowners`, `archival_coverage`).
+    /// `codeowners`, `archival_coverage`, `alert_free`).
     ///
-    /// This is the ORG-level set of six. The owner-level Team Health set is a
-    /// different set of seven — see [`OwnerOverviewRow::sec_score`].
+    /// This is the ORG-level set of seven. The owner-level Team Health set is
+    /// also seven — see [`OwnerOverviewRow::sec_score`].
     pub health_score: Option<f64>,
     /// Coverage tier for the health score.
     pub health_tier: CoverageTier,
@@ -1618,7 +1636,7 @@ pub struct ReportViewModel {
     /// control, derived from [`LIFECYCLE_RETIREMENT_LABEL`].
     ///
     /// The index template reads this in both places that name the control —
-    /// its own card and the Org Governance score tooltip's six-control
+    /// its own card and the Org Governance score tooltip's seven-control
     /// roster — so the two cannot drift apart (CHE-0108:R1, COM-0027:R3).
     pub lifecycle_retirement_label: &'static str,
     /// Explanatory copy for the card carrying
@@ -1643,6 +1661,18 @@ pub struct ReportViewModel {
     pub archived_repos: u32,
     /// Number of active (non-archived) repos that are stale.
     pub stale_active_repos: u32,
+
+    /// Alert-free rate across observable repositories (secret scanning enabled and alerts observable).
+    pub alert_free_rate: Option<f64>,
+    /// Formatted alert-free rate string with the truthful ratio
+    /// (e.g. `"75.0% (3/4)"` or `"N/A (0/0)"`).
+    pub alert_free_formatted: String,
+    /// Coverage tier for the alert-free rate.
+    pub alert_free_tier: CoverageTier,
+    /// CSS width class for the alert-free rate progress bar.
+    pub alert_free_width_class: &'static str,
+    /// Explanatory copy for the Alert-Free Status card.
+    pub alert_free_tooltip: &'static str,
 
     /// Owners overview data. `None` when no CODEOWNERS parsed data is available.
     pub owners: Option<OwnersViewModel>,
@@ -1803,8 +1833,10 @@ impl ReportViewModel {
             stale_rate_formatted,
             stale_width_class,
         ) = compute_archival_coverage(evidence, tiers);
+        let (alert_free_rate, alert_free_tier, alert_free_formatted, alert_free_width_class) =
+            compute_alert_free_coverage(evidence, tiers);
 
-        let health = health_display(m, stale_rate, tiers);
+        let health = health_display(m, stale_rate, alert_free_rate, tiers);
         let team_access = compose_team_access_guidance(&TeamAccessGuidance::default());
 
         Self {
@@ -1909,6 +1941,11 @@ impl ReportViewModel {
             stale_width_class,
             archived_repos: archived,
             stale_active_repos,
+            alert_free_rate,
+            alert_free_formatted,
+            alert_free_tier,
+            alert_free_width_class,
+            alert_free_tooltip: ALERT_FREE_TOOLTIP,
             owners: None,
             top_security_teams: Vec::new(),
             orphaned_count: 0,
@@ -1957,6 +1994,7 @@ pub fn compose_team_access_guidance(cfg: &TeamAccessGuidance) -> (String, Vec<He
 fn health_display(
     metrics: &AggregatedMetrics,
     stale_rate: Option<f64>,
+    alert_free_rate: Option<f64>,
     tiers: &CoverageTiers,
 ) -> HealthDisplay {
     let score = compute_health_score(&[
@@ -1966,6 +2004,7 @@ fn health_display(
         metrics.branch_protection_coverage.rate,
         metrics.codeowners_coverage.rate,
         stale_rate,
+        alert_free_rate,
     ]);
 
     HealthDisplay {
@@ -2521,9 +2560,9 @@ const WIDTH_CLASSES: [&str; 21] = [
 ///
 /// This function is arity-agnostic — it means the geometric mean over
 /// whatever rates the caller supplies. The two callers supply different
-/// sets: Org Governance passes six org-level rates (Security Policy,
+/// sets: Org Governance passes seven org-level rates (Security Policy,
 /// Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival
-/// Coverage); Team Health passes seven owner-level rates (Security Policy,
+/// Coverage, Alert-Free Status); Team Health passes seven owner-level rates (Security Policy,
 /// Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free,
 /// Non-Orphaned). `None` (N/A) is excluded, not zeroed.
 ///
@@ -2623,7 +2662,11 @@ pub(crate) const LIFECYCLE_RETIREMENT_LABEL: &str = "Lifecycle: Retirement";
 ///
 /// Sole owner of this string; the index template reads it through
 /// [`ReportViewModel::lifecycle_retirement_tooltip`].
-pub(crate) const LIFECYCLE_RETIREMENT_TOOLTIP: &str = "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better. One of six controls behind the Org Governance score. It asks whether dead work has been retired, the later stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the per-owner Lifecycle: Freshness, which asks whether work is still happening and divides by all of an owner's repos rather than by stale-lifecycle repos only.";
+pub(crate) const LIFECYCLE_RETIREMENT_TOOLTIP: &str = "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better. One of seven controls behind the Org Governance score. It asks whether dead work has been retired, the later stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the per-owner Lifecycle: Freshness, which asks whether work is still happening and divides by all of an owner's repos rather than by stale-lifecycle repos only.";
+
+/// Canonical, single-source explanatory copy for the `alert_free` control
+/// on the dashboard index scorecard.
+pub(crate) const ALERT_FREE_TOOLTIP: &str = "Percentage of observable repositories with no open secret scanning alerts (secret scanning enabled and alerts observable). Higher is better. One of seven controls behind the Org Governance score. N/A when no repositories are observable.";
 
 /// Canonical, single-source explanatory copy for the `non_stale` control
 /// ("Freshness").
@@ -2653,6 +2696,12 @@ pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str>
         ),
         "non_stale" => Some(NON_STALE_TOOLTIP),
         "non_orphaned" => Some(NON_ORPHANED_TOOLTIP),
+        "codeowners" => Some(
+            "CODEOWNERS presence — a CODEOWNERS file in a recognized location (.github/CODEOWNERS or CODEOWNERS) identifying responsible teams or individuals. Same per-repo check behind both this column and the org-wide CODEOWNERS Coverage metric.",
+        ),
+        "alert_free" => Some(
+            "Alert-free status — zero open secret scanning alerts on repositories where secret scanning is enabled and alerts are observable. Same per-repo check behind both this column and the org-wide Alert-Free Status metric (repositories where alerts are not observable are excluded as not applicable).",
+        ),
         _ => None,
     }
 }
@@ -2695,6 +2744,38 @@ fn compute_archival_coverage(
         stale_tier,
         stale_rate_formatted,
         stale_width_class,
+    )
+}
+
+/// Compute alert-free coverage metrics from evidence.
+///
+/// Returns `(alert_free_rate, alert_free_tier, alert_free_formatted, alert_free_width_class)`.
+fn compute_alert_free_coverage(
+    evidence: &Evidence,
+    tiers: &CoverageTiers,
+) -> (Option<f64>, CoverageTier, String, &'static str) {
+    let m = &evidence.metrics;
+    let numerator = m.secret_alert_counts.repos_without_open_alerts;
+    let denominator = numerator
+        .saturating_add(m.secret_alert_counts.repos_with_open_alerts)
+        .max(m.open_secret_alert_prevalence.denominator);
+    let alert_free_rate = if denominator > 0 {
+        Some((f64::from(numerator) / f64::from(denominator)) * 100.0)
+    } else {
+        None
+    };
+    let alert_free_tier = CoverageTier::from_rate(alert_free_rate, tiers);
+    let alert_free_formatted = alert_free_rate.map_or_else(
+        || format!("N/A ({numerator}/{denominator})"),
+        |s| format!("{s:.1}% ({numerator}/{denominator})"),
+    );
+    let alert_free_width_class = rate_to_width_class(alert_free_rate);
+
+    (
+        alert_free_rate,
+        alert_free_tier,
+        alert_free_formatted,
+        alert_free_width_class,
     )
 }
 
@@ -3518,11 +3599,22 @@ mod tests {
             Some(NON_ORPHANED_TOOLTIP),
             "non_orphaned must resolve to the single canonical Ownership copy"
         );
+        assert_eq!(
+            coverage_control_column_tooltip("codeowners"),
+            Some(
+                "CODEOWNERS presence — a CODEOWNERS file in a recognized location (.github/CODEOWNERS or CODEOWNERS) identifying responsible teams or individuals. Same per-repo check behind both this column and the org-wide CODEOWNERS Coverage metric."
+            )
+        );
+        assert_eq!(
+            coverage_control_column_tooltip("alert_free"),
+            Some(
+                "Alert-free status — zero open secret scanning alerts on repositories where secret scanning is enabled and alerts are observable. Same per-repo check behind both this column and the org-wide Alert-Free Status metric (repositories where alerts are not observable are excluded as not applicable)."
+            )
+        );
     }
 
     #[test]
     fn coverage_control_column_tooltip_returns_none_for_unknown_key() {
-        assert_eq!(coverage_control_column_tooltip("codeowners"), None);
         assert_eq!(coverage_control_column_tooltip("bogus"), None);
     }
 
@@ -3655,7 +3747,7 @@ mod tests {
 
         assert!(vm.health_score.is_some());
         let s = vm.health_score.unwrap();
-        assert!((s - 71.5).abs() < 0.5, "expected ~71.5, got {s}");
+        assert!((s - 72.2).abs() < 0.5, "expected ~72.2, got {s}");
         assert_eq!(vm.health_tier, CoverageTier::Warn);
         assert!(vm.health_score_formatted.contains('%'));
         assert_ne!(vm.health_width_class, "w-0");
@@ -3669,12 +3761,70 @@ mod tests {
         evidence.metrics.dependabot_security_updates_coverage = RateMetric::new(0, 0);
         evidence.metrics.branch_protection_coverage = RateMetric::new(0, 0);
         evidence.metrics.codeowners_coverage = RateMetric::new(0, 0);
+        evidence.metrics.secret_alert_counts = crate::domain::metrics::SecretAlertCounts::default();
+        evidence.metrics.open_secret_alert_prevalence = RateMetric::new(0, 0);
 
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
         assert_eq!(vm.health_score, None);
         assert_eq!(vm.health_tier, CoverageTier::Na);
         assert_eq!(vm.health_score_formatted, "N/A");
         assert_eq!(vm.health_width_class, "w-0");
+    }
+
+    #[test]
+    fn view_model_alert_free_rate() {
+        let evidence = sample_evidence();
+        let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        assert_eq!(vm.alert_free_rate, Some(75.0));
+        assert_eq!(vm.alert_free_formatted, "75.0% (6/8)");
+        assert_eq!(vm.alert_free_tier, CoverageTier::Warn);
+        assert_ne!(vm.alert_free_width_class, "w-0");
+        assert_eq!(vm.alert_free_tooltip, ALERT_FREE_TOOLTIP);
+    }
+
+    #[test]
+    fn view_model_alert_free_rate_none_when_zero_observable() {
+        let mut evidence = sample_evidence();
+        evidence.metrics.secret_alert_counts = crate::domain::metrics::SecretAlertCounts::default();
+        evidence.metrics.open_secret_alert_prevalence = RateMetric::new(0, 0);
+
+        let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+        assert_eq!(vm.alert_free_rate, None);
+        assert_eq!(vm.alert_free_formatted, "N/A (0/0)");
+        assert_eq!(vm.alert_free_tier, CoverageTier::Na);
+        assert_eq!(vm.alert_free_width_class, "w-0");
+    }
+
+    #[test]
+    fn view_model_alert_free_rate_included_in_health_score() {
+        let mut evidence = sample_evidence();
+        evidence.metrics.secret_alert_counts.repos_with_open_alerts = 0;
+        evidence
+            .metrics
+            .secret_alert_counts
+            .repos_without_open_alerts = 8;
+        evidence.metrics.open_secret_alert_prevalence = RateMetric::new(0, 8);
+
+        let vm_100 = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        let mut evidence_0 = sample_evidence();
+        evidence_0
+            .metrics
+            .secret_alert_counts
+            .repos_with_open_alerts = 8;
+        evidence_0
+            .metrics
+            .secret_alert_counts
+            .repos_without_open_alerts = 0;
+        evidence_0.metrics.open_secret_alert_prevalence = RateMetric::new(8, 8);
+
+        let vm_0 = ReportViewModel::from_evidence(&evidence_0, &CoverageTiers::default());
+
+        assert_ne!(
+            vm_100.health_score, vm_0.health_score,
+            "alert-free rate should affect health score"
+        );
     }
 
     #[test]

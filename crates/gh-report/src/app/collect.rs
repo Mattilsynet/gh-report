@@ -914,7 +914,7 @@ impl SweepSaga {
             capabilities: &ctx.capabilities,
             config: sweep.config,
             run: sweep.run(),
-            corr_ctx: &sweep.corr_ctx,
+            run_id: RunId::parse(&sweep.run().run_id)?,
             inventory,
             state: sweep.state,
         });
@@ -1064,7 +1064,16 @@ impl SweepSaga {
     }
 }
 
-/// Parameters for [`enqueue_and_await_batch`].
+struct RunId(uuid::Uuid);
+
+impl RunId {
+    fn parse(value: &str) -> Result<Self, AppError> {
+        uuid::Uuid::parse_str(value)
+            .map(Self)
+            .map_err(AppError::InvalidRunIdentity)
+    }
+}
+
 struct BatchParams<'a> {
     pending: &'a [&'a Arc<Repository>],
     run_timestamp: &'a str,
@@ -1074,7 +1083,7 @@ struct BatchParams<'a> {
     capabilities: &'a CapabilitySet,
     config: &'a RuntimeConfig,
     run: &'a RunMetadata,
-    corr_ctx: &'a CorrelationContext,
+    run_id: RunId,
     inventory: &'a InventoryLoad,
     state: &'a Arc<AppState>,
 }
@@ -1083,6 +1092,7 @@ struct BatchParams<'a> {
 /// completion bookkeeping that will retire it.
 struct PublishedBatch {
     tracker: Arc<crate::app::work_queue::BatchTracker>,
+    owner: Arc<super::evidence_service::ScheduledRun>,
     result: crate::app::work_queue::BatchEnqueueResult,
 }
 
@@ -1091,20 +1101,39 @@ enum RunStart {
     Published(PublishedBatch),
 }
 
-fn publish_batch<F>(state: &Arc<AppState>, expected: usize, publish: F) -> RunStart
+async fn publish_batch<F>(
+    state: &Arc<AppState>,
+    run_id: uuid::Uuid,
+    expected: usize,
+    publish: F,
+) -> RunStart
 where
     F: FnOnce() -> crate::app::work_queue::BatchEnqueueResult,
 {
+    let _gate = state.evidence().delivery_gate.lock().await;
     if let Some(signal) = state.begin_run() {
         return RunStart::Fenced(signal);
     }
     let tracker = crate::app::work_queue::BatchTracker::new(expected);
     state.set_active_batch_tracker(Some(Arc::clone(&tracker)));
+    let owner = Arc::new(super::evidence_service::ScheduledRun {
+        id: run_id,
+        tracker: Arc::clone(&tracker),
+        failure: std::sync::Mutex::new(None),
+    });
+    state
+        .evidence()
+        .scheduled_run
+        .store(Arc::new(Some(Arc::clone(&owner))));
 
     let result = publish();
 
     tracker.retire(expected.saturating_sub(result.accepted));
-    RunStart::Published(PublishedBatch { tracker, result })
+    RunStart::Published(PublishedBatch {
+        tracker,
+        owner,
+        result,
+    })
 }
 
 /// Enqueue pending repos, wait for all jobs to complete, then shut down
@@ -1120,7 +1149,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         capabilities,
         config,
         run,
-        corr_ctx,
+        run_id,
         inventory,
         state,
     } = params;
@@ -1139,19 +1168,22 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
 
     let expected = items.len();
     let queue = Arc::clone(&state.work_queue);
-    let started = publish_batch(state, expected, move || {
+    let corr_ctx = CorrelationContext::correlated(run_id.0);
+    let started = publish_batch(state, run_id.0, expected, move || {
         crate::app::work_queue::enqueue_batch(
             &queue,
             items,
             &crate::app::work_queue::JobSource::ScheduledBatch,
-            corr_ctx,
+            &corr_ctx,
         )
-    });
+    })
+    .await;
     let PublishedBatch {
         tracker,
+        owner,
         result: batch_result,
     } = match started {
-        RunStart::Fenced(signal) => return batch_outcome(Some(signal)),
+        RunStart::Fenced(signal) => return batch_outcome(RetireOutcome::Retired(Some(signal))),
         RunStart::Published(batch) => batch,
     };
 
@@ -1161,7 +1193,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
             rejected = batch_result.rejected,
             "sweep aborted: work queue rejected all jobs (closed or full)"
         );
-        state.set_active_batch_tracker(None);
+        batch_outcome(retire_batch(state, &owner).await)?;
         return Ok(false);
     }
 
@@ -1187,15 +1219,47 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
     let (pp_task, pp_shutdown) = spawn_partial_publisher_from_store(pp_config, Arc::clone(state));
 
     tracker.wait().await;
-    state.set_active_batch_tracker(None);
-    let fence = state.take_run_fence();
+    let fence = retire_batch(state, &owner).await;
 
     let _ = pp_shutdown.send(true);
     if let Err(e) = pp_task.await {
         error!(error = ?e, "partial publisher task panicked");
     }
 
-    batch_outcome(fence)
+    batch_outcome(fence)?;
+    match owner
+        .failure
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        Some(error) => Err(AppError::Persistence(error)),
+        None => Ok(true),
+    }
+}
+
+enum RetireOutcome {
+    Retired(Option<crate::app::daemon::FenceSignal>),
+    NotOwner,
+}
+
+async fn retire_batch(
+    state: &AppState,
+    owner: &Arc<super::evidence_service::ScheduledRun>,
+) -> RetireOutcome {
+    let _gate = state.evidence().delivery_gate.lock().await;
+    let current = state.evidence().scheduled_run.load_full();
+    if current
+        .as_ref()
+        .as_ref()
+        .is_some_and(|active| Arc::ptr_eq(active, owner))
+    {
+        state.evidence().scheduled_run.store(Arc::new(None));
+        state.set_active_batch_tracker(None);
+        RetireOutcome::Retired(state.take_run_fence())
+    } else {
+        RetireOutcome::NotOwner
+    }
 }
 
 /// Resolve the batch barrier into a run outcome.
@@ -1206,10 +1270,11 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
 /// `converge_on_fence` sink via the existing
 /// [`CollectionOutcome::FencedConflict`] mapping — no re-arm is
 /// performed at this call site (CHE-0088:R9).
-fn batch_outcome(fence: Option<crate::app::daemon::FenceSignal>) -> Result<bool, AppError> {
-    match fence {
-        Some(signal) => Err(AppError::Persistence(signal.into_error())),
-        None => Ok(true),
+fn batch_outcome(outcome: RetireOutcome) -> Result<bool, AppError> {
+    match outcome {
+        RetireOutcome::Retired(Some(signal)) => Err(AppError::Persistence(signal.into_error())),
+        RetireOutcome::Retired(None) => Ok(true),
+        RetireOutcome::NotOwner => Err(AppError::RunOwnershipLost),
     }
 }
 
@@ -5693,26 +5758,29 @@ mod tests {
         let queue = Arc::clone(&state.work_queue);
         let fencing_state = Arc::clone(&state);
 
-        let RunStart::Published(batch) = publish_batch(&state, items.len(), move || {
-            let result = crate::app::work_queue::enqueue_batch(
-                &queue,
-                items,
-                &crate::app::work_queue::JobSource::ScheduledBatch,
-                &corr_ctx,
-            );
-            let failure = crate::app::write_policy::WriteFailure::classify(
-                PersistenceError::FencedConflict {
-                    expected_seq: Some(8901),
-                    actual_seq: Some(8902),
-                    source: Box::new(std::io::Error::other("wrong last sequence")),
-                },
-            );
-            let Ok(signal) = crate::app::daemon::FenceSignal::from_failure(failure) else {
-                panic!("a Conflict write failure must yield a fence signal");
-            };
-            fencing_state.fence_active_run(signal);
-            result
-        }) else {
+        let RunStart::Published(batch) =
+            publish_batch(&state, uuid::Uuid::now_v7(), items.len(), move || {
+                let result = crate::app::work_queue::enqueue_batch(
+                    &queue,
+                    items,
+                    &crate::app::work_queue::JobSource::ScheduledBatch,
+                    &corr_ctx,
+                );
+                let failure = crate::app::write_policy::WriteFailure::classify(
+                    PersistenceError::FencedConflict {
+                        expected_seq: Some(8901),
+                        actual_seq: Some(8902),
+                        source: Box::new(std::io::Error::other("wrong last sequence")),
+                    },
+                );
+                let Ok(signal) = crate::app::daemon::FenceSignal::from_failure(failure) else {
+                    panic!("a Conflict write failure must yield a fence signal");
+                };
+                fencing_state.fence_active_run(signal);
+                result
+            })
+            .await
+        else {
             panic!("an unfenced run start must publish the batch");
         };
 
@@ -5726,6 +5794,66 @@ mod tests {
             state.run_is_fenced(),
             "a latched fence must survive tracker registration (CHE-0088:R3 no-swallow)"
         );
+    }
+
+    #[tokio::test]
+    async fn retiring_a_replaced_run_is_not_clean_completion() {
+        let state = AppState::new().await;
+        let previous_owner = Arc::new(super::super::evidence_service::ScheduledRun {
+            id: uuid::Uuid::now_v7(),
+            tracker: crate::app::work_queue::BatchTracker::new(1),
+            failure: std::sync::Mutex::new(None),
+        });
+        assert!(
+            matches!(
+                batch_outcome(retire_batch(&state, &previous_owner).await),
+                Err(AppError::RunOwnershipLost)
+            ),
+            "a run that no longer owns retirement cannot report clean completion"
+        );
+    }
+
+    #[test]
+    fn batch_run_identity_matches_existing_correlation() {
+        let run = test_run_meta();
+        let identity = RunId::parse(&run.run_id).unwrap();
+        assert_eq!(Some(identity.0), run.correlation_context().correlation_id());
+    }
+
+    #[test]
+    fn invalid_batch_identity_is_an_error_not_a_panic() {
+        assert!(matches!(
+            RunId::parse("not-a-run"),
+            Err(AppError::InvalidRunIdentity(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_transition_waits_for_delivery_ownership_release() {
+        let state = AppState::new().await;
+        let gate = state.evidence().delivery_gate.lock().await;
+        let published = std::sync::atomic::AtomicBool::new(false);
+        let mut transition = std::pin::pin!(publish_batch(&state, uuid::Uuid::now_v7(), 0, || {
+            published.store(true, std::sync::atomic::Ordering::SeqCst);
+            crate::app::work_queue::enqueue_batch(
+                &state.work_queue,
+                Vec::new(),
+                &crate::app::work_queue::JobSource::ScheduledBatch,
+                &CorrelationContext::none(),
+            )
+        }));
+        let blocked = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(transition.as_mut(), cx).is_pending())
+        })
+        .await;
+        assert!(
+            blocked,
+            "Run B cannot replace ownership during Run A append"
+        );
+        assert!(!published.load(std::sync::atomic::Ordering::SeqCst));
+        drop(gate);
+        assert!(matches!(transition.await, RunStart::Published(_)));
+        assert!(published.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test(flavor = "multi_thread")]

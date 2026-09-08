@@ -516,6 +516,7 @@ impl AppState {
         self.evidence.batch_tracker.store(Arc::new(tracker));
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_active_batch(&self) {
         let tracker_guard = self.evidence.batch_tracker.load();
         if let Some(tracker) = tracker_guard.as_ref() {
@@ -3761,6 +3762,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn drain_worker_pool_flushes_queued_delivery_outcome() {
         let state = AppState::new().await;
+        let run_id = uuid::Uuid::now_v7();
+        state.evidence().scheduled_run.store(Arc::new(Some(Arc::new(
+            crate::app::evidence_service::ScheduledRun {
+                id: run_id,
+                tracker: crate::app::work_queue::BatchTracker::new(1),
+                failure: std::sync::Mutex::new(None),
+            },
+        ))));
         let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel(1);
         outcome_tx
             .send(crate::app::worker_pool::JobOutcome::Success {
@@ -3768,7 +3777,7 @@ mod tests {
                 result: crate::test_fixtures::all_passing_evidence("queued-repo"),
                 source: crate::app::work_queue::JobSource::ScheduledBatch,
                 duration: std::time::Duration::from_millis(1),
-                correlation: cherry_pit_core::CorrelationContext::none(),
+                correlation: cherry_pit_core::CorrelationContext::correlated(run_id),
             })
             .await
             .expect("queue outcome");

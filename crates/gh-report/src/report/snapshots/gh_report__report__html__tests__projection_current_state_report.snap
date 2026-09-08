@@ -297,7 +297,7 @@ expression: "&pages[\"report.html\"]"
             </tr>
             <tr>
                 <td>Org governance score</td>
-                <td class="text-right">69%</td>
+                <td class="text-right">70%</td>
             </tr>
             <tr>
                 <td>Total repositories</td>
@@ -334,6 +334,10 @@ expression: "&pages[\"report.html\"]"
             <tr>
                 <td>Open org secret-scanning alerts</td>
                 <td class="text-right">0</td>
+            </tr>
+            <tr>
+                <td>Alert-free status</td>
+                <td class="text-right">75.0% (3/4)</td>
             </tr>
             <tr>
                 <td>Collection technical issues</td>

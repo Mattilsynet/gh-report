@@ -201,7 +201,14 @@ fn apply_sort(table: &HtmlTableElement, state: &SortState) {
     let mut texts: Vec<(HtmlTableRowElement, String)> = collect_rows(&tbody)
         .into_iter()
         .map(|row| {
-            let text = cell_text(&row, state.column);
+            let text = match state.sort_type {
+                SortType::Status => row
+                    .cells()
+                    .item(state.column)
+                    .and_then(|cell| cell.get_attribute("data-sort-value"))
+                    .unwrap_or_default(),
+                _ => cell_text(&row, state.column),
+            };
             (row, text)
         })
         .collect();

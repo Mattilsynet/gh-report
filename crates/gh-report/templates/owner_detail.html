@@ -108,6 +108,13 @@
 
 
     <div class="scorecard">
+        <div class="card health-score-card {{ vm.sec_score_tier.css_class() }}" title="{{ vm.team_health_tooltip }}">
+            <p class="card-label">Team Health Score</p>
+            <p class="card-value">{{ vm.sec_score_formatted }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ vm.sec_score_tier.css_class() }} {{ vm.sec_score_width_class }}"></div>
+            </div>
+        </div>
         {% for card in vm.summary_cards %}
         {% if let Some(href) = card.drill_down_href %}
         <a href="{{ href }}" class="card {{ card.cell.tier.css_class() }}">
@@ -147,6 +154,13 @@
                 <div class="progress-fill {{ vm.non_orphaned_cell.tier.css_class() }} {{ vm.non_orphaned_cell.width_class }}"></div>
             </div>
         </div>
+        <div class="card {{ vm.alert_free_cell.tier.css_class() }}">
+            <p class="card-label">Alert-Free Status {% call tooltip::tooltip("Percentage of this owner's observable repos with no open secret scanning alerts (secret scanning enabled and alerts observable). One of seven controls behind the Team Health score. N/A when no repositories are observable.") %}{% endcall %}</p>
+            <p class="card-value">{{ vm.alert_free_cell.rate_formatted }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ vm.alert_free_cell.tier.css_class() }} {{ vm.alert_free_cell.width_class }}"></div>
+            </div>
+        </div>
     </div>
 
     {% if vm.repo_rows.is_empty() %}
@@ -159,7 +173,7 @@
                 <tr>
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
-                    <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header("Repo Posture", "Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.") %}{% endcall %}</th>
+                    <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header("Repo Posture", "Arithmetic mean: 100 × passing / measured controls, across six controls — Security Policy, Secret Scanning, Alert-Free, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.") %}{% endcall %}</th>
                     {% for column in vm.control_columns %}
                     <th scope="col" class="text-center" data-sort-type="status">{% call tooltip::header(column.name, column.tooltip) %}{% endcall %}</th>
                     {% endfor %}
