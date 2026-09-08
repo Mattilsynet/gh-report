@@ -233,6 +233,8 @@ fn collect_rows(tbody: &HtmlTableSectionElement) -> Vec<HtmlTableRowElement> {
     collected
 }
 
+/// Extracts cell text for sorting: inspects the `data-sort-value` attribute first,
+/// falling back to rendered text content if absent.
 fn cell_text(row: &HtmlTableRowElement, column: u32) -> String {
     let Some(cell) = row.cells().item(column) else {
         return String::new();

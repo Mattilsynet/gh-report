@@ -40,6 +40,8 @@ R10 [5]: Adding the `wasm32-unknown-unknown` compilation target is a target-add 
 
 R11 [5]: Any no-mount CSR path in gh-report-web-client — i.e. progressive enhancement that never calls mount_to_body/mount_to (R9) — MUST, before constructing any Effect::new or other reactive primitive, establish (a) an initialized async executor via Executor::init_wasm_bindgen() and (b) a page-lifetime reactive Owner that is set as the current owner and retained for the document lifetime (let owner = Owner::new(); owner.set(); std::mem::forget(owner);), mirroring Leptos's own hydrate_islands idiom. Without both, effects are constructed but never run (their driving future is never spawned and no owner context exists), so the enhancement silently no-ops while server HTML stays correct per R9. This is an ADDED runtime-init obligation created by the no-mount choice, consistent with and not a reversal of R9.
 
+R12 [5]: Progressive-enhancement table sorting in `gh-report-web-client` must maintain deterministic semantic ordering across sort directions. Numeric sorting treats `N/A` and unparseable values as strictly less than 0 (`f64::NEG_INFINITY`) so that indeterminate evidence sorts to the bottom (below 0%) in descending sort and to the beginning in ascending sort, with tie-breaking via deterministic lexicographic ordering; status sorting pins indeterminate states (`unknown`, `permission-denied`, `pending`, `N/A`) at the end in both directions. Comments, docstrings, and tests must document this invariant to prevent regression.
+
 ## Consequences
 
 + becomes easier: users sort large tables client-side with no page reload or extra query parameters; the read-serve pipeline gains a reusable pattern for client-rendered enhancements.

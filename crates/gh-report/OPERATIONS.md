@@ -398,6 +398,25 @@ The numeric score — Repo Posture, Team Health, or Org Governance alike — is 
 
 Configuration constraints (validated at startup): both thresholds are in `[0.0, 100.0]` and `pass_threshold ≥ warn_threshold`. When `pass_threshold == warn_threshold`, the warn band collapses and scores are strictly pass or fail — this is a supported configuration.
 
+### Interactive Table Sorting Contract (gh-report-web-client)
+
+Tables carrying the `data-sortable` attribute are progressively enhanced by `gh-report-web-client` (Leptos CSR / WASM, CHE-0087:R1–R12). Columns declare their sorting semantics via header `data-sort-type` attributes (`numeric`, `status`, `date`, `text`):
+
+- **Numeric sorting (`data-sort-type="numeric"`):**
+  - Evaluates percentages (`100%`, `50.0%`), counts with percentage prefixes (`100% (2/2)`), and integer/decimal numbers.
+  - **`N/A` and unparseable values are strictly less than 0.0:** `parse_numeric` maps `"N/A"` (case-insensitive) and unparseable cell tokens to negative infinity (`f64::NEG_INFINITY`).
+  - **Ascending order:** `N/A < 0% < 10% < 50% < 100%` (`N/A` sits at the start of the sorted sequence).
+  - **Descending order:** `100% > 50% > 10% > 0% > N/A` (`N/A` sits at the very bottom, below `0%`).
+  - **Tie-breaking:** When two cells both evaluate to `f64::NEG_INFINITY` (such as `"N/A (0/1)"` vs `"N/A (0/2)"`), ties are broken deterministically via lexicographical comparison (`a.cmp(b)`).
+- **Status sorting (`data-sort-type="status"`):**
+  - Evaluates typed `data-sort-value` attributes on cells.
+  - Known compliance hierarchy: `pass > partial > fail`.
+  - Indeterminate band: `unknown`, `permission-denied`, `pending`, and `N/A` remain pinned at the end in both ascending and descending directions.
+- **Date sorting (`data-sort-type="date"`):**
+  - Evaluates ISO-8601 timestamps (`YYYY-MM-DD...`) lexicographically.
+- **Text sorting (`data-sort-type="text"`):**
+  - Standard lexicographical comparison directed by sort direction.
+
 ### Stability
 
 The set of controls and the per-status mapping are part of the schema contract: any change is a `EVIDENCE_SCHEMA_VERSION` bump (see [Schema Versions](#schema-versions)). The threshold defaults are not part of the schema contract — they are runtime configuration and may be overridden per deployment without invalidating baselines.

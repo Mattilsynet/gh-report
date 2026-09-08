@@ -8,7 +8,9 @@ use std::cmp::Ordering;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortType {
     /// Compare as floating-point numbers (`%` suffix and `,` thousands
-    /// separators are stripped before parsing).
+    /// separators are stripped before parsing). Unparseable and `N/A`
+    /// values parse as negative infinity, sorting strictly below 0.0
+    /// in both ascending and descending directions.
     Numeric,
     /// Compare as ISO-8601 date-prefixed strings (`YYYY-MM-DD...`),
     /// which sort correctly under plain lexicographic ordering.
@@ -130,9 +132,17 @@ fn compare_status(a: &str, b: &str, direction: SortDirection) -> Ordering {
     }
 }
 
-/// Compare cell values in a direction, leaving indeterminate statuses last.
-/// Numeric unparseable values sort below parseable values in ascending order;
-/// two unparseable values use text ordering. Descending reverses that order.
+/// Compare cell values in a direction.
+///
+/// - **Status comparisons:** Known states sort by compliance (`pass` > `partial` > `fail`),
+///   with indeterminate values (`unknown`, `permission-denied`, `pending`, `N/A`) pinned
+///   last in both directions.
+/// - **Numeric comparisons:** Unparseable and `N/A` values parse as negative infinity
+///   (`f64::NEG_INFINITY`), ensuring they sort strictly below all valid numeric and percentage
+///   values (including `0%`) in both directions: ascending places them at the beginning
+///   (lowest value), while descending places them at the end (below 0%). Two unparseable/N/A
+///   values break ties using deterministic lexicographic ordering.
+/// - **Date / Text comparisons:** Standard lexicographic ordering directed by `direction`.
 ///
 /// A status comparison cannot omit its direction. The executable diagnostic-identity
 /// harness in `tools/test_web_client_verify.py` verifies the missing-direction error;
