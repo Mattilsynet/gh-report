@@ -271,6 +271,8 @@ pub struct OwnerOverviewRow {
 /// A per-control coverage cell in the owner overview table.
 #[derive(Debug, Clone)]
 pub struct ControlCell {
+    /// Measured compliance rate, or `None` when unmeasured / N/A.
+    pub rate: Option<f64>,
     /// Formatted rate string at prose precision (e.g., "80.0% (4/5)"),
     /// used by owner-detail summary cards.
     pub rate_formatted: String,
@@ -622,6 +624,9 @@ pub struct OwnerDetailViewModel {
     /// shared control vocabulary rather than hardcoded in the template, so
     /// a control rename cannot desynchronise the card from the vocabulary.
     pub non_orphaned_label: String,
+    /// Tooltip copy for the `non_orphaned_cell` card, resolved from
+    /// [`NON_ORPHANED_TOOLTIP`] so card and column cannot drift.
+    pub non_orphaned_tooltip: &'static str,
     /// Alert-free status control cell for the "Alert-Free Status" card —
     /// the `alert_free` per-control coverage rate, the percentage of the owner's
     /// observable repos with no open secret scanning alerts.
@@ -2673,6 +2678,8 @@ pub(crate) const ALERT_FREE_TOOLTIP: &str = "Percentage of observable repositori
 /// template may hardcode this copy (COM-0027:R3/R4).
 pub(crate) const NON_STALE_TOOLTIP: &str = "(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. It asks whether work is still happening, the earlier stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the org-wide Lifecycle: Retirement, which asks whether dead work has been retired and divides by stale-lifecycle repos only rather than by all of this owner's repos.";
 
+pub(crate) const NON_ORPHANED_TOOLTIP: &str = "owned / (owned + attributed) for this owner — the share of this owner's repos that carry real CODEOWNERS ownership, rather than being orphans (no CODEOWNERS owner at all) merely attributed to this owner because their last committer is on its roster. Rises as more repos gain a CODEOWNERS owner; one of seven controls behind the Team Health score. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than this owner's share.";
+
 pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str> {
     match key {
         "security_policy" => Some(
@@ -2688,6 +2695,7 @@ pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str>
             "Branch protection at the T2 accept-bar or better — pull request review required, on top of T1's force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.",
         ),
         "non_stale" => Some(NON_STALE_TOOLTIP),
+        "non_orphaned" => Some(NON_ORPHANED_TOOLTIP),
         "codeowners" => Some(
             "CODEOWNERS presence — a CODEOWNERS file in a recognized location (.github/CODEOWNERS or CODEOWNERS) identifying responsible teams or individuals. Same per-repo check behind both this column and the org-wide CODEOWNERS Coverage metric.",
         ),
@@ -3585,6 +3593,11 @@ mod tests {
             coverage_control_column_tooltip("non_stale"),
             Some(NON_STALE_TOOLTIP),
             "non_stale must resolve to the single canonical Freshness copy"
+        );
+        assert_eq!(
+            coverage_control_column_tooltip("non_orphaned"),
+            Some(NON_ORPHANED_TOOLTIP),
+            "non_orphaned must resolve to the single canonical Ownership copy"
         );
         assert_eq!(
             coverage_control_column_tooltip("codeowners"),

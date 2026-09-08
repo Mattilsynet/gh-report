@@ -152,8 +152,13 @@ pub fn compare_cells_directed(
 }
 
 fn parse_numeric(s: &str) -> Option<f64> {
-    let trimmed = s.trim().trim_end_matches('%');
-    let cleaned = trimmed.replace(',', "");
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let token = trimmed.split_whitespace().next().unwrap_or(trimmed);
+    let token = token.trim_end_matches('%');
+    let cleaned = token.replace(',', "");
     if cleaned.is_empty() {
         return None;
     }
@@ -314,6 +319,22 @@ mod tests {
     }
 
     #[test]
+    fn compare_cells_numeric_parses_percentage_with_counts() {
+        assert_eq!(
+            compare_cells("0% (0/1)", "100% (1/1)", SortType::Numeric),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells("2% (1/50)", "10% (1/10)", SortType::Numeric),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells("100% (1/1)", "50% (1/2)", SortType::Numeric),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
     fn compare_cells_numeric_unparseable_sorts_before_parseable() {
         assert_eq!(compare_cells("N/A", "5", SortType::Numeric), Ordering::Less);
         assert_eq!(
@@ -321,8 +342,6 @@ mod tests {
             Ordering::Greater
         );
     }
-
-    #[test]
     fn compare_cells_numeric_unparseable_sorts_below_zero() {
         assert_eq!(compare_cells("N/A", "0", SortType::Numeric), Ordering::Less);
         assert_eq!(

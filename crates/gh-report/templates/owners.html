@@ -38,7 +38,7 @@
             <td><a href="owners/{{ row.slug }}.html" title="{{ row.owner }}">{{ row.owner_short }}</a></td>
             <td>{{ row.owner_type }}</td>
             <td>{{ row.repo_count }}</td>
-            <td class="text-center">
+            <td class="text-center"{% if let Some(score) = row.sec_score %} data-sort-value="{{ score }}"{% else %} data-sort-value="N/A"{% endif %}>
                 <div class="score-bar-inline">
                     <div class="progress-bar">
                         <div class="progress-fill {{ row.sec_score_tier.css_class() }} {{ row.sec_score_width_class }}"></div>
@@ -47,7 +47,7 @@
                 </div>
             </td>
             {% for cell in row.controls %}
-            <td class="text-center">
+            <td class="text-center"{% if let Some(rate) = cell.rate %} data-sort-value="{{ rate }}"{% else %} data-sort-value="N/A"{% endif %}>
                 <span class="status-dot {{ cell.tier.status_dot_class() }}" title="{{ cell.rate_table_formatted }}{% if cell.excluded_total > 0 %} — {{ cell.excluded_formatted }}{% endif %}"><span class="sr-only">{{ cell.rate_table_formatted }}{% if cell.excluded_total > 0 %} — {{ cell.excluded_formatted }}{% endif %}</span></span>
                 {{ cell.rate_table_formatted }}
             </td>

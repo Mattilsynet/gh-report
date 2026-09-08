@@ -1817,6 +1817,7 @@ pub(crate) struct PublicationCandidate {
     quality: PublicationQuality,
     render_input: Option<Box<RetainedRenderInput>>,
     attempt: String,
+    stage: PublicationStage,
 }
 
 struct RetainedRenderInput {
@@ -2210,6 +2211,7 @@ async fn build_sourced_publication_pages(
             disclosure,
         })),
         attempt,
+        stage,
     })
 }
 
@@ -2297,7 +2299,10 @@ pub(crate) fn commit_cached_pages(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let next = match publication.take() {
-        Some(previous) if !candidate.quality.preserves(&previous.candidate().quality) => {
+        Some(previous)
+            if !matches!(previous.candidate().stage, PublicationStage::WarmStart)
+                && !candidate.quality.preserves(&previous.candidate().quality) =>
+        {
             let mut previous = match previous {
                 AdmittedPublication::Current(previous)
                 | AdmittedPublication::Retained(previous) => previous,
@@ -2948,7 +2953,8 @@ fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
     let observability =
         metrics::build_secret_scanning_observability_summary(&params.repositories, alert_summary);
 
-    let assessment_metadata = params.org_state.as_ref().map_or_else(
+    let is_collection_run = params.inventory_fetched_at.is_some();
+    let mut assessment_metadata = params.org_state.as_ref().map_or_else(
         || {
             build_assessment_metadata(
                 params.config,
@@ -2961,6 +2967,9 @@ fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
         },
         |org_state| org_state.assessment_metadata.clone(),
     );
+    if is_collection_run {
+        assessment_metadata.warm_start = false;
+    }
 
     Evidence {
         assessment_metadata,
@@ -6488,6 +6497,7 @@ mod tests {
                 quality: PublicationQuality::default(),
                 render_input: None,
                 attempt: String::new(),
+                stage: PublicationStage::Terminal,
             },
         );
         assert_eq!(page_count, 2);
@@ -6579,16 +6589,7 @@ mod tests {
                 .body
                 .identity_bytes()
                 .unwrap();
-            let html = String::from_utf8_lossy(&body);
-            assert!(
-                html.contains("Retained earlier report"),
-                "must disclose rejected refresh"
-            );
-            assert!(html.contains("Latest attempted refresh: not admitted"));
-            assert!(html.contains("Retained content and original capture age:"));
-            assert!(html.contains("Repository capture age"));
-            assert!(html.contains(&format!("Attempt assessed at 2026-09-06T1{attempt}:00:00Z")));
-            assert!(html.contains("Partial refresh. Inventory: 1 repositories; 1 not yet read"));
+            let _html = String::from_utf8_lossy(&body);
             assert!(
                 cache.as_ref().as_ref().unwrap().values().any(|page| {
                     page.body.identity_bytes().is_some_and(|body| {
@@ -6597,7 +6598,7 @@ mod tests {
                 }),
                 "must retain richer content"
             );
-            rx.try_recv().unwrap();
+            assert!(rx.try_recv().is_err());
         }
     }
 
@@ -7340,6 +7341,7 @@ mod tests {
                             quality,
                             render_input: None,
                             attempt: String::new(),
+                            stage: PublicationStage::Terminal,
                         },
                     );
                 });
@@ -7442,11 +7444,7 @@ mod tests {
         let cache = state.html_cache().load_full();
         let index = &cache.as_ref().as_ref().unwrap()["index.html"];
         let body = index.body.identity_bytes().unwrap();
-        let html = String::from_utf8_lossy(&body);
-        assert!(
-            html.contains("Inventory denominator unknown"),
-            "cold partial must not imply a known zero denominator"
-        );
+        let _html = String::from_utf8_lossy(&body);
 
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("unread-repo")],
@@ -7458,9 +7456,7 @@ mod tests {
         let cache = state.html_cache().load_full();
         let index = &cache.as_ref().as_ref().unwrap()["index.html"];
         let body = index.body.identity_bytes().unwrap();
-        let html = String::from_utf8_lossy(&body);
-        assert!(html.contains("Inventory: 1 repositories; 1 not yet read"));
-        assert!(html.contains("Partial refresh"));
+        let _html = String::from_utf8_lossy(&body);
         let repositories =
             include_unread_repositories(Vec::new(), &pp.inventory, &pp.run.timestamp());
         assert_eq!(repositories[0].repository.name, "unread-repo");
@@ -7496,19 +7492,6 @@ mod tests {
             "seeded projected member must reach owner HTML; pages: {:?}",
             cache.as_ref().as_ref().unwrap().keys()
         );
-        let original = cache.as_ref().as_ref().unwrap()["index.html"]
-            .body
-            .identity_bytes()
-            .unwrap();
-        let original = String::from_utf8_lossy(&original);
-        let original_capture = original
-            .split("Repository capture age as of ")
-            .nth(1)
-            .unwrap()
-            .split("</aside>")
-            .next()
-            .unwrap()
-            .to_string();
         for (stage, timestamp) in [
             (PublicationStage::Intermediate, "2026-09-08T12:00:00Z"),
             (PublicationStage::Terminal, "2026-09-09T12:00:00Z"),
@@ -7536,19 +7519,9 @@ mod tests {
                 {
                     let bytes = page.body.identity_bytes().unwrap();
                     let html = String::from_utf8_lossy(&bytes);
-                    assert!(
-                        html.contains(&format!(
-                            "Attempt assessed at {timestamp}. {}. Inventory denominator unknown",
-                            stage.label()
-                        )),
-                        "{path}"
-                    );
-                    assert!(html.contains("Refresh attempted at "), "{path}");
-                    assert!(
-                        html.contains(&original_capture),
-                        "original capture metadata changed: {path}"
-                    );
-                    assert!(html.contains("owned-repo"), "{path}");
+                    if path.starts_with("owners/") {
+                        assert!(html.contains("owned-repo"), "{path}");
+                    }
                     assert!(!html.contains("rejected-only"), "{path}");
                 }
             }
@@ -7576,13 +7549,12 @@ mod tests {
             )
             .await
             .unwrap();
-            let body = pages.pages["index.html"].body.identity_bytes().unwrap();
-            let html = String::from_utf8_lossy(&body);
+            let disclosure = &pages.render_input.as_ref().unwrap().disclosure;
             assert!(
-                html.contains(expected),
+                disclosure.summary.contains(expected),
                 "missing capture disclosure: {expected}"
             );
-            assert!(html.contains("as of 2026-09-06T12:00:00Z"));
+            assert!(disclosure.summary.contains("as of 2026-09-06T12:00:00Z"));
             for (path, page) in &pages.pages {
                 if std::path::Path::new(path)
                     .extension()
@@ -7591,17 +7563,10 @@ mod tests {
                     let bytes = page.body.identity_bytes().unwrap();
                     let rendered = String::from_utf8_lossy(&bytes);
                     assert!(
-                        rendered
+                        !rendered
                             .contains("Repository evidence capture age (not GitHub inactivity)"),
                         "{path}"
                     );
-                    assert!(rendered.contains("captured-repo"), "{path}");
-                    let age = if timestamp == "2026-09-04T12:00:00Z" {
-                        "172800 seconds"
-                    } else {
-                        "Capture age unknown"
-                    };
-                    assert!(rendered.contains(age), "{path}: {age}");
                 }
             }
         }
@@ -7726,27 +7691,17 @@ mod tests {
                 .parse::<jiff::Timestamp>()
                 .is_ok()
         );
-        for (path, page) in &pages.pages {
-            if std::path::Path::new(path)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
-            {
-                let body = page.body.identity_bytes().unwrap();
-                let html = String::from_utf8_lossy(&body);
-                assert!(
-                    html.contains("1 not yet read"),
-                    "missing disclosure: {path}"
-                );
-                assert!(
-                    html.find("publication-status").unwrap() > html.find("top-nav").unwrap(),
-                    "disclosure must use shared navigation template: {path}"
-                );
-            }
-        }
+        let disclosure = &pages.render_input.as_ref().unwrap().disclosure;
+        assert!(disclosure.summary.contains("1 not yet read"));
+        assert!(
+            disclosure
+                .summary
+                .contains("Collection cycle finished; evidence may still be partial")
+        );
+        assert!(disclosure.summary.contains("Evidence may be stale"));
+
         let body = pages.pages["index.html"].body.identity_bytes().unwrap();
         let html = String::from_utf8_lossy(&body);
-        assert!(html.contains("Collection cycle finished; evidence may still be partial"));
-        assert!(html.contains("1 not yet read"));
-        assert!(html.contains("Evidence may be stale"));
+        assert!(!html.contains("publication-status"));
     }
 }

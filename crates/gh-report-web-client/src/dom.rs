@@ -234,10 +234,15 @@ fn collect_rows(tbody: &HtmlTableSectionElement) -> Vec<HtmlTableRowElement> {
 }
 
 fn cell_text(row: &HtmlTableRowElement, column: u32) -> String {
-    row.cells()
-        .item(column)
-        .map(|cell| cell.text_content().unwrap_or_default())
-        .unwrap_or_default()
+    let Some(cell) = row.cells().item(column) else {
+        return String::new();
+    };
+    match cell.dyn_into::<HtmlElement>() {
+        Ok(el) => el
+            .get_attribute("data-sort-value")
+            .unwrap_or_else(|| el.text_content().unwrap_or_default()),
+        Err(cell) => cell.text_content().unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]

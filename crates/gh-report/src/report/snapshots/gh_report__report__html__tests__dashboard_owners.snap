@@ -44,7 +44,7 @@ expression: "&pages[\"owners.html\"]"
             <th scope="col" data-sort-type="text">Owner <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner&#39;s detail page.">ⓘ<span class="sr-only">The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner&#39;s detail page.</span></span></th>
             <th scope="col" data-sort-type="text">Type <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry.">ⓘ<span class="sr-only">Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry.</span></span></th>
             <th scope="col" data-sort-type="numeric">Repos <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Number of repositories attributed to this owner via CODEOWNERS.">ⓘ<span class="sr-only">Number of repositories attributed to this owner via CODEOWNERS.</span></span></th>
-            <th scope="col" class="text-center" data-sort-type="numeric">Team Health <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Geometric mean of measured control rates across seven controls for this owner&#39;s repos — Security Policy, Secret Scanning, Dependabot Status, Branch Protection, Lifecycle: Freshness, Alert-Free, Ownership. The four control-presence columns and the Lifecycle: Freshness column below show five of those inputs; Alert-Free and Ownership feed the score but are not shown as columns. Unmeasured controls are excluded from each rate&#39;s denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different seven-control set. N/A when no control is scorable.">ⓘ<span class="sr-only">Geometric mean of measured control rates across seven controls for this owner&#39;s repos — Security Policy, Secret Scanning, Dependabot Status, Branch Protection, Lifecycle: Freshness, Alert-Free, Ownership. The four control-presence columns and the Lifecycle: Freshness column below show five of those inputs; Alert-Free and Ownership feed the score but are not shown as columns. Unmeasured controls are excluded from each rate&#39;s denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different seven-control set. N/A when no control is scorable.</span></span></th>
+            <th scope="col" class="text-center" data-sort-type="numeric">Team Health <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Geometric mean of measured control rates across seven controls for this owner&#39;s repos — Security Policy, Secret Scanning, Dependabot Status, Branch Protection, Lifecycle: Freshness, Alert-Free, Ownership. The four control-presence columns, the Lifecycle: Freshness column, and the Ownership column below show six of those inputs; Alert-Free feeds the score but is not shown as a column. Unmeasured controls are excluded from each rate&#39;s denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different seven-control set. N/A when no control is scorable.">ⓘ<span class="sr-only">Geometric mean of measured control rates across seven controls for this owner&#39;s repos — Security Policy, Secret Scanning, Dependabot Status, Branch Protection, Lifecycle: Freshness, Alert-Free, Ownership. The four control-presence columns, the Lifecycle: Freshness column, and the Ownership column below show six of those inputs; Alert-Free feeds the score but is not shown as a column. Unmeasured controls are excluded from each rate&#39;s denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different seven-control set. N/A when no control is scorable.</span></span></th>
             
             <th scope="col" class="text-center" data-sort-type="numeric">Security Policy <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).">ⓘ<span class="sr-only">Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).</span></span></th>
             
@@ -56,6 +56,8 @@ expression: "&pages[\"owners.html\"]"
             
             <th scope="col" class="text-center" data-sort-type="numeric">Lifecycle: Freshness <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="(total - stale) / total for this owner&#39;s repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. It asks whether work is still happening, the earlier stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the org-wide Lifecycle: Retirement, which asks whether dead work has been retired and divides by stale-lifecycle repos only rather than by all of this owner&#39;s repos.">ⓘ<span class="sr-only">(total - stale) / total for this owner&#39;s repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. It asks whether work is still happening, the earlier stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the org-wide Lifecycle: Retirement, which asks whether dead work has been retired and divides by stale-lifecycle repos only rather than by all of this owner&#39;s repos.</span></span></th>
             
+            <th scope="col" class="text-center" data-sort-type="numeric">Ownership <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="owned / (owned + attributed) for this owner — the share of this owner&#39;s repos that carry real CODEOWNERS ownership, rather than being orphans (no CODEOWNERS owner at all) merely attributed to this owner because their last committer is on its roster. Rises as more repos gain a CODEOWNERS owner; one of seven controls behind the Team Health score. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than this owner&#39;s share.">ⓘ<span class="sr-only">owned / (owned + attributed) for this owner — the share of this owner&#39;s repos that carry real CODEOWNERS ownership, rather than being orphans (no CODEOWNERS owner at all) merely attributed to this owner because their last committer is on its roster. Rises as more repos gain a CODEOWNERS owner; one of seven controls behind the Team Health score. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than this owner&#39;s share.</span></span></th>
+            
         </tr>
     </thead>
     <tbody>
@@ -64,7 +66,7 @@ expression: "&pages[\"owners.html\"]"
             <td><a href="owners/org-team-a.html" title="@org/team-a">team-a</a></td>
             <td>Team</td>
             <td>2</td>
-            <td class="text-center">
+            <td class="text-center" data-sort-value="59.5">
                 <div class="score-bar-inline">
                     <div class="progress-bar">
                         <div class="progress-fill tier-warn w-60"></div>
@@ -73,27 +75,32 @@ expression: "&pages[\"owners.html\"]"
                 </div>
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="50">
                 <span class="status-dot status-warn" title="50% (1/2)"><span class="sr-only">50% (1/2)</span></span>
                 50% (1/2)
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="100">
                 <span class="status-dot status-pass" title="100% (1/1)"><span class="sr-only">100% (1/1)</span></span>
                 100% (1/1)
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="50">
                 <span class="status-dot status-warn" title="50% (1/2)"><span class="sr-only">50% (1/2)</span></span>
                 50% (1/2)
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="50">
                 <span class="status-dot status-warn" title="50% (1/2)"><span class="sr-only">50% (1/2)</span></span>
                 50% (1/2)
             </td>
             
-            <td class="text-center">
+            <td class="text-center" data-sort-value="N/A">
+                <span class="status-dot status-unknown" title="N/A"><span class="sr-only">N/A</span></span>
+                N/A
+            </td>
+            
+            <td class="text-center" data-sort-value="N/A">
                 <span class="status-dot status-unknown" title="N/A"><span class="sr-only">N/A</span></span>
                 N/A
             </td>
