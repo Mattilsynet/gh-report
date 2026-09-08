@@ -732,6 +732,19 @@ fn render_dashboard_index_contains_alert_free_card() {
         index.contains(crate::report::view_model::ALERT_FREE_TOOLTIP),
         "Alert-Free Status card must carry canonical tooltip"
     );
+    assert!(
+        index.contains("<p class=\"card-detail\">1 unmeasured</p>"),
+        "Alert-Free Status card must display unmeasured count when unobservable > 0"
+    );
+
+    let mut clean_evidence = sample_evidence();
+    clean_evidence.metrics.secret_alert_counts.unobservable = 0;
+    let clean_pages = render_dashboard(&clean_evidence, &DashboardConfig::default()).unwrap();
+    let clean_index = &clean_pages["index.html"];
+    assert!(
+        !clean_index.contains("<p class=\"card-detail\">0 unmeasured</p>"),
+        "Alert-Free Status card must stay silent when unmeasured count is zero"
+    );
 }
 
 #[test]
@@ -1769,6 +1782,117 @@ fn owner_detail_page_renders_headline_team_health_score_and_alert_free() {
     assert!(detail_page.contains("Team Health Score"));
     assert!(detail_page.contains("Alert-Free Status"));
     assert!(detail_page.contains("One of seven controls behind the Team Health score"));
+    assert!(
+        !detail_page.contains("<p class=\"card-detail\">0 unmeasured</p>"),
+        "Alert-Free card must not render unmeasured when excluded_total is zero"
+    );
+}
+
+#[test]
+fn owner_detail_page_alert_free_card_observable_mixed_and_zero_observable() {
+    let repos = vec![
+        test_fixtures::make_repository_evidence(
+            "obs-only-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/team-observable"]),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "mixed-obs-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/team-mixed"]),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "mixed-unobs-repo",
+            Visibility::Private,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_fail(),
+                test_fixtures::secret_disabled(),
+                test_fixtures::dependabot_disabled(),
+                test_fixtures::branch_fail(),
+                test_fixtures::codeowners_with_owners(&["@org/team-mixed"]),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "zero-unobs-1",
+            Visibility::Private,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_fail(),
+                test_fixtures::secret_disabled(),
+                test_fixtures::dependabot_disabled(),
+                test_fixtures::branch_fail(),
+                test_fixtures::codeowners_with_owners(&["@org/team-zero"]),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "zero-unobs-2",
+            Visibility::Private,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_fail(),
+                test_fixtures::secret_disabled(),
+                test_fixtures::dependabot_disabled(),
+                test_fixtures::branch_fail(),
+                test_fixtures::codeowners_with_owners(&["@org/team-zero"]),
+            ),
+        ),
+    ];
+
+    let mut metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+    crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle(
+        &mut metrics.owner_metrics,
+        &repos,
+        &test_fixtures::make_timestamp(),
+    );
+    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+    let evidence = test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repos,
+    );
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    let obs_page = &pages["owners/org-team-observable.html"];
+    let obs_card = owner_detail_card_block(obs_page, "Alert-Free Status");
+    assert!(obs_card.contains("100.0% (1/1)"));
+    assert!(
+        !obs_card.contains("unmeasured"),
+        "observable-only owner must not render unmeasured copy in alert-free card; card:\n{obs_card}"
+    );
+
+    let mixed_page = &pages["owners/org-team-mixed.html"];
+    let mixed_card = owner_detail_card_block(mixed_page, "Alert-Free Status");
+    assert!(mixed_card.contains("100.0% (1/1)"));
+    assert!(
+        mixed_card.contains("<p class=\"card-detail\">1 unmeasured</p>"),
+        "mixed owner must render 1 unmeasured in alert-free card; card:\n{mixed_card}"
+    );
+
+    let zero_page = &pages["owners/org-team-zero.html"];
+    let zero_card = owner_detail_card_block(zero_page, "Alert-Free Status");
+    assert!(zero_card.contains("N/A"));
+    assert!(
+        zero_card.contains("<p class=\"card-detail\">2 unmeasured</p>"),
+        "zero-observable owner with exclusions must render 2 unmeasured in alert-free card even when rate is N/A; card:\n{zero_card}"
+    );
 }
 
 #[test]

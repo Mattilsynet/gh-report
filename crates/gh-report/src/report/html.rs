@@ -1217,11 +1217,20 @@ fn control_cell(
         || "N/A".to_string(),
         crate::domain::metrics::RateMetric::to_table_string,
     );
-    let exclusion = control_key_to_check_kind(key)
-        .map(|check_kind| format_exclusion(check_kind, score_exclusion_counts));
-    let (excluded_total, excluded_formatted) = match exclusion {
-        Some(e) => (e.total, e.formatted),
-        None => (0, "0 unmeasured".to_string()),
+    let (excluded_total, excluded_formatted) = if key == ControlKey::AlertFree.as_str() {
+        let total = rate_metric
+            .and_then(|rm| rm.extra.get("unobservable"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(0);
+        (total, format!("{total} unmeasured"))
+    } else {
+        let exclusion = control_key_to_check_kind(key)
+            .map(|check_kind| format_exclusion(check_kind, score_exclusion_counts));
+        match exclusion {
+            Some(e) => (e.total, e.formatted),
+            None => (0, "0 unmeasured".to_string()),
+        }
     };
     ControlCell {
         rate,

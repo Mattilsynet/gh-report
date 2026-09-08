@@ -83,6 +83,14 @@ pub fn detect_sort_type<'a, I: IntoIterator<Item = &'a str>>(cells: I) -> SortTy
 
 fn compare_numeric(a: &str, b: &str) -> Ordering {
     match (parse_numeric(a), parse_numeric(b)) {
+        (Some(x), Some(y))
+            if x.is_infinite()
+                && x.is_sign_negative()
+                && y.is_infinite()
+                && y.is_sign_negative() =>
+        {
+            a.cmp(b)
+        }
         (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
         (Some(_), None) => Ordering::Greater,
         (None, Some(_)) => Ordering::Less,
@@ -154,13 +162,16 @@ pub fn compare_cells_directed(
 fn parse_numeric(s: &str) -> Option<f64> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
-        return None;
+        return Some(f64::NEG_INFINITY);
     }
     let token = trimmed.split_whitespace().next().unwrap_or(trimmed);
     let token = token.trim_end_matches('%');
+    if token.eq_ignore_ascii_case("n/a") {
+        return Some(f64::NEG_INFINITY);
+    }
     let cleaned = token.replace(',', "");
     if cleaned.is_empty() {
-        return None;
+        return Some(f64::NEG_INFINITY);
     }
     cleaned.parse::<f64>().ok()
 }
@@ -363,8 +374,8 @@ mod tests {
     #[test]
     fn compare_cells_numeric_both_unparseable_falls_back_to_text() {
         assert_eq!(
-            compare_cells("N/A", "Unknown", SortType::Numeric),
-            "N/A".cmp("Unknown")
+            compare_cells("Invalid", "Unknown", SortType::Numeric),
+            "Invalid".cmp("Unknown")
         );
     }
 
@@ -391,5 +402,100 @@ mod tests {
             Ordering::Equal
         );
         assert_eq!(compare_cells("x", "x", SortType::Text), Ordering::Equal);
+    }
+
+    #[test]
+    fn parse_numeric_maps_na_and_empty_tokens_to_neg_infinity() {
+        assert_eq!(super::parse_numeric("N/A"), Some(f64::NEG_INFINITY));
+        assert_eq!(super::parse_numeric("n/a"), Some(f64::NEG_INFINITY));
+        assert_eq!(super::parse_numeric("N/A (0/1)"), Some(f64::NEG_INFINITY));
+        assert_eq!(super::parse_numeric(""), Some(f64::NEG_INFINITY));
+        assert_eq!(super::parse_numeric("   "), Some(f64::NEG_INFINITY));
+        assert_eq!(super::parse_numeric("%"), Some(f64::NEG_INFINITY));
+    }
+
+    #[test]
+    fn compare_numeric_infinite_negative_breaks_ties_with_text() {
+        assert_eq!(
+            compare_cells("N/A (0/1)", "N/A (0/2)", SortType::Numeric),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells("N/A (0/2)", "N/A (0/1)", SortType::Numeric),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn compare_cells_numeric_na_sorts_below_zero_and_positive_numbers_both_directions() {
+        assert_eq!(
+            compare_cells_directed("N/A", "0%", SortType::Numeric, SortDirection::Ascending),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells_directed("N/A", "5%", SortType::Numeric, SortDirection::Ascending),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells_directed("0%", "N/A", SortType::Numeric, SortDirection::Descending),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells_directed("5%", "N/A", SortType::Numeric, SortDirection::Descending),
+            Ordering::Less
+        );
+
+        let mut rows = ["0%", "N/A", "100%", "50%"];
+        rows.sort_by(|a, b| {
+            compare_cells_directed(a, b, SortType::Numeric, SortDirection::Ascending)
+        });
+        assert_eq!(rows, ["N/A", "0%", "50%", "100%"]);
+
+        rows.sort_by(|a, b| {
+            compare_cells_directed(a, b, SortType::Numeric, SortDirection::Descending)
+        });
+        assert_eq!(rows, ["100%", "50%", "0%", "N/A"]);
+    }
+
+    #[test]
+    fn detect_sort_type_mixed_na_and_percentages_is_numeric_and_sorts_in_both_directions() {
+        let cells = ["N/A (0/1)", "2%", "10%", ""];
+        let sort_type = detect_sort_type(cells);
+        assert_eq!(sort_type, SortType::Numeric);
+
+        let mut rows = ["N/A (0/1)", "2%", "10%", ""];
+        rows.sort_by(|a, b| compare_cells_directed(a, b, sort_type, SortDirection::Ascending));
+        assert_eq!(rows, ["", "N/A (0/1)", "2%", "10%"]);
+
+        rows.sort_by(|a, b| compare_cells_directed(a, b, sort_type, SortDirection::Descending));
+        assert_eq!(rows, ["10%", "2%", "N/A (0/1)", ""]);
+    }
+
+    #[test]
+    fn detect_sort_type_case_insensitive_na_is_numeric_and_sorts_in_both_directions() {
+        let cells = ["n/a", "N/a (0/2)", "5%"];
+        let sort_type = detect_sort_type(cells);
+        assert_eq!(sort_type, SortType::Numeric);
+
+        let mut rows = ["5%", "n/a", "N/a (0/2)"];
+        rows.sort_by(|a, b| compare_cells_directed(a, b, sort_type, SortDirection::Ascending));
+        assert_eq!(rows, ["N/a (0/2)", "n/a", "5%"]);
+
+        rows.sort_by(|a, b| compare_cells_directed(a, b, sort_type, SortDirection::Descending));
+        assert_eq!(rows, ["5%", "n/a", "N/a (0/2)"]);
+    }
+
+    #[test]
+    fn detect_sort_type_all_na_samples_is_numeric_and_sorts_in_both_directions() {
+        let cells = ["N/A", "n/a", "N/A (0/1)"];
+        let sort_type = detect_sort_type(cells);
+        assert_eq!(sort_type, SortType::Numeric);
+
+        let mut rows = ["n/a", "N/A (0/1)", "N/A"];
+        rows.sort_by(|a, b| compare_cells_directed(a, b, sort_type, SortDirection::Ascending));
+        assert_eq!(rows, ["N/A", "N/A (0/1)", "n/a"]);
+
+        rows.sort_by(|a, b| compare_cells_directed(a, b, sort_type, SortDirection::Descending));
+        assert_eq!(rows, ["n/a", "N/A (0/1)", "N/A"]);
     }
 }

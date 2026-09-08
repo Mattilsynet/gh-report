@@ -1096,7 +1096,9 @@ pub(crate) fn enrich_owner_metrics_with_lifecycle(
                 .filter(|r| r.checks.secret_scanning.has_open_alerts != Some(true))
                 .count(),
         );
-        let alert_free = RateMetric::new(alert_free_count, observable_count);
+        let unobservable_count = total.saturating_sub(observable_count);
+        let alert_free = RateMetric::new(alert_free_count, observable_count)
+            .with_extra("unobservable", unobservable_count);
 
         for (key, metric) in [("non_stale", non_stale), ("alert_free", alert_free)] {
             if owner.per_control_coverage.contains_key(key) {
@@ -4054,6 +4056,10 @@ mod tests {
         assert_eq!(alert_free.denominator, 2);
         assert_eq!(alert_free.numerator, 1);
         assert_eq!(alert_free.rate, Some(50.0));
+        assert_eq!(
+            alert_free.extra.get("unobservable"),
+            Some(&serde_json::json!(1))
+        );
     }
 
     #[test]

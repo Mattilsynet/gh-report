@@ -101,6 +101,7 @@ expression: "&pages[\"index.html\"]"
                 <div class="progress-bar">
                     <div class="progress-fill tier-warn w-75"></div>
                 </div>
+                <p class="card-detail">1 unmeasured</p>
             </div>
         </div>
     </div>

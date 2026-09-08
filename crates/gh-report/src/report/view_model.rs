@@ -1673,6 +1673,8 @@ pub struct ReportViewModel {
     pub alert_free_width_class: &'static str,
     /// Explanatory copy for the Alert-Free Status card.
     pub alert_free_tooltip: &'static str,
+    /// Exclusion breakdown for Alert-Free Status.
+    pub alert_free_exclusion: AlertFreeExclusion,
 
     /// Owners overview data. `None` when no CODEOWNERS parsed data is available.
     pub owners: Option<OwnersViewModel>,
@@ -1722,6 +1724,42 @@ fn dashboard_control_how_to_fix() -> ControlHowToFix {
         dependabot: coverage_control_how_to_fix("dependabot_security_updates").unwrap_or_default(),
         branch_protection: coverage_control_how_to_fix("branch_protection").unwrap_or_default(),
         codeowners: coverage_control_how_to_fix("codeowners").unwrap_or_default(),
+    }
+}
+
+/// Alert-Free exclusion representation with a single source of truth.
+///
+/// Encapsulates the unobservable repository count with a private field so
+/// the numeric count and its derived `"{count} unmeasured"` presentation
+/// cannot diverge (R16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AlertFreeExclusion {
+    count: u32,
+}
+
+impl AlertFreeExclusion {
+    /// Create an exclusion from the unobservable repository count.
+    #[must_use]
+    pub const fn new(count: u32) -> Self {
+        Self { count }
+    }
+
+    /// Total count of excluded (unobservable) repositories.
+    #[must_use]
+    pub const fn total(&self) -> u32 {
+        self.count
+    }
+
+    /// Formatted presentation, e.g. `"2 unmeasured"`.
+    #[must_use]
+    pub fn formatted(&self) -> String {
+        format!("{} unmeasured", self.count)
+    }
+}
+
+impl From<u32> for AlertFreeExclusion {
+    fn from(count: u32) -> Self {
+        Self::new(count)
     }
 }
 
@@ -1835,6 +1873,7 @@ impl ReportViewModel {
         ) = compute_archival_coverage(evidence, tiers);
         let (alert_free_rate, alert_free_tier, alert_free_formatted, alert_free_width_class) =
             compute_alert_free_coverage(evidence, tiers);
+        let alert_free_exclusion = AlertFreeExclusion::new(m.secret_alert_counts.unobservable);
 
         let health = health_display(m, stale_rate, alert_free_rate, tiers);
         let team_access = compose_team_access_guidance(&TeamAccessGuidance::default());
@@ -1946,6 +1985,7 @@ impl ReportViewModel {
             alert_free_tier,
             alert_free_width_class,
             alert_free_tooltip: ALERT_FREE_TOOLTIP,
+            alert_free_exclusion,
             owners: None,
             top_security_teams: Vec::new(),
             orphaned_count: 0,
@@ -1953,6 +1993,19 @@ impl ReportViewModel {
             warm_start: metadata.warm_start,
             admin_diagnostics,
         }
+    }
+
+    /// Total count of repos excluded from `alert_free_formatted`'s
+    /// denominator (unobservable or secret scanning disabled).
+    #[must_use]
+    pub const fn alert_free_excluded_total(&self) -> u32 {
+        self.alert_free_exclusion.total()
+    }
+
+    /// Formatted `"N unmeasured"` string for Alert-Free Status.
+    #[must_use]
+    pub fn alert_free_excluded_formatted(&self) -> String {
+        self.alert_free_exclusion.formatted()
     }
 }
 
@@ -3781,6 +3834,10 @@ mod tests {
         assert_eq!(vm.alert_free_tier, CoverageTier::Warn);
         assert_ne!(vm.alert_free_width_class, "w-0");
         assert_eq!(vm.alert_free_tooltip, ALERT_FREE_TOOLTIP);
+        assert_eq!(vm.alert_free_excluded_total(), 2);
+        assert_eq!(vm.alert_free_excluded_formatted(), "2 unmeasured");
+        assert_eq!(vm.alert_free_exclusion.total(), 2);
+        assert_eq!(vm.alert_free_exclusion.formatted(), "2 unmeasured");
     }
 
     #[test]
@@ -3794,6 +3851,38 @@ mod tests {
         assert_eq!(vm.alert_free_formatted, "N/A (0/0)");
         assert_eq!(vm.alert_free_tier, CoverageTier::Na);
         assert_eq!(vm.alert_free_width_class, "w-0");
+        assert_eq!(vm.alert_free_excluded_total(), 0);
+        assert_eq!(vm.alert_free_excluded_formatted(), "0 unmeasured");
+        assert_eq!(vm.alert_free_exclusion.total(), 0);
+        assert_eq!(vm.alert_free_exclusion.formatted(), "0 unmeasured");
+    }
+
+    #[test]
+    fn alert_free_exclusion_boundaries() {
+        let zero = super::AlertFreeExclusion::new(0);
+        assert_eq!(zero.total(), 0);
+        assert_eq!(zero.formatted(), "0 unmeasured");
+
+        let one = super::AlertFreeExclusion::new(1);
+        assert_eq!(one.total(), 1);
+        assert_eq!(one.formatted(), "1 unmeasured");
+
+        let max = super::AlertFreeExclusion::new(u32::MAX);
+        assert_eq!(max.total(), u32::MAX);
+        assert_eq!(max.formatted(), "4294967295 unmeasured");
+
+        let from_conv = super::AlertFreeExclusion::from(42);
+        assert_eq!(from_conv.total(), 42);
+        assert_eq!(from_conv.formatted(), "42 unmeasured");
+    }
+
+    #[test]
+    fn alert_free_exclusion_single_source_of_truth() {
+        for count in [0, 1, 2, 5, 100, 9999] {
+            let exc = super::AlertFreeExclusion::new(count);
+            assert_eq!(exc.total(), count);
+            assert_eq!(exc.formatted(), format!("{count} unmeasured"));
+        }
     }
 
     #[test]

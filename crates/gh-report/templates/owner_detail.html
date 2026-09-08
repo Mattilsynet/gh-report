@@ -160,6 +160,9 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.alert_free_cell.tier.css_class() }} {{ vm.alert_free_cell.width_class }}"></div>
             </div>
+            {%- if vm.alert_free_cell.excluded_total > 0 %}
+            <p class="card-detail">{{ vm.alert_free_cell.excluded_formatted }}</p>
+            {%- endif %}
         </div>
     </div>
 
