@@ -27,6 +27,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use axum::Router;
 use axum::extract::ws::{CloseCode, CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, State};
@@ -35,8 +37,10 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bytes::Bytes;
+use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Semaphore, broadcast};
+use tracing::{debug, warn};
 
 use super::port::ProjectionSource;
 use super::state::{PageEntry, ProjectionState};
@@ -45,6 +49,10 @@ use crate::middleware::http::if_none_match_matches;
 use crate::middleware::normalize_request_path;
 use crate::middleware::security::DEFAULT_CSP;
 use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, WsPolicy, validate_ws_origin};
+
+const WS_PING_INTERVAL_SECS: u64 = 30;
+const WS_PONG_DEADLINE_SECS: u64 = 10;
+const WS_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// WebSocket close code 1001 "Going Away" — RFC 6455 §7.4.1. Used to
 /// signal drop-and-resync on `broadcast::RecvError::Lagged` per
@@ -273,6 +281,98 @@ where
         .on_upgrade(move |socket| ws_session::<P>(socket, state, permit))
 }
 
+#[derive(Debug)]
+struct KeepaliveState {
+    pong_deadline: Option<tokio::time::Instant>,
+    pong_duration: Duration,
+}
+
+impl KeepaliveState {
+    fn new(pong_duration: Duration) -> Self {
+        Self {
+            pong_deadline: None,
+            pong_duration,
+        }
+    }
+
+    fn arm_ping(&mut self, now: tokio::time::Instant) -> tokio::time::Instant {
+        let deadline = now + self.pong_duration;
+        self.pong_deadline = Some(deadline);
+        deadline
+    }
+
+    fn record_pong(&mut self, now: tokio::time::Instant) -> bool {
+        if self.is_expired(now) {
+            return false;
+        }
+        self.pong_deadline = None;
+        true
+    }
+
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.pong_deadline
+    }
+
+    fn is_expired(&self, now: tokio::time::Instant) -> bool {
+        match self.pong_deadline {
+            Some(deadline) => now >= deadline,
+            None => false,
+        }
+    }
+}
+
+async fn send_with_timeout(
+    sender: &mut SplitSink<WebSocket, Message>,
+    msg: Message,
+    pong_deadline: Option<tokio::time::Instant>,
+) -> bool {
+    let timeout_duration = match pong_deadline {
+        Some(deadline) => {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            (deadline - now).min(WS_SEND_TIMEOUT)
+        }
+        None => WS_SEND_TIMEOUT,
+    };
+    match tokio::time::timeout(timeout_duration, sender.send(msg)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(err)) => {
+            warn!(%err, "ws send failed");
+            false
+        }
+        Err(_) => {
+            warn!("ws send timed out");
+            false
+        }
+    }
+}
+
+async fn best_effort_close(sender: &mut SplitSink<WebSocket, Message>, frame: Option<CloseFrame>) {
+    match tokio::time::timeout(WS_SEND_TIMEOUT, sender.send(Message::Close(frame))).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            warn!(%err, "best-effort ws close send failed");
+        }
+        Err(_) => {
+            warn!("best-effort ws close send timed out");
+        }
+    }
+}
+
+async fn best_effort_flush(sender: &mut SplitSink<WebSocket, Message>) {
+    match tokio::time::timeout(WS_SEND_TIMEOUT, sender.flush()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            warn!(%err, "best-effort ws flush failed");
+        }
+        Err(_) => {
+            warn!("best-effort ws flush timed out");
+        }
+    }
+}
+
 /// Per-connection WebSocket session.
 ///
 /// Subscribes to the broadcast channel via
@@ -299,21 +399,40 @@ pub(crate) async fn ws_session<P>(
     let (mut sender, mut receiver) = socket.split();
     let mut rx = state.source().subscribe();
 
-    if sender
-        .send(Message::Text(Utf8Bytes::from_static(
-            r#"{"v":1,"type":"connected"}"#,
-        )))
-        .await
-        .is_err()
+    if !send_with_timeout(
+        &mut sender,
+        Message::Text(Utf8Bytes::from_static(r#"{"v":1,"type":"connected"}"#)),
+        None,
+    )
+    .await
     {
         return;
     }
+
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(WS_PING_INTERVAL_SECS));
+    ping_interval.tick().await;
+
+    let mut keepalive = KeepaliveState::new(Duration::from_secs(WS_PONG_DEADLINE_SECS));
+    let mut sent_close = false;
 
     loop {
         tokio::select! {
             msg = receiver.next() => {
                 match msg {
-                    Some(Ok(Message::Close(_)) | Err(_)) | None => break,
+                    Some(Ok(Message::Pong(_))) => {
+                        if !keepalive.record_pong(tokio::time::Instant::now()) {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        best_effort_flush(&mut sender).await;
+                        sent_close = true;
+                        break;
+                    }
+                    Some(Err(_)) | None => {
+                        sent_close = true;
+                        break;
+                    }
                     _ => {}
                 }
             }
@@ -322,26 +441,53 @@ pub(crate) async fn ws_session<P>(
                 match result {
                     Ok(event) => {
                         let payload: Utf8Bytes = (*event.json).to_owned().into();
-                        if sender.send(Message::Text(payload)).await.is_err() {
+                        if !send_with_timeout(&mut sender, Message::Text(payload), keepalive.deadline()).await {
+                            sent_close = true;
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_n)) => {
-                        let _ = sender
-                            .send(Message::Close(Some(CloseFrame {
+                        best_effort_close(
+                            &mut sender,
+                            Some(CloseFrame {
                                 code: WS_CLOSE_GOING_AWAY,
                                 reason: Utf8Bytes::from_static("lagged; resync via snapshot"),
-                            })))
-                            .await;
+                            }),
+                        )
+                        .await;
+                        sent_close = true;
                         break;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
+
+            _ = ping_interval.tick() => {
+                if keepalive.deadline().is_some() {
+                    continue;
+                }
+                if !send_with_timeout(&mut sender, Message::Ping(Bytes::new()), None).await {
+                    sent_close = true;
+                    break;
+                }
+                keepalive.arm_ping(tokio::time::Instant::now());
+            }
+
+            () = async {
+                match keepalive.deadline() {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            }, if keepalive.deadline().is_some() => {
+                debug!("ws client missed pong deadline — closing");
+                break;
+            }
         }
     }
 
-    let _ = sender.send(Message::Close(None)).await;
+    if !sent_close {
+        best_effort_close(&mut sender, None).await;
+    }
 }
 
 /// Apply [`DEFAULT_CSP`] to every response unless an inner handler set
@@ -465,5 +611,62 @@ mod tests {
             PageEntry::new("blog/index.html", b"<html>blog</html>".to_vec()),
         );
         assert!(resolve_page(&snapshot, "blog/index.html").is_some());
+    }
+
+    #[test]
+    fn keepalive_state_initial_unarmed() {
+        let state = KeepaliveState::new(Duration::from_secs(10));
+        assert_eq!(state.deadline(), None);
+        assert!(!state.is_expired(tokio::time::Instant::now()));
+    }
+
+    #[test]
+    fn keepalive_state_arm_ping_sets_deadline() {
+        let mut state = KeepaliveState::new(Duration::from_secs(10));
+        let now = tokio::time::Instant::now();
+        let deadline = state.arm_ping(now);
+        assert_eq!(deadline, now + Duration::from_secs(10));
+        assert_eq!(state.deadline(), Some(deadline));
+        assert!(!state.is_expired(now));
+    }
+
+    #[test]
+    fn keepalive_state_timely_pong_clears_deadline() {
+        let mut state = KeepaliveState::new(Duration::from_secs(10));
+        let now = tokio::time::Instant::now();
+        state.arm_ping(now);
+        let timely = now + Duration::from_secs(5);
+        assert!(state.record_pong(timely));
+        assert_eq!(state.deadline(), None);
+        assert!(!state.is_expired(now + Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn keepalive_state_late_pong_rejected() {
+        let mut state = KeepaliveState::new(Duration::from_secs(10));
+        let now = tokio::time::Instant::now();
+        state.arm_ping(now);
+        let late = now + Duration::from_secs(10);
+        assert!(!state.record_pong(late));
+        assert!(state.deadline().is_some());
+        assert!(state.is_expired(late));
+    }
+
+    #[test]
+    fn keepalive_state_expiry_at_and_after_deadline() {
+        let mut state = KeepaliveState::new(Duration::from_secs(10));
+        let now = tokio::time::Instant::now();
+        state.arm_ping(now);
+        assert!(!state.is_expired(now + Duration::from_secs(9)));
+        assert!(state.is_expired(now + Duration::from_secs(10)));
+        assert!(state.is_expired(now + Duration::from_secs(11)));
+    }
+
+    #[test]
+    fn keepalive_state_unsolicited_pong_accepted_without_deadline() {
+        let mut state = KeepaliveState::new(Duration::from_secs(10));
+        let now = tokio::time::Instant::now();
+        assert!(state.record_pong(now));
+        assert_eq!(state.deadline(), None);
     }
 }
