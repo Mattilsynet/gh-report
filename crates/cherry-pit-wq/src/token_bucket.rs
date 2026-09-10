@@ -140,13 +140,18 @@ impl TokenBucketRegulator {
             let generated = self.uncapped_generated_milli_at(now);
             let consumed_u64 = self.consumed_milli.load(Ordering::Acquire);
             let consumed = u128::from(consumed_u64);
-            let available = generated
-                .saturating_sub(consumed)
-                .min(u128::from(self.capacity_milli));
+            let effective_consumed =
+                consumed.max(generated.saturating_sub(u128::from(self.capacity_milli)));
+            let available = generated.saturating_sub(effective_consumed);
             if available >= u128::from(MILLI_PER_TOKEN) {
+                let Ok(next_consumed) =
+                    u64::try_from(effective_consumed + u128::from(MILLI_PER_TOKEN))
+                else {
+                    return Err(Duration::MAX);
+                };
                 match self.consumed_milli.compare_exchange_weak(
                     consumed_u64,
-                    consumed_u64 + MILLI_PER_TOKEN,
+                    next_consumed,
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 ) {
@@ -361,5 +366,99 @@ mod tests {
         let bucket = TokenBucketRegulator::new(Arc::new(SystemClock), 5, 5);
         bucket.settle(SettleOutcome::Charged);
         bucket.settle(SettleOutcome::Free);
+    }
+
+    #[test]
+    fn arbitrary_idle_gap_caps_immediate_burst_to_capacity() {
+        let clock = FakeClock::new();
+        let bucket = TokenBucketRegulator::new(Arc::clone(&clock) as Arc<dyn Clock>, 5, 1);
+        clock.advance(Duration::from_secs(3600));
+
+        for _ in 0..5 {
+            assert!(bucket.try_debit_one().is_ok());
+        }
+
+        let wait = bucket
+            .try_debit_one()
+            .expect_err("sixth call after idle gap must be rejected");
+        assert_eq!(wait, Duration::from_secs(1));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn prop_idle_gap_caps_burst_to_capacity(
+            capacity in 1u64..20u64,
+            refill_rate in 1u64..10u64,
+            idle_secs in 1u64..10_000u64,
+        ) {
+            let clock = FakeClock::new();
+            let bucket = TokenBucketRegulator::new(
+                Arc::clone(&clock) as Arc<dyn Clock>,
+                capacity,
+                refill_rate,
+            );
+            clock.advance(Duration::from_secs(idle_secs));
+
+            for _ in 0..capacity {
+                proptest::prop_assert!(bucket.try_debit_one().is_ok());
+            }
+
+            let wait = bucket.try_debit_one();
+            proptest::prop_assert!(wait.is_err());
+        }
+    }
+
+    #[test]
+    fn high_refill_rate_counter_overflow_fails_closed_without_unmetered_admissions() {
+        let clock = FakeClock::new();
+        let bucket = TokenBucketRegulator::new(
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            1,
+            u64::MAX / MILLI_PER_TOKEN,
+        );
+        clock.advance(Duration::from_secs(2));
+
+        assert_eq!(bucket.try_debit_one(), Err(Duration::MAX));
+
+        for _ in 0..10 {
+            assert_eq!(bucket.try_debit_one(), Err(Duration::MAX));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_debits_after_arbitrary_idle_admit_exactly_capacity() {
+        const CAPACITY_TOKENS: u64 = 5;
+        const CONTENDERS: usize = 50;
+
+        let clock = FakeClock::new();
+        let bucket = Arc::new(TokenBucketRegulator::new(
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            CAPACITY_TOKENS,
+            1,
+        ));
+        clock.advance(Duration::from_hours(4));
+
+        let handles: Vec<_> = (0..CONTENDERS)
+            .map(|_| {
+                let bucket = Arc::clone(&bucket);
+                tokio::spawn(async move { bucket.try_debit_one().is_ok() })
+            })
+            .collect();
+
+        let mut successes = 0u64;
+        for handle in handles {
+            if handle.await.unwrap() {
+                successes += 1;
+            }
+        }
+
+        assert_eq!(
+            successes, CAPACITY_TOKENS,
+            "exactly the bucket's fixed capacity of concurrent debits must succeed after multi-hour idle"
+        );
+        assert!(
+            bucket.try_debit_one().is_err(),
+            "immediate debit after exhausted burst must be rejected"
+        );
     }
 }

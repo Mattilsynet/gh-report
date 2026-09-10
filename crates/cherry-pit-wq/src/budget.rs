@@ -351,7 +351,10 @@ impl BudgetGate {
             if self.calls.load(Ordering::Acquire) < limit {
                 continue;
             }
-            notified.await;
+            tokio::select! {
+                () = &mut notified => {}
+                () = cancel.cancelled() => return false,
+            }
         }
     }
 
@@ -1111,5 +1114,49 @@ mod tests {
             0,
             "30 refunds against 20 acquired permits must saturate at 0, never underflow"
         );
+    }
+
+    #[tokio::test]
+    async fn non_elected_waiter_returns_false_promptly_on_cancellation() {
+        let gate = Arc::new(BudgetGate::new(1, Duration::from_secs(60)));
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+        assert_eq!(gate.calls_made(), 1);
+
+        let pause = Arc::new(tokio::sync::Notify::new());
+        gate.set_pause_notify(Arc::clone(&pause));
+
+        let elected_cancel = CancellationToken::new();
+        let elected_cancel_clone = elected_cancel.clone();
+        let g_elected = Arc::clone(&gate);
+        let elected = tokio::spawn(async move { g_elected.acquire(&elected_cancel_clone).await });
+
+        pause.notified().await;
+
+        let waiter_cancel = CancellationToken::new();
+        let waiter_fut = gate.acquire(&waiter_cancel);
+        tokio::pin!(waiter_fut);
+
+        assert_eq!(
+            futures_util::poll!(&mut waiter_fut),
+            std::task::Poll::Pending
+        );
+
+        waiter_cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_millis(100), &mut waiter_fut)
+            .await
+            .expect("parked waiter should exit promptly on cancellation");
+        assert!(!result);
+
+        assert!(!elected.is_finished());
+        elected_cancel.cancel();
+
+        let elected_result = tokio::time::timeout(Duration::from_millis(100), elected)
+            .await
+            .expect("elected task should exit promptly on cancellation")
+            .expect("elected task should not panic");
+        assert!(!elected_result);
     }
 }
