@@ -239,7 +239,7 @@ fn reject_pointer_type(ty: &syn::Type) -> syn::Result<()> {
                  owned value instead.",
             ));
         }
-        Type::BareFn(_) => {
+        Type::FnPtr(_) => {
             return Err(syn::Error::new_spanned(
                 ty,
                 "EVT-013: GenomeSafe: function pointers (fn(..) -> ..) carry \

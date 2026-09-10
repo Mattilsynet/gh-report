@@ -116,8 +116,11 @@ fn type_to_string(ty: &syn::Type) -> String {
                             format!("{ident}<{}>", inner.join(", "))
                         }
                         syn::PathArguments::Parenthesized(args) => {
-                            let inner: Vec<String> =
-                                args.inputs.iter().map(type_to_string).collect();
+                            let inner: Vec<String> = args
+                                .inputs
+                                .iter()
+                                .map(|arg| type_to_string(&arg.ty))
+                                .collect();
                             format!("{ident}({})", inner.join(", "))
                         }
                     }
