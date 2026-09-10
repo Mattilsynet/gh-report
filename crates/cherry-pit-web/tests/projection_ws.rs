@@ -505,9 +505,8 @@ async fn ws_keepalive_pong_resets_timeout() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ws_stalled_consumer_times_out_and_releases_permit() {
+async fn ws_stalled_consumer_missed_pong_times_out_and_releases_permit() {
     let source = MockProjectionSource::new();
-    let tx = source.tx();
 
     let state = cherry_pit_web::ProjectionState::from_arc(source.clone());
     let mut policy = cherry_pit_web::WsPolicy::permissive_for_tests();
@@ -545,22 +544,39 @@ async fn ws_stalled_consumer_times_out_and_releases_permit() {
     }
 
     tokio::time::pause();
-    for i in 0..40 {
-        let payload = "x".repeat(32768);
-        let receivers = tx
-            .send(PageUpdate::new(
-                vec![payload],
-                format!("repo-{i}"),
-                "2026-04-14T12:00:00Z".into(),
-                CorrelationContext::none(),
-            ))
-            .expect("broadcast send must succeed");
-        assert!(receivers > 0, "broadcast must have active receiver");
-        tokio::task::yield_now().await;
-    }
-
-    tokio::time::advance(Duration::from_secs(6)).await;
+    tokio::time::advance(Duration::from_secs(31)).await;
     tokio::time::resume();
+
+    let ping = timeout(Duration::from_secs(5), async {
+        loop {
+            match ws1.next().await {
+                Some(Ok(Message::Ping(payload))) => return Some(payload),
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return None,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for ping");
+    assert!(ping.is_some(), "server must send ping after interval");
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(11)).await;
+    tokio::time::resume();
+
+    let closed = timeout(Duration::from_secs(5), async {
+        loop {
+            match ws1.next().await {
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return true,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "server must close stalled connection after timeout"
+    );
 
     let (mut ws2, resp2) = timeout(
         Duration::from_secs(5),
