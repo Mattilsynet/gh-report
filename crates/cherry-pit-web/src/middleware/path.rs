@@ -39,7 +39,7 @@ impl PathSegmentError {
 /// Validate and sanitize a path segment from untrusted data.
 ///
 /// Rejects values containing path traversal sequences (`..`), slashes,
-/// backslashes, control characters, or empty strings that could cause
+/// backslashes, URI delimiters (`?`, `#`), control characters, or empty strings that could cause
 /// requests to hit unintended endpoints.
 ///
 /// Returns `Cow::Borrowed` when no transformation is needed, avoiding
@@ -55,6 +55,8 @@ impl PathSegmentError {
 /// # use cherry_pit_web::sanitize_path_segment;
 /// assert_eq!(sanitize_path_segment("main", "branch").unwrap(), "main");
 /// assert!(sanitize_path_segment("../etc/passwd", "branch").is_err());
+/// assert!(sanitize_path_segment("foo?bar", "branch").is_err());
+/// assert!(sanitize_path_segment("foo#bar", "branch").is_err());
 /// assert!(sanitize_path_segment("", "branch").is_err());
 /// ```
 pub fn sanitize_path_segment<'a>(
@@ -67,7 +69,12 @@ pub fn sanitize_path_segment<'a>(
             reason: format!("{field_name} is empty"),
         });
     }
-    if value.contains("..") || value.contains('/') || value.contains('\\') {
+    if value.contains("..")
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('?')
+        || value.contains('#')
+    {
         let truncated: String = value.chars().take(100).collect();
         return Err(PathSegmentError {
             field: field_name.to_string(),
@@ -174,6 +181,14 @@ mod tests {
     fn rejects_slashes() {
         assert!(sanitize_path_segment("feature/branch", "default_branch").is_err());
         assert!(sanitize_path_segment("a\\b", "default_branch").is_err());
+    }
+
+    #[test]
+    fn rejects_uri_delimiters() {
+        assert!(sanitize_path_segment("foo?bar", "default_branch").is_err());
+        assert!(sanitize_path_segment("foo#bar", "default_branch").is_err());
+        assert!(sanitize_path_segment("?query", "default_branch").is_err());
+        assert!(sanitize_path_segment("#fragment", "default_branch").is_err());
     }
 
     #[test]
