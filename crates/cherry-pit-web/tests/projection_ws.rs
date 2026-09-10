@@ -134,15 +134,19 @@ async fn ws_sends_reload_on_lag() {
     assert_envelope_v1(&connected, "connected");
 
     for i in 0..200u32 {
-        let _ = tx.send(PageUpdate::new(
-            vec![format!("page-{i}.html")],
-            format!("repo-{i}"),
-            "2026-04-14T12:00:00Z".into(),
-            CorrelationContext::none(),
-        ));
+        let receivers = tx
+            .send(PageUpdate::new(
+                vec![format!("page-{i}.html")],
+                format!("repo-{i}"),
+                "2026-04-14T12:00:00Z".into(),
+                CorrelationContext::none(),
+            ))
+            .expect("broadcast send must succeed");
+        assert!(receivers > 0, "broadcast must have active receiver");
     }
 
     let mut saw_close_1001 = false;
+    let mut close_reason = String::new();
     let result = timeout(Duration::from_secs(5), async {
         loop {
             match ws.next().await {
@@ -150,6 +154,7 @@ async fn ws_sends_reload_on_lag() {
                     let code: u16 = frame.code.into();
                     if code == 1001 {
                         saw_close_1001 = true;
+                        close_reason = frame.reason.to_string();
                     }
                     return;
                 }
@@ -164,6 +169,21 @@ async fn ws_sends_reload_on_lag() {
     assert!(
         saw_close_1001,
         "dest must close WS with code 1001 on broadcast lag (CHE-0049 R11)"
+    );
+    assert_eq!(close_reason, "lagged; resync via snapshot");
+
+    let trailing = timeout(Duration::from_secs(1), async {
+        let mut extra = Vec::new();
+        while let Some(msg) = ws.next().await {
+            extra.push(msg);
+        }
+        extra
+    })
+    .await
+    .expect("ws stream should close cleanly after 1001 close");
+    assert!(
+        trailing.is_empty(),
+        "ws stream must reach EOF without trailing frames after 1001 close"
     );
 
     server.shutdown().await;
@@ -372,4 +392,332 @@ async fn non_ws_get_to_ws_path_returns_error() {
     );
 
     server.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_keepalive_pings_and_closes_on_pong_timeout() {
+    let source = MockProjectionSource::new();
+    let server = spawn_test_server(source).await;
+    let url = format!("ws://{}/ws", server.addr);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let connected = recv_text_json(&mut ws).await;
+    assert_envelope_v1(&connected, "connected");
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::resume();
+
+    let ping = timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Ping(payload))) => return Some(payload),
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return None,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for ping");
+
+    assert!(ping.is_some(), "server must send ping after interval");
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(11)).await;
+    tokio::time::resume();
+
+    let closed = timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return true,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        closed.is_ok(),
+        "server must close after missed pong deadline"
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_keepalive_pong_resets_timeout() {
+    let source = MockProjectionSource::new();
+    let server = spawn_test_server(source).await;
+    let url = format!("ws://{}/ws", server.addr);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let connected = recv_text_json(&mut ws).await;
+    assert_envelope_v1(&connected, "connected");
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::resume();
+
+    let ping = timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Ping(payload))) => return Some(payload),
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return None,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for first ping");
+
+    let payload = ping.expect("server must send first ping");
+    ws.send(Message::Pong(payload)).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(15)).await;
+    tokio::time::resume();
+
+    let still_open = timeout(Duration::from_millis(500), ws.next()).await;
+    assert!(
+        still_open.is_err(),
+        "connection must stay open past 10s when pong was received"
+    );
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(16)).await;
+    tokio::time::resume();
+
+    let second_ping = timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Ping(payload))) => return Some(payload),
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return None,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for second ping");
+
+    assert!(second_ping.is_some(), "server must send second ping");
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_stalled_consumer_times_out_and_releases_permit() {
+    let source = MockProjectionSource::new();
+    let tx = source.tx();
+
+    let state = cherry_pit_web::ProjectionState::from_arc(source.clone());
+    let mut policy = cherry_pit_web::WsPolicy::permissive_for_tests();
+    policy.max_connections = std::num::NonZeroUsize::new(1).expect("nonzero");
+    let app = cherry_pit_web::build_projection_router(
+        state,
+        cherry_pit_web::LayerLimits::permissive_for_tests(),
+        policy,
+        axum::Router::new(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral");
+    let addr = listener.local_addr().expect("bound");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let url = format!("ws://{addr}/ws");
+
+    let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let connected1 = recv_text_json(&mut ws1).await;
+    assert_envelope_v1(&connected1, "connected");
+
+    let second_conn = tokio_tungstenite::connect_async(&url).await;
+    match second_conn {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            assert_eq!(
+                resp.status(),
+                503,
+                "second client should be rejected with 503 when connection limit is reached"
+            );
+        }
+        other => panic!("expected 503 for second connection while permit held, got {other:?}"),
+    }
+
+    tokio::time::pause();
+    for i in 0..40 {
+        let payload = "x".repeat(32768);
+        let receivers = tx
+            .send(PageUpdate::new(
+                vec![payload],
+                format!("repo-{i}"),
+                "2026-04-14T12:00:00Z".into(),
+                CorrelationContext::none(),
+            ))
+            .expect("broadcast send must succeed");
+        assert!(receivers > 0, "broadcast must have active receiver");
+        tokio::task::yield_now().await;
+    }
+
+    tokio::time::advance(Duration::from_secs(6)).await;
+    tokio::time::resume();
+
+    let (mut ws2, resp2) = timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(&url),
+    )
+    .await
+    .expect("timeout connecting second client")
+    .expect("second client should connect after stalled client permit is released");
+    assert_eq!(resp2.status(), 101);
+    let connected2 = recv_text_json(&mut ws2).await;
+    assert_envelope_v1(&connected2, "connected");
+
+    ws2.close(None).await.ok();
+    server_handle.abort();
+    if let Err(join_err) = server_handle.await {
+        assert!(
+            join_err.is_cancelled(),
+            "server handle must exit by cancellation, got {join_err:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_client_initiated_close_receives_server_ack() {
+    let source = MockProjectionSource::new();
+    let server = spawn_test_server(source).await;
+    let url = format!("ws://{}/ws", server.addr);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let connected = recv_text_json(&mut ws).await;
+    assert_envelope_v1(&connected, "connected");
+
+    ws.send(Message::Close(Some(CloseFrame {
+        code: 1000.into(),
+        reason: "client closing".into(),
+    })))
+    .await
+    .expect("client send close");
+
+    let ack = timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(frame))) => return frame,
+                Some(Ok(_)) => {}
+                Some(Err(err)) => panic!("unexpected ws error waiting for close ack: {err:?}"),
+                None => panic!("unexpected eof before close ack frame"),
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for server close ack");
+
+    let frame = ack.expect("server must send close ack frame");
+    let code: u16 = frame.code.into();
+    assert_eq!(code, 1000);
+
+    let eof = timeout(Duration::from_secs(1), ws.next())
+        .await
+        .expect("timeout waiting for eof");
+    assert!(eof.is_none(), "stream must reach clean EOF after close ack");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_broadcast_send_capped_by_pong_deadline() {
+    let source = MockProjectionSource::new();
+    let tx = source.tx();
+
+    let state = cherry_pit_web::ProjectionState::from_arc(source.clone());
+    let mut policy = cherry_pit_web::WsPolicy::permissive_for_tests();
+    policy.max_connections = std::num::NonZeroUsize::new(1).expect("nonzero");
+    let app = cherry_pit_web::build_projection_router(
+        state,
+        cherry_pit_web::LayerLimits::permissive_for_tests(),
+        policy,
+        axum::Router::new(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral");
+    let addr = listener.local_addr().expect("bound");
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let url = format!("ws://{addr}/ws");
+
+    let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let connected1 = recv_text_json(&mut ws1).await;
+    assert_envelope_v1(&connected1, "connected");
+
+    let second_conn = tokio_tungstenite::connect_async(&url).await;
+    match second_conn {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            assert_eq!(
+                resp.status(),
+                503,
+                "second client should be rejected with 503 when connection limit is reached"
+            );
+        }
+        other => panic!("expected 503 for second connection while permit held, got {other:?}"),
+    }
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::resume();
+
+    let ping = timeout(Duration::from_secs(5), async {
+        loop {
+            match ws1.next().await {
+                Some(Ok(Message::Ping(payload))) => return Some(payload),
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return None,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for ping");
+    assert!(ping.is_some(), "server must send ping");
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(8)).await;
+
+    for i in 0..40 {
+        let payload = "x".repeat(32768);
+        let receivers = tx
+            .send(PageUpdate::new(
+                vec![payload],
+                format!("repo-{i}"),
+                "2026-04-14T12:00:00Z".into(),
+                CorrelationContext::none(),
+            ))
+            .expect("broadcast send must succeed");
+        assert!(receivers > 0, "broadcast must have active receiver");
+        tokio::task::yield_now().await;
+    }
+
+    tokio::time::advance(Duration::from_secs(3)).await;
+    tokio::time::resume();
+
+    let (mut ws2, resp2) = timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(&url),
+    )
+    .await
+    .expect("timeout connecting second client")
+    .expect("second client should connect after pong deadline timeout releases permit");
+    assert_eq!(resp2.status(), 101);
+    let connected2 = recv_text_json(&mut ws2).await;
+    assert_envelope_v1(&connected2, "connected");
+
+    ws2.close(None).await.ok();
+    server_handle.abort();
+    if let Err(join_err) = server_handle.await {
+        assert!(
+            join_err.is_cancelled(),
+            "server handle must exit by cancellation, got {join_err:?}"
+        );
+    }
 }
