@@ -3029,6 +3029,7 @@ dependencies = [
  "futures-util",
  "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

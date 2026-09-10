@@ -97,7 +97,7 @@ struct ConnectDecision {
 fn connect_decision(url: &str, credentials_path: Option<&Path>) -> ConnectDecision {
     ConnectDecision {
         credentials_path: credentials_path.map(Path::to_path_buf),
-        require_tls: url.starts_with("tls://"),
+        require_tls: url.starts_with("tls://") || credentials_path.is_some(),
     }
 }
 
@@ -608,9 +608,11 @@ fn build_connect_options(
 ) -> Result<async_nats::ConnectOptions, JetStreamRuntimeError> {
     let mut options = async_nats::ConnectOptions::new();
     if let Some(path) = decision.credentials_path.as_deref() {
-        let creds = std::fs::read_to_string(path).map_err(|e| JetStreamRuntimeError::Connect {
-            source: Box::new(e),
-        })?;
+        let creds = zeroize::Zeroizing::new(std::fs::read_to_string(path).map_err(|e| {
+            JetStreamRuntimeError::Connect {
+                source: Box::new(e),
+            }
+        })?);
         options = async_nats::ConnectOptions::with_credentials(&creds).map_err(|e| {
             JetStreamRuntimeError::Connect {
                 source: Box::new(e),
@@ -1284,14 +1286,14 @@ mod tests {
     }
 
     #[test]
-    fn connect_decision_nats_url_with_credentials_does_not_force_tls() {
+    fn connect_decision_nats_url_with_credentials_forces_tls() {
         let creds = std::path::Path::new("/run/secrets/nats.creds");
         let decision = connect_decision("nats://127.0.0.1:4222", Some(creds));
 
         assert_eq!(decision.credentials_path.as_deref(), Some(creds));
         assert!(
-            !decision.require_tls,
-            "nats:// URL must not force TLS for the local live-NATS harness"
+            decision.require_tls,
+            "credentials on nats:// URL must force TLS"
         );
     }
 
