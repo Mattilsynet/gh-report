@@ -37,8 +37,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bytes::Bytes;
-use futures_util::stream::SplitSink;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::{Semaphore, broadcast};
 use tracing::{debug, warn};
 
@@ -321,11 +320,15 @@ impl KeepaliveState {
     }
 }
 
-async fn send_with_timeout(
-    sender: &mut SplitSink<WebSocket, Message>,
+async fn send_with_timeout<S, E>(
+    sender: &mut S,
     msg: Message,
     pong_deadline: Option<tokio::time::Instant>,
-) -> bool {
+) -> bool
+where
+    S: Sink<Message, Error = E> + Unpin,
+    E: std::fmt::Display,
+{
     let timeout_duration = match pong_deadline {
         Some(deadline) => {
             let now = tokio::time::Instant::now();
@@ -349,7 +352,11 @@ async fn send_with_timeout(
     }
 }
 
-async fn best_effort_close(sender: &mut SplitSink<WebSocket, Message>, frame: Option<CloseFrame>) {
+async fn best_effort_close<S, E>(sender: &mut S, frame: Option<CloseFrame>)
+where
+    S: Sink<Message, Error = E> + Unpin,
+    E: std::fmt::Display,
+{
     match tokio::time::timeout(WS_SEND_TIMEOUT, sender.send(Message::Close(frame))).await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => {
@@ -361,7 +368,11 @@ async fn best_effort_close(sender: &mut SplitSink<WebSocket, Message>, frame: Op
     }
 }
 
-async fn best_effort_flush(sender: &mut SplitSink<WebSocket, Message>) {
+async fn best_effort_flush<S, E>(sender: &mut S)
+where
+    S: Sink<Message, Error = E> + Unpin,
+    E: std::fmt::Display,
+{
     match tokio::time::timeout(WS_SEND_TIMEOUT, sender.flush()).await {
         Ok(Ok(())) => {}
         Ok(Err(err)) => {
@@ -386,17 +397,31 @@ async fn best_effort_flush(sender: &mut SplitSink<WebSocket, Message>) {
 /// drop-and-resync. The client follows the R11 reconnect path:
 /// HTTP-fetch-snapshot, then re-attach WS.
 ///
-/// `_permit` is the owned WS-semaphore permit held for the connection
-/// lifetime (CHE-0062:R1 SEC-0003:R3) — dropping it on function exit
-/// frees one slot for a subsequent upgrade.
+/// `permit` is the owned WS-semaphore permit held for the connection
+/// lifetime (CHE-0062:R1 SEC-0003:R3), forwarded to [`ws_session_loop`]
+/// where dropping it on function exit frees one slot for a subsequent upgrade.
 pub(crate) async fn ws_session<P>(
     socket: WebSocket,
+    state: ProjectionState<P>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) where
+    P: ProjectionSource,
+{
+    let (sender, receiver) = socket.split();
+    ws_session_loop(sender, receiver, state, permit).await;
+}
+
+async fn ws_session_loop<P, S, R, E, RE>(
+    mut sender: S,
+    mut receiver: R,
     state: ProjectionState<P>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) where
     P: ProjectionSource,
+    S: Sink<Message, Error = E> + Unpin,
+    R: Stream<Item = Result<Message, RE>> + Unpin,
+    E: std::fmt::Display,
 {
-    let (mut sender, mut receiver) = socket.split();
     let mut rx = state.source().subscribe();
 
     if !send_with_timeout(
@@ -668,5 +693,231 @@ mod tests {
         let now = tokio::time::Instant::now();
         assert!(state.record_pong(now));
         assert_eq!(state.deadline(), None);
+    }
+
+    struct StalledSink {
+        poll_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    impl futures_util::Sink<Message> for StalledSink {
+        type Error = std::io::Error;
+
+        fn poll_ready(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if let Some(tx) = self.poll_tx.take() {
+                tx.send(()).expect("oneshot send");
+            }
+            std::task::Poll::Pending
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    struct StalledUpdateSink {
+        pending_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    impl futures_util::Sink<Message> for StalledUpdateSink {
+        type Error = std::io::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn start_send(
+            mut self: std::pin::Pin<&mut Self>,
+            item: Message,
+        ) -> Result<(), Self::Error> {
+            match item {
+                Message::Text(text) if text.contains("page1.html") => {
+                    if let Some(tx) = self.pending_tx.take() {
+                        tx.send(()).expect("pending tx send");
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if self.pending_tx.is_none() {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    struct EmptyReceiver;
+    impl futures_util::Stream for EmptyReceiver {
+        type Item = Result<Message, axum::Error>;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    struct TestSource {
+        tx: tokio::sync::broadcast::Sender<super::super::state::PageUpdate>,
+        subscribed_tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+    impl ProjectionSource for TestSource {
+        fn is_ready(&self) -> bool {
+            true
+        }
+        fn snapshot(&self) -> Option<Arc<HashMap<String, PageEntry>>> {
+            None
+        }
+        fn subscribe(&self) -> tokio::sync::broadcast::Receiver<super::super::state::PageUpdate> {
+            let rx = self.tx.subscribe();
+            if let Some(tx) = self
+                .subscribed_tx
+                .lock()
+                .ok()
+                .and_then(|mut guard| guard.take())
+            {
+                tx.send(()).ok();
+            }
+            rx
+        }
+    }
+
+    const TIMER_RESOLUTION_TOLERANCE: Duration = Duration::from_millis(100);
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn send_with_timeout_times_out_on_stalled_sink() {
+        let (poll_tx, poll_rx) = tokio::sync::oneshot::channel();
+        let mut sink = StalledSink {
+            poll_tx: Some(poll_tx),
+        };
+
+        tokio::time::pause();
+
+        let send_handle = tokio::spawn(async move {
+            send_with_timeout(
+                &mut sink,
+                Message::Text(Utf8Bytes::from_static("test")),
+                None,
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), poll_rx)
+            .await
+            .expect("ack timeout")
+            .expect("poll_ready must be called");
+
+        let start = tokio::time::Instant::now();
+        let timeout_result = tokio::time::timeout(Duration::from_secs(10), async {
+            while !send_handle.is_finished() {
+                tokio::time::advance(Duration::from_millis(100)).await;
+                tokio::task::yield_now().await;
+            }
+            send_handle.await.expect("join handle")
+        })
+        .await
+        .expect("send timeout test must finish within 10s budget");
+
+        let elapsed = start.elapsed();
+        assert!(elapsed >= Duration::from_secs(5));
+        assert!(elapsed <= Duration::from_secs(5) + TIMER_RESOLUTION_TOLERANCE);
+        assert!(!timeout_result);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ws_session_loop_releases_permit_on_stalled_sink() {
+        let (tx, _) = tokio::sync::broadcast::channel(16);
+        let (subscribed_tx, subscribed_rx) = tokio::sync::oneshot::channel();
+        let source = Arc::new(TestSource {
+            tx: tx.clone(),
+            subscribed_tx: std::sync::Mutex::new(Some(subscribed_tx)),
+        });
+        let state = ProjectionState::from_arc(source);
+
+        let sem = Arc::new(Semaphore::new(1));
+        let permit = sem.clone().try_acquire_owned().expect("acquire permit");
+        assert_eq!(sem.available_permits(), 0);
+
+        let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+        let sink = StalledUpdateSink {
+            pending_tx: Some(pending_tx),
+        };
+
+        tokio::time::pause();
+
+        let session_handle = tokio::spawn(async move {
+            ws_session_loop(sink, EmptyReceiver, state, permit).await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), subscribed_rx)
+            .await
+            .expect("subscribe timeout")
+            .expect("session must subscribe");
+
+        let receivers = tx
+            .send(super::super::state::PageUpdate::new(
+                vec!["page1.html".into()],
+                "repo".into(),
+                "2026-04-14T12:00:00Z".into(),
+                cherry_pit_core::CorrelationContext::none(),
+            ))
+            .expect("broadcast send must succeed");
+        assert_eq!(receivers, 1);
+
+        tokio::time::timeout(Duration::from_secs(1), pending_rx)
+            .await
+            .expect("ack timeout")
+            .expect("pending write acknowledged");
+
+        let start = tokio::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !session_handle.is_finished() {
+                tokio::time::advance(Duration::from_millis(100)).await;
+                tokio::task::yield_now().await;
+            }
+            session_handle.await.expect("join handle");
+        })
+        .await
+        .expect("session must exit within 10s budget");
+
+        let elapsed = start.elapsed();
+        assert!(elapsed >= Duration::from_secs(5));
+        assert!(elapsed <= Duration::from_secs(5) + TIMER_RESOLUTION_TOLERANCE);
+        assert_eq!(sem.available_permits(), 1);
+        assert!(sem.try_acquire_owned().is_ok());
     }
 }
