@@ -47,7 +47,7 @@ class VerificationGuards(unittest.TestCase):
     def test_browser_is_headless_and_missing_driver_is_nonzero(self):
         def child(args, **kwargs):
             if args[-1] == "--version":
-                return subprocess.CompletedProcess(args, 0, stdout="wasm-bindgen-test-runner 0.2.126\n")
+                return subprocess.CompletedProcess(args, 0, stdout="wasm-bindgen-test-runner 0.2.128\n")
             self.assertEqual(kwargs["env"]["HEADLESS"], "1")
             self.assertNotIn("NO_HEADLESS", kwargs["env"])
             self.assertEqual(kwargs["env"]["CHROMEDRIVER"], "/usr/bin/chromedriver")
@@ -63,7 +63,7 @@ class VerificationGuards(unittest.TestCase):
         original = Path.read_bytes
         def child(args, **kwargs):
             if args[-1] == "--version":
-                return subprocess.CompletedProcess(args, 0, stdout="wasm-bindgen 0.2.126\n")
+                return subprocess.CompletedProcess(args, 0, stdout="wasm-bindgen 0.2.128\n")
             if "--out-dir" in args:
                 output = Path(args[args.index("--out-dir") + 1])
                 for name in NAMES:

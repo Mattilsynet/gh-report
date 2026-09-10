@@ -117,7 +117,7 @@ sha2 = "0.11"
 # xxh64 features added for pardosa-schema (compile-time schema hashing)
 # and pardosa-file (.pgno container/manifest checksums) respectively.
 xxhash-rust = { version = "0.8", features = ["xxh3", "const_xxh3", "xxh64"] }
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 # GEN-0041 no_std floor: BLAKE3 with default-features off keeps it
 # `no_std`-clean for pardosa-encoding's `#![no_std]` substrate. PAR-0021 R1
 # precursor-hash identity.
@@ -176,7 +176,7 @@ cherry-pit-merger = { path = "crates/cherry-pit-merger", version = "0.1.0" }
 proc-macro-crate = "3"
 proc-macro2 = "1"
 quote = "1"
-syn = { version = "2", features = ["full", "extra-traits"] }
+syn = { version = "2.0.119", features = ["full", "extra-traits"] }
 async-nats = { version = "0.49", default-features = false, features = ["server_2_14", "jetstream", "ring", "nkeys"] }
 
 # === Async runtime extras ===
@@ -192,15 +192,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # hmac: constant-time HMAC-SHA256 webhook signature verification.
 hmac = "0.13"
 # jsonwebtoken: GitHub App auth; aws_lc_rs backend (FIPS-validated, ring successor).
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 # pem: RSA key parsing for defence-in-depth key-size validation.
-pem = "3"
+pem = "4"
 # secrecy: SecretString auto-zeroize on drop.
 secrecy = { version = "0.10", features = ["serde"] }
 # zeroize: explicit zeroize of intermediate token buffers.
 zeroize = "1"
 # base64: encoding.
-base64 = "0.22"
+base64 = "0.23"
 
 # === URL handling ===
 url = "2"
@@ -213,8 +213,8 @@ moka = { version = "0.12", features = ["future"] }
 # rust-version 1.88 < workspace 1.98 pin). wasm-bindgen pinned EXACTLY: the
 # installed wasm-bindgen-cli must match this version bit-for-bit.
 leptos = { version = "0.8.20", default-features = false, features = ["csr"] }
-wasm-bindgen = "=0.2.126"
-web-sys = { version = "0.3.103", default-features = false, features = [
+wasm-bindgen = "=0.2.128"
+web-sys = { version = "0.3.105", default-features = false, features = [
     "Document",
     "Element",
     "Event",
@@ -228,7 +228,7 @@ web-sys = { version = "0.3.103", default-features = false, features = [
     "NodeList",
     "Window",
 ] }
-js-sys = { version = "0.3.103", default-features = false }
+js-sys = { version = "0.3.105", default-features = false }
 
 # === Dev dependencies ===
 assert_cmd = "2"
@@ -236,7 +236,7 @@ predicates = "3"
 tempfile = "3"
 proptest = "1"
 trybuild = "1"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 tokio-test = "0.4"
 wiremock = "0.6"
 insta = { version = "1", features = ["json"] }

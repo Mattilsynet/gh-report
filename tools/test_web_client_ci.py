@@ -14,7 +14,7 @@ from workflow_subset import load, read_workflow
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALL = "cargo install --version 0.2.126 --locked wasm-bindgen-cli"
+INSTALL = "cargo install --version 0.2.128 --locked wasm-bindgen-cli"
 COMMANDS = [f"python3.12 -B tools/verify_web_client.py {mode} --ci"
             for mode in ("status", "compiler", "browser")]
 PREBUILDS = [

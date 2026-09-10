@@ -27,7 +27,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: install pinned wasm-bindgen tools
-        run: cargo install --version 0.2.126 --locked wasm-bindgen-cli
+        run: cargo install --version 0.2.128 --locked wasm-bindgen-cli
       - name: precompile host contract library under job deadline
         env:
           CARGO_TARGET_DIR: target
