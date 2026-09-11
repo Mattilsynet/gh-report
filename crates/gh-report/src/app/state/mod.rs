@@ -862,8 +862,12 @@ fn connect_nats_sync(
 }
 
 fn nats_subjects_for_stem(stem: &str) -> (String, String) {
-    let dotted = stem.replace('-', ".");
-    (format!("{dotted}.meta"), format!("{dotted}.data"))
+    let base = if let Some(rest) = stem.strip_prefix("gh-report-") {
+        format!("gh-report.{}", rest.replace('-', "."))
+    } else {
+        stem.replace('-', ".")
+    };
+    (format!("{base}.meta"), format!("{base}.data"))
 }
 
 fn open_event_store(
