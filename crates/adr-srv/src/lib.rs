@@ -73,7 +73,6 @@ pub fn surface_probe(marker_dir: &Path) -> Result<PathBuf, SurfaceProbeError> {
 /// Failure from [`surface_probe`]: either the config load or the
 /// corpus-root resolve step of the AFM-0026:R1 surface probe failed.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum SurfaceProbeError {
     Load(LoadError),
     Resolve(ResolveCorpusError),

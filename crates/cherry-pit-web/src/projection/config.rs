@@ -31,7 +31,6 @@ use thiserror::Error;
 /// Each variant corresponds to a specific validation rule. Returned by
 /// [`ServerConfigBuilder::build()`] when the configuration is invalid.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[non_exhaustive]
 pub enum ConfigError {
     /// `concurrency_limit` was set to 0.
     #[error("concurrency_limit must be >= 1")]

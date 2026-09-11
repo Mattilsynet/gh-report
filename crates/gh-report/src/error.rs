@@ -6,7 +6,6 @@ pub use cherry_pit_storage::PersistenceError;
 
 /// Top-level error type for the gh-report application.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum AppError {
     /// The scheduled run no longer owns its delivery batch.
     #[error("scheduled run no longer owns its delivery batch")]
@@ -49,7 +48,6 @@ pub enum AppError {
 /// ([`crate::app::daemon`]). This preserves the message for diagnostics
 /// while keeping gh-report independent of the donor crate's error enum.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum ServerError {
     /// Opaque runtime failure from the embedded HTTP server.
     ///
@@ -62,7 +60,6 @@ pub enum ServerError {
 
 /// Errors related to repository inventory collection.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum InventoryError {
     #[error("unable to build inventory from GitHub API: {reason}")]
     ApiFetchFailed { reason: String },
@@ -70,7 +67,6 @@ pub enum InventoryError {
 
 /// Errors related to GitHub API communication.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum GitHubApiError {
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
@@ -90,7 +86,6 @@ pub enum GitHubApiError {
 
 /// Errors related to report generation.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum ReportError {
     #[error("template rendering failed: {reason}")]
     TemplateRenderFailed { reason: String },
@@ -98,7 +93,6 @@ pub enum ReportError {
 
 /// Errors related to configuration.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum ConfigError {
     #[error("missing required configuration: {field}")]
     MissingField { field: String },
@@ -119,7 +113,6 @@ pub(crate) fn persist_error_variant(error: &PersistenceError) -> &'static str {
         PersistenceError::InvariantViolation { .. } => "InvariantViolation",
         PersistenceError::PoisonedState => "PoisonedState",
         PersistenceError::Io(_) => "Io",
-        _ => "other",
     }
 }
 

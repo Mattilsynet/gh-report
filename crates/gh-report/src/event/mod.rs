@@ -923,7 +923,6 @@ impl TeamStateCaptured {
 
 /// Errors rejected by [`team_domain_key`] (CHE-0089:R2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
 pub enum TeamDomainKeyError {
     #[error("team_domain_key: org must not be empty")]
     EmptyOrg,

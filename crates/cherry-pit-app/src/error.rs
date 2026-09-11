@@ -21,7 +21,6 @@ use cherry_pit_core::{BusError, ErrorCategory, StoreError};
 /// forward compatibility — a catch-all `Other` variant is deliberately
 /// omitted until a real call site demands it.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum AgentError {
     /// A registered policy's dispatch closure returned an error.
     /// Carries the boxed underlying error from the user closure.

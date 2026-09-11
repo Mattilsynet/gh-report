@@ -287,7 +287,7 @@ where
             no_headers(),
             opaque_body(OpaqueCode::AggregateNotFound, err),
         ),
-        _ => (
+        DispatchError::Infrastructure(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             retry_after_headers(),
             opaque_body(OpaqueCode::Infrastructure, err),
@@ -332,7 +332,7 @@ pub fn map_store_error(err: &StoreError) -> ErrorResponse {
             no_headers(),
             opaque_body(OpaqueCode::CorruptData, err),
         ),
-        _ => (
+        StoreError::Infrastructure(_) | StoreError::JoinFailure(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             retry_after_headers(),
             opaque_body(OpaqueCode::Infrastructure, err),

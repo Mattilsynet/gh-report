@@ -263,7 +263,7 @@ check_dead_code_suppression() {
 
 check_non_exhaustive() {
   if ! cargo run -p non-exhaustive-check --quiet -- "$ROOT"; then
-    echo "::error::missing #[non_exhaustive] on a library error enum (RST-0006:R1+R3)"
+    echo "::error::forbidden #[non_exhaustive] on a library error enum (RST-0006:R1+R3 closed enumeration policy)"
     return 1
   fi
 }

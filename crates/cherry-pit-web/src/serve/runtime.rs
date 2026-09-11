@@ -368,7 +368,36 @@ async fn cache_fallback<S: ServerState>(
     let cache_guard = state.html_cache().load();
     let Some(cache) = cache_guard.as_ref() else {
         info!(path = %normalized.key, "cache not populated: returning 503");
-        return (StatusCode::SERVICE_UNAVAILABLE, "content not yet available").into_response();
+        let html = "<!DOCTYPE html>\
+<html lang=\"en\">\
+<head>\
+    <meta charset=\"utf-8\">\
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+    <meta http-equiv=\"refresh\" content=\"5\">\
+    <title>gh-report — Initializing</title>\
+    <style>\
+        body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }\
+        .card { background: #1e293b; padding: 2.5rem; border-radius: 1rem; border: 1px solid #334155; text-align: center; max-width: 480px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3); }\
+        h1 { font-size: 1.5rem; margin-bottom: 0.75rem; color: #38bdf8; }\
+        p { color: #94a3b8; font-size: 1rem; line-height: 1.5; margin-bottom: 1.5rem; }\
+        .spinner { width: 40px; height: 40px; border: 3px solid #334155; border-top-color: #38bdf8; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 1.5rem; }\
+        @keyframes spin { to { transform: rotate(360deg); } }\
+    </style>\
+</head>\
+<body>\
+    <div class=\"card\">\
+        <div class=\"spinner\"></div>\
+        <h1>Initializing Report</h1>\
+        <p>The initial collection is in progress. This page will automatically refresh as soon as evidence is published.</p>\
+    </div>\
+</body>\
+</html>";
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response();
     };
 
     if let Some(page) = resolve_cache_key(cache, &normalized.key, normalized.has_trailing_slash) {

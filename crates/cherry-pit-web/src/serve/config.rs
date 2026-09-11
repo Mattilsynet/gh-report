@@ -21,7 +21,6 @@ use thiserror::Error;
 
 /// Typed errors for options validation.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[non_exhaustive]
 pub enum ConfigError {
     /// `error_page_key` was empty.
     #[error("error_page_key must not be empty")]

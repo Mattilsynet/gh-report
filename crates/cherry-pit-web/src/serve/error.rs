@@ -4,7 +4,6 @@ use thiserror::Error;
 
 /// Errors related to the web server.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum ServerError {
     /// The bind address string could not be parsed as a valid socket address.
     #[error("invalid bind address '{address}': {source}")]

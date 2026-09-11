@@ -273,16 +273,6 @@ async fn execute_enqueue(
             );
             StatusCode::SERVICE_UNAVAILABLE
         }
-        other => {
-            warn!(
-                event = event_type,
-                delivery = %delivery_id,
-                key = %inventory_key,
-                result = ?other,
-                "webhook: unexpected EnqueueResult variant"
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
     }
 }
 

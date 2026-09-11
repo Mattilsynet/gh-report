@@ -59,7 +59,6 @@ pub trait AdrStorePort: Send + Sync {
 /// [`AdrIngested`] could not map onto the native durable payload
 /// (CHE-0098 R3 total boundary mapping).
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum NativeAdrStorePortError {
     #[error(transparent)]
     Store(#[from] NativeStoreError),

@@ -80,7 +80,6 @@ impl PardosaType for AdrDomain {
 /// Rejects mapping a scrape-side domain prefix that is not one of the
 /// nine schema-hashed [`AdrDomain`] variants onto the native tree.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
 pub enum NativeMapError {
     #[error("adr domain prefix {0:?} has no native AdrDomain variant")]
     UnknownDomain(String),
@@ -463,7 +462,6 @@ impl PardosaType for AdrFrontmatterEvent {
 /// Failure converting a scrape-side [`AdrIngested`] into
 /// [`AdrIngestedEvent`] (N-R3 boundary mapping).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
 pub enum NativeConversionError {
     #[error("field {field}: {source}")]
     Map {

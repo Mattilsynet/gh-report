@@ -251,9 +251,11 @@ These are load-bearing; violating them is an abort-class change:
   intentional sync-over-async bridge is `pardosa-nats/src/handle.rs::run_op`
   (`block_on`); `std::sync::Mutex` behind the facade is deliberate — do **not**
   "fix" it to `tokio::sync::Mutex` (would break single-writer linearizability).
-- **`#[non_exhaustive]` on error enums is mandated** (PGN-0006, CHE-0021 scoped
-  to error types) — adding variants is non-breaking, don't remove it. It is
-  **not** for serde DTOs.
+- **Closed error enums are mandated (C4.5/C4.6, reversing RST-0006/PGN-0006/CHE-0021):**
+  Public error enums MUST NOT carry `#[non_exhaustive]`. Variant sets are
+  complete within a major line; adding or changing variants is a breaking
+  change requiring a major version bump, making unhandled error states
+  unrepresentable at compile time. Enforced by `non-exhaustive-check`.
 - **Substrate ring purity:** `pardosa-nats` depends only on tokio, async-nats,
   bytes, blake3, and futures-util (plus tempfile behind an optional test
   feature) — no `cherry-pit-*` or `pardosa` adapter-ring edges;

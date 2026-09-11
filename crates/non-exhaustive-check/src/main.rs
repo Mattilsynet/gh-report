@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
-
 const LIBRARY_CRATES: &[&str] = &[
     "crates/cherry-pit-core",
     "crates/cherry-pit-app",
@@ -19,18 +18,12 @@ const LIBRARY_CRATES: &[&str] = &[
     "crates/cherry-pit-storage",
     "crates/cherry-pit-web",
     "crates/cherry-pit-wq",
-    "crates/pardosa",
-    "crates/pardosa-derive",
-    "crates/pardosa-file",
-    "crates/pardosa-wire",
-    "crates/pardosa-schema",
-    "crates/pardosa-nats",
-    "crates/pardosa-fiber-store",
     "crates/gh-report",
+    "crates/adr-srv",
 ];
 
 const HELP_TEXT: &str =
-    "non-exhaustive-check - CI hard-gate for missing #[non_exhaustive] on error enums
+    "non-exhaustive-check - CI hard-gate enforcing CLOSED error enums (C4.5/C4.6)
 
 USAGE:
     non-exhaustive-check [ROOT]
@@ -40,16 +33,10 @@ current directory until a Cargo.toml containing [workspace] is found.
 
 HEURISTIC (FLAG-IFF):
     An enum is a violation iff:
-        is_error_type && !has_non_exhaustive && !has_repr && !is_serde_dto
+        is_error_type && has_non_exhaustive
 
     has_non_exhaustive = any attribute path is exactly `non_exhaustive`
-    has_repr           = any attribute path is exactly `repr`
     is_error_type      = any #[derive(..)] entry's last path segment is `Error`
-    is_serde_dto       = any #[derive(..)] entry's last path segment is
-                         `Serialize` or `Deserialize`
-
-MACRO LIMITATION:
-    macro-generated enums are not inspected; syn parses source tokens only.
 
 OUTPUT:
     Exit 0 and a terse OK summary on stdout when clean.
@@ -98,6 +85,7 @@ fn main() {
             };
             let mut enums: Vec<&syn::ItemEnum> = Vec::new();
             collect_enums(&parsed.items, &mut enums);
+
             for item_enum in enums {
                 enums_scanned += 1;
                 if is_violation(item_enum) {
@@ -118,7 +106,7 @@ fn main() {
 
     if violations.is_empty() {
         println!(
-            "OK: {crates_scanned} library crates scanned, {enums_scanned} pub enums, 0 violations"
+            "OK: {crates_scanned} library crates scanned, {enums_scanned} pub enums, 0 violations (all error enums are closed)"
         );
         std::process::exit(0);
     }
@@ -130,7 +118,7 @@ fn main() {
             None => v.path.display().to_string(),
         };
         println!(
-            "VIOLATION\t{}\t{}\tmissing #[non_exhaustive]",
+            "VIOLATION\t{}\t{}\tforbidden #[non_exhaustive] on error enum (C4.5/C4.6 closed enumeration policy)",
             loc, v.enum_name
         );
     }
@@ -239,25 +227,20 @@ fn is_violation(item_enum: &syn::ItemEnum) -> bool {
     }
 
     let mut has_non_exhaustive = false;
-    let mut has_repr = false;
     let mut derives: Vec<String> = Vec::new();
 
     for attr in &item_enum.attrs {
         if attr_path_is(attr, "non_exhaustive") {
             has_non_exhaustive = true;
         }
-        if attr_path_is(attr, "repr") {
-            has_repr = true;
-        }
         derives.extend(derive_idents(attr));
     }
 
     let is_error_type = derives.iter().any(|d| d == "Error");
-    let is_serde_dto = derives
-        .iter()
-        .any(|d| d == "Serialize" || d == "Deserialize");
 
-    is_error_type && !has_non_exhaustive && !has_repr && !is_serde_dto
+    // Reversed policy (C4.5/C4.6): public error enums MUST NOT be #[non_exhaustive].
+    // Variant sets are complete and closed; adding variants requires a major version.
+    is_error_type && has_non_exhaustive
 }
 
 fn enum_span_line(item_enum: &syn::ItemEnum) -> Option<usize> {
@@ -300,22 +283,22 @@ mod tests {
     }
 
     #[test]
-    fn positive_flags_bare_error_enum() {
-        let e = first_enum("#[derive(Debug, thiserror::Error)] pub enum FooError { A }");
+    fn positive_flags_non_exhaustive_error_enum() {
+        let e = first_enum(
+            "#[non_exhaustive] #[derive(Debug, thiserror::Error)] pub enum FooError { A }",
+        );
         assert!(is_violation(&e));
     }
 
     #[test]
-    fn negative_compliant_non_exhaustive_first() {
-        let e = first_enum(
-            "#[non_exhaustive] #[derive(Debug, thiserror::Error)] pub enum FooError { A }",
-        );
-        assert!(!is_violation(&e));
+    fn positive_flags_reversed_attr_order() {
+        let e = first_enum("#[derive(thiserror::Error)] #[non_exhaustive] pub enum BarError { A }");
+        assert!(is_violation(&e));
     }
 
     #[test]
-    fn negative_compliant_reversed_attr_order() {
-        let e = first_enum("#[derive(thiserror::Error)] #[non_exhaustive] pub enum BarError { A }");
+    fn negative_compliant_closed_error_enum() {
+        let e = first_enum("#[derive(Debug, thiserror::Error)] pub enum FooError { A }");
         assert!(!is_violation(&e));
     }
 
@@ -342,7 +325,7 @@ mod tests {
 
     #[test]
     fn negative_non_pub_error_enum() {
-        let e = first_enum("#[derive(thiserror::Error)] enum PrivErr { A }");
+        let e = first_enum("#[derive(thiserror::Error)] #[non_exhaustive] enum PrivErr { A }");
         assert!(!is_violation(&e));
     }
 }

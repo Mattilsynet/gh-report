@@ -4,7 +4,6 @@ use thiserror::Error;
 
 /// Errors related to persistence (checkpoints, evidence, locks, publishing).
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum PersistenceError {
     #[error("collection lock failed: {reason}")]
     LockFailed { reason: String },
@@ -70,7 +69,6 @@ pub enum PersistenceError {
 /// without depending on `cherry-pit-core` (CHE-0053:R1/R8 forbid a
 /// cherry-pit-core dependency in this crate).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum RetryClass {
     /// Repeating the operation may succeed after backoff or backend
     /// recovery.

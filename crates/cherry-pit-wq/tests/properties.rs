@@ -91,7 +91,6 @@ proptest! {
                 EnqueueResult::Accepted => accepted += 1,
                 EnqueueResult::Deduplicated => dedup += 1,
                 EnqueueResult::QueueFull => full += 1,
-                _ => unreachable!("non_exhaustive future variant"),
             }
         }
         let distinct = distinct_preserving(keys.clone()).len();

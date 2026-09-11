@@ -32,7 +32,6 @@ use cherry_pit_core::{
 /// assert_eq!(infra.category(), ErrorCategory::Retryable);
 /// ```
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum ProjectionError {
     /// Persisted or loaded data failed structural validation.
     CorruptData(Box<dyn Error + Send + Sync>),
@@ -79,7 +78,6 @@ impl ProjectionError {
         let category = match self.category() {
             ErrorCategory::Retryable => "retryable",
             ErrorCategory::Terminal => "terminal",
-            _ => "unknown",
         };
         tracing::warn!(
             target: "cherry_pit_projection",

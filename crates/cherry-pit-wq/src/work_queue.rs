@@ -84,7 +84,6 @@ impl<C: Send + Sync + 'static> JobSpec<C> {
 
 /// Result of an enqueue attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum EnqueueResult {
     /// Job accepted and added to the queue.
     Accepted,

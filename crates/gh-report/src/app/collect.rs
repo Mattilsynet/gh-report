@@ -2618,6 +2618,7 @@ async fn run_partial_publisher<F, Fut>(
     pause_notify: &tokio::sync::Notify,
     shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     hold_down: std::time::Duration,
+    interval: Option<std::time::Duration>,
     mut render: F,
 ) where
     F: FnMut() -> Fut,
@@ -2627,9 +2628,23 @@ async fn run_partial_publisher<F, Fut>(
     let hold_down_timer = tokio::time::sleep_until(parked_deadline());
     tokio::pin!(hold_down_timer);
 
+    let mut interval_timer = interval.map(|d| {
+        let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + d, d);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        timer
+    });
+
     let (state_at_barrier, buffered_at_barrier) = loop {
         let event = tokio::select! {
             () = pause_notify.notified() => LoopEvent::Signal,
+            () = async {
+                match &mut interval_timer {
+                    Some(timer) => {
+                        timer.tick().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            } => LoopEvent::Signal,
             () = &mut hold_down_timer, if state.is_holding_down() => LoopEvent::HoldDownExpired,
             _ = shutdown_rx.changed() => LoopEvent::ShutdownObserved,
         };
@@ -2752,6 +2767,7 @@ fn spawn_partial_publisher_from_store(
             &pause_notify,
             &mut shutdown_rx,
             crate::config::PARTIAL_RENDER_HOLD_DOWN,
+            Some(std::time::Duration::from_secs(15)),
             render,
         )
         .await;
@@ -3044,7 +3060,7 @@ mod publisher_state_machine_tests {
                     renders.fetch_add(1, Ordering::SeqCst);
                 }
             };
-            run_partial_publisher(&loop_notify, &mut shutdown_rx, HOLD_DOWN, render).await;
+            run_partial_publisher(&loop_notify, &mut shutdown_rx, HOLD_DOWN, None, render).await;
         });
 
         Harness {

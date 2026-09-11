@@ -12,7 +12,6 @@ use crate::event::{DomainEvent, OrgStateCaptured, TeamStateCaptured};
 
 /// Failure surface of the native pardosa store.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum StoreError {
     #[error("store already exists: {0}")]
     AlreadyExists(String),

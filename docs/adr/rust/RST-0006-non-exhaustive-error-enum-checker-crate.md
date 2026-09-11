@@ -27,8 +27,7 @@ Promote the checker to a permanent workspace member,
 `crates/non-exhaustive-check`, and enforce it as a CI hard gate.
 
 R1 [6]: Every `pub enum` deriving `thiserror::Error` in a library
-  crate carries `#[non_exhaustive]`, unless it carries `#[repr]` or
-  derives `Serialize`/`Deserialize` (PGN-0006, CHE-0021)
+  crate MUST NOT carry `#[non_exhaustive]` (closed enumerations per C4.5/C4.6)
 R2 [5]: `crates/non-exhaustive-check` is the sole enforcement point
   for R1; it is a workspace member subject to the same lint and
   format governance as any other crate (RST-0003)

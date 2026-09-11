@@ -29,7 +29,6 @@ use crate::event::EventEnvelope;
 /// assert!(cat.is_terminal());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ErrorCategory {
     /// Repeating the operation may succeed after backoff, reload, or
     /// infrastructure recovery.
@@ -63,7 +62,6 @@ impl ErrorCategory {
 /// through the gateway and bus, allowing callers to match on
 /// domain errors without downcasting.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum DispatchError<E: Error + Send + Sync> {
     /// The aggregate rejected the command (business invariant violation).
     Rejected(E),
@@ -135,7 +133,6 @@ impl<E: Error + Send + Sync + 'static> Error for DispatchError<E> {
 /// (CHE-0021 R1: `#[non_exhaustive]`; CHE-0027 R1: manual Display/Error,
 /// no thiserror dependency.)
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum StoreError {
     /// Optimistic concurrency violation — another writer persisted
     /// events after our load.
@@ -237,7 +234,6 @@ impl Error for StoreError {
 /// The `CommandBus` may log this error but does not propagate it as a
 /// `DispatchError` — the command already succeeded (events are persisted).
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct BusError(Box<dyn Error + Send + Sync>);
 
 impl BusError {
@@ -279,7 +275,6 @@ impl Error for BusError {
 /// by `NonZeroU64` — the type system eliminates zero sequences at
 /// compile time, and serde rejects zero on deserialization.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum EnvelopeError {
     /// The `event_id` is nil (`Uuid::nil()`), which indicates a
     /// missing or corrupted event identifier.
@@ -386,7 +381,7 @@ mod tests {
     impl Error for TestDomainError {}
 
     #[test]
-    fn dispatch_error_is_non_exhaustive() {
+    fn dispatch_error_construction() {
         let _err: DispatchError<TestDomainError> = DispatchError::AggregateNotFound {
             aggregate_id: AggregateId::new(NonZeroU64::new(1).unwrap()),
         };

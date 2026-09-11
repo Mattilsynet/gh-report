@@ -12,7 +12,6 @@ use crate::domain::native_event::AdrIngestedEvent;
 
 /// Native store error taxonomy.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum NativeStoreError {
     #[error("pardosa infrastructure error: {0}")]
     Infrastructure(String),
