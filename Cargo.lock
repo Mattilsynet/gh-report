@@ -2941,7 +2941,7 @@ dependencies = [
 [[package]]
 name = "pardosa"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=37712af67ac2d47d32dd2d7688289216b93a2b43#37712af67ac2d47d32dd2d7688289216b93a2b43"
+source = "git+https://github.com/acje/pardosa?rev=3ee4a4b1dc7cc614dd479b4a1e763e1124edc42c#3ee4a4b1dc7cc614dd479b4a1e763e1124edc42c"
 dependencies = [
  "blake3",
  "crc32c",
@@ -2966,7 +2966,7 @@ dependencies = [
 [[package]]
 name = "pardosa-derive"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=37712af67ac2d47d32dd2d7688289216b93a2b43#37712af67ac2d47d32dd2d7688289216b93a2b43"
+source = "git+https://github.com/acje/pardosa?rev=3ee4a4b1dc7cc614dd479b4a1e763e1124edc42c#3ee4a4b1dc7cc614dd479b4a1e763e1124edc42c"
 dependencies = [
  "proc-macro2",
  "quote",

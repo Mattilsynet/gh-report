@@ -32,29 +32,30 @@ cargo run -p gh-report -- --dump-baseline --org <your-org> --store-dir ./store
 Operational recovery procedures live at
 [`crates/cherry-pit-gateway/RUNBOOKS.md`](crates/cherry-pit-gateway/RUNBOOKS.md).
 
-## Why a 25-crate workspace behind one dashboard
+## Why a 15-crate workspace behind one dashboard
 
 `gh-report` is built on a `cherry-pit-*` event-sourcing substrate (core,
 gateway, projection, app, web, work-queue, storage primitives), with durable
-events persisted through the `pardosa*` `.pgno` store family (or a
-NATS/JetStream backend). `adr-srv` is the governance plane that keeps the
-ADR corpus this workspace is built against internally consistent, together
-with `adr-fmt` (consumed from canonical upstream, not a member here);
+events persisted through the modern `pardosa` event-store library (version 0.5.5,
+consumed from [`https://github.com/acje/pardosa`](https://github.com/acje/pardosa)
+governed by `docs/spec/pardosa-1.0.md`). `adr-srv` is the governance plane that
+keeps the ADR corpus this workspace is built against internally consistent,
+together with `adr-fmt` (consumed from canonical upstream, not a member here);
 `comment-free` enforces the workspace's no-`//`-comments rule and is
 likewise consumed from canonical upstream rather than built here.
-A few small internal tooling binaries also live here (`pardosa-read`,
-`non-exhaustive-check`). Why the substrate is developed
-here as a first-class concern, rather than only as an implementation
-detail of `gh-report`, is recorded in [`AGENTS.md`](AGENTS.md) § Intent —
-that is the canonical statement of product stance; this README does not
+Why the substrate is developed here as a first-class concern, rather than only as
+an implementation detail of `gh-report`, is recorded in [`AGENTS.md`](AGENTS.md)
+§ Intent — that is the canonical statement of product stance; this README does not
 restate it.
 
 - **`gh-report`** — the dashboard described above.
   See [`crates/gh-report/`](crates/gh-report/).
 - **`cherry-pit-*`** — event-sourcing substrate `gh-report` is built on
   (core, gateway, projection, app, web, work-queue, storage).
-- **`pardosa*`** — durable event-store substrate (`.pgno` embedded store,
-  NATS/JetStream backend, schema, wire format).
+- **`pardosa`** — external durable event-store substrate (version 0.5.5,
+  canonical at `https://github.com/acje/pardosa`, implementing BLAKE3
+  continuous rolling commitments, 81-byte standard envelopes, and group-commit
+  dragline storage).
 - **`adr-fmt`** — read-only ADR template and link-integrity validator.
   Consumed from canonical upstream
   [`Mattilsynet/adr-fmt`](https://github.com/Mattilsynet/adr-fmt); not a
