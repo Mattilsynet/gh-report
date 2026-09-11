@@ -4,7 +4,7 @@ use std::path::Path;
 use cherry_pit_core::{
     AggregateId, CorrelationContext, EventEnvelope, EventStore, StoreCreateResult, StoreError,
 };
-use pardosa_schema::{EventBytes, EventString, GenomeSafe};
+use serde::{Deserialize, Serialize};
 
 use crate::PgnoEventStore;
 
@@ -20,58 +20,45 @@ const CALLER_EVENT_TYPE_MAX: usize = 512;
 /// serialized caller-event payloads this test-support bridge exercises.
 const PAYLOAD_MAX: usize = 65_536;
 
-type CallerEventTypeDto = EventString<CALLER_EVENT_TYPE_MAX>;
-type PayloadDto = EventBytes<PAYLOAD_MAX>;
-
-/// Bridge-crate-local, `GenomeSafe` DTO mirroring
+/// Bridge-crate-local DTO mirroring
 /// `cherry_pit_core::SchedulerEvent` field-for-field.
-///
-/// Lives entirely in `pardosa-cherry-pit-test-support` per the
-/// CHE-0029:R4/R6 severance ruling (oracle ghr-ad3cb725 Q3):
-/// `cherry_pit_core::SchedulerEvent` itself never derives `GenomeSafe`,
-/// and `cherry-pit-core` gains no `pardosa` dependency edge. Every
-/// `SchedulerEvent` field has a corresponding DTO field of the same
-/// semantic content; `fire_at` is carried as `i128` nanoseconds (not
-/// the lossy `i64` used elsewhere in this crate for "now" timestamps)
-/// so the conversion never truncates a caller-supplied instant.
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
-#[repr(u8)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchedulerEventDto {
     /// Mirrors `SchedulerEvent::Armed`.
-    Armed(ScheduleArmedDto) = 0,
+    Armed(ScheduleArmedDto),
     /// Mirrors `SchedulerEvent::Fired`.
-    Fired(ScheduleFiredDto) = 1,
+    Fired(ScheduleFiredDto),
     /// Mirrors `SchedulerEvent::Cancelled`.
-    Cancelled(ScheduleCancelledDto) = 2,
+    Cancelled(ScheduleCancelledDto),
 }
 
 /// DTO mirror of `cherry_pit_core::ScheduleArmed`.
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleArmedDto {
     schedule_id: uuid::Uuid,
     fire_at_nanos: i128,
     target_aggregate: u64,
     caller_event_id: uuid::Uuid,
-    caller_event_type: CallerEventTypeDto,
-    payload: PayloadDto,
+    caller_event_type: String,
+    payload: Vec<u8>,
     correlation_id: Option<uuid::Uuid>,
     causation_id: Option<uuid::Uuid>,
 }
 
 /// DTO mirror of `cherry_pit_core::ScheduleFired`.
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleFiredDto {
     schedule_id: uuid::Uuid,
     target_aggregate: u64,
     caller_event_id: uuid::Uuid,
-    caller_event_type: CallerEventTypeDto,
-    payload: PayloadDto,
+    caller_event_type: String,
+    payload: Vec<u8>,
     correlation_id: Option<uuid::Uuid>,
     causation_id: Option<uuid::Uuid>,
 }
 
 /// DTO mirror of `cherry_pit_core::ScheduleCancelled`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleCancelledDto {
     schedule_id: uuid::Uuid,
 }
@@ -83,27 +70,6 @@ impl cherry_pit_core::DomainEvent for SchedulerEventDto {
             Self::Fired(_) => "scheduler.schedule_fired",
             Self::Cancelled(_) => "scheduler.schedule_cancelled",
         }
-    }
-}
-
-impl serde::Serialize for SchedulerEventDto {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut bytes = Vec::new();
-        pardosa_schema::Encode::encode(self, &mut bytes);
-        serializer.serialize_bytes(&bytes)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SchedulerEventDto {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes = <Vec<u8>>::deserialize(deserializer)?;
-        pardosa_schema::from_bytes(&bytes).map_err(serde::de::Error::custom)
     }
 }
 
@@ -141,20 +107,22 @@ impl std::fmt::Display for SchedulerEventConversionError {
 
 impl std::error::Error for SchedulerEventConversionError {}
 
-fn caller_event_type_dto(value: &str) -> Result<CallerEventTypeDto, SchedulerEventConversionError> {
-    CallerEventTypeDto::try_from(value.to_string()).map_err(|_| {
-        SchedulerEventConversionError::CallerEventTypeTooLong {
+fn caller_event_type_dto(value: &str) -> Result<String, SchedulerEventConversionError> {
+    if value.len() > CALLER_EVENT_TYPE_MAX {
+        return Err(SchedulerEventConversionError::CallerEventTypeTooLong {
             actual: value.len(),
-        }
-    })
+        });
+    }
+    Ok(value.to_string())
 }
 
-fn payload_dto(value: &[u8]) -> Result<PayloadDto, SchedulerEventConversionError> {
-    PayloadDto::try_from(value.to_vec()).map_err(|_| {
-        SchedulerEventConversionError::PayloadTooLong {
+fn payload_dto(value: &[u8]) -> Result<Vec<u8>, SchedulerEventConversionError> {
+    if value.len() > PAYLOAD_MAX {
+        return Err(SchedulerEventConversionError::PayloadTooLong {
             actual: value.len(),
-        }
-    })
+        });
+    }
+    Ok(value.to_vec())
 }
 
 /// Convert a `SchedulerEvent` into its bridge-local DTO.
@@ -229,8 +197,8 @@ pub fn from_dto(dto: SchedulerEventDto) -> Result<cherry_pit_core::SchedulerEven
                 fire_at,
                 target_aggregate,
                 armed.caller_event_id,
-                armed.caller_event_type.as_str().to_string(),
-                armed.payload.as_slice().to_vec(),
+                armed.caller_event_type,
+                armed.payload,
                 correlation_from(armed.correlation_id, armed.causation_id),
             ))
         }
@@ -241,8 +209,8 @@ pub fn from_dto(dto: SchedulerEventDto) -> Result<cherry_pit_core::SchedulerEven
                 jiff::Timestamp::UNIX_EPOCH,
                 target_aggregate,
                 fired.caller_event_id,
-                fired.caller_event_type.as_str().to_string(),
-                fired.payload.as_slice().to_vec(),
+                fired.caller_event_type,
+                fired.payload,
                 correlation_from(fired.correlation_id, fired.causation_id),
             )))
         }

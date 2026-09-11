@@ -518,7 +518,7 @@ enum SweepTimeoutDecodeError {
     #[error("decode sweep timeout payload failed: {0}")]
     Decode(#[from] serde_json::Error),
     #[error("invalid sweep timeout payload field: {0}")]
-    InvalidField(#[from] pardosa_schema::DomainError),
+    InvalidField(#[from] pardosa::encoding::DecodeError),
 }
 
 #[derive(Clone)]

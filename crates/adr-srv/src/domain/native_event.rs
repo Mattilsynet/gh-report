@@ -5,11 +5,9 @@
 //! in `events.rs` is the scrape-time DTO; it is NOT the durable pardosa
 //! payload (CHE-0098 R2). This module defines the schema-hashed native
 //! event tree that IS the durable payload, plus a total, field-
-//! preserving mapping in both directions (CHE-0098 R3, N-R3). The
-//! shape below is the worked example in
-//! `pardosa_schema::guide` verbatim.
+//! preserving mapping in both directions (CHE-0098 R3, N-R3).
 
-use pardosa_schema::{EventVec, GenomeSafe, NonEmptyEventString, Validate};
+use pardosa::prelude::*;
 
 use crate::domain::adr_date::AdrDate;
 use crate::domain::adr_id::{AdrId, AdrIdError};
@@ -28,7 +26,7 @@ use limits::{MAX_ADR_REFERENCES, MAX_ADR_TITLE};
 /// [`crate::domain::adr_id::KNOWN_DOMAINS`]), schema-hashed as a
 /// `#[repr(u8)]` discriminant per `PGN-0013`. Appended-only: removing a
 /// variant breaks replay of events emitted under it (CHE-0022:R5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum AdrDomain {
     Afm = 0,
@@ -42,12 +40,45 @@ pub enum AdrDomain {
     Flo = 8,
 }
 
+impl PardosaType for AdrDomain {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::U8
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        buf.push(*self as u8);
+        Ok(())
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        if buf.is_empty() {
+            return Err(DecodeError::TruncatedPayload {
+                expected: 1,
+                available: 0,
+            });
+        }
+        let val = match buf[0] {
+            0 => Self::Afm,
+            1 => Self::Che,
+            2 => Self::Par,
+            3 => Self::Gen,
+            4 => Self::Sec,
+            5 => Self::Com,
+            6 => Self::Gnd,
+            7 => Self::Rst,
+            8 => Self::Flo,
+            other => {
+                return Err(DecodeError::UnknownVariantDiscriminant {
+                    discriminant: u32::from(other),
+                });
+            }
+        };
+        Ok((val, 1))
+    }
+}
+
 /// Rejects mapping a scrape-side domain prefix that is not one of the
 /// nine schema-hashed [`AdrDomain`] variants onto the native tree.
-/// [`AdrId::new`] already restricts scrape-side prefixes to
-/// [`crate::domain::adr_id::KNOWN_DOMAINS`], so this arm is
-/// unreachable in practice but kept `#[non_exhaustive]`-shaped for a
-/// future domain addition landing on one side before the other.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum NativeMapError {
@@ -91,10 +122,43 @@ impl AdrDomain {
 /// Native counterpart of [`AdrId`]: `domain` closes over
 /// [`AdrDomain`]'s schema-hashed discriminant instead of a raw
 /// `String`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AdrIdEvent {
     pub domain: AdrDomain,
     pub number: u16,
+}
+
+impl PardosaType for AdrIdEvent {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::Struct {
+            name: "AdrIdEvent".to_string(),
+            fields: vec![
+                FieldDescriptor {
+                    name: "domain".to_string(),
+                    node: AdrDomain::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "number".to_string(),
+                    node: u16::descriptor_node(),
+                },
+            ],
+        }
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.domain.encode_type(buf)?;
+        self.number.encode_type(buf)?;
+        Ok(())
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let mut cursor = 0;
+        let (domain, c) = AdrDomain::decode_type(&buf[cursor..])?;
+        cursor += c;
+        let (number, c) = u16::decode_type(&buf[cursor..])?;
+        cursor += c;
+        Ok((Self { domain, number }, cursor))
+    }
 }
 
 impl AdrIdEvent {
@@ -111,12 +175,52 @@ impl AdrIdEvent {
 }
 
 /// Native counterpart of [`AdrDate`]: same `(year, month, day)` wire
-/// shape, promoted to a `GenomeSafe` struct.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+/// shape, promoted to a `PardosaType` struct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AdrDateEvent {
     pub year: i16,
     pub month: u8,
     pub day: u8,
+}
+
+impl PardosaType for AdrDateEvent {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::Struct {
+            name: "AdrDateEvent".to_string(),
+            fields: vec![
+                FieldDescriptor {
+                    name: "year".to_string(),
+                    node: i16::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "month".to_string(),
+                    node: u8::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "day".to_string(),
+                    node: u8::descriptor_node(),
+                },
+            ],
+        }
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.year.encode_type(buf)?;
+        self.month.encode_type(buf)?;
+        self.day.encode_type(buf)?;
+        Ok(())
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let mut cursor = 0;
+        let (year, c) = i16::decode_type(&buf[cursor..])?;
+        cursor += c;
+        let (month, c) = u8::decode_type(&buf[cursor..])?;
+        cursor += c;
+        let (day, c) = u8::decode_type(&buf[cursor..])?;
+        cursor += c;
+        Ok((Self { year, month, day }, cursor))
+    }
 }
 
 impl From<AdrDate> for AdrDateEvent {
@@ -138,7 +242,7 @@ impl AdrDateEvent {
 
 /// Native counterpart of [`Tier`]. Variant order and discriminants
 /// mirror the scrape-side enum; appended-only per CHE-0022:R5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum AdrTier {
     S = 0,
@@ -146,6 +250,39 @@ pub enum AdrTier {
     B = 2,
     C = 3,
     D = 4,
+}
+
+impl PardosaType for AdrTier {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::U8
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        buf.push(*self as u8);
+        Ok(())
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        if buf.is_empty() {
+            return Err(DecodeError::TruncatedPayload {
+                expected: 1,
+                available: 0,
+            });
+        }
+        let val = match buf[0] {
+            0 => Self::S,
+            1 => Self::A,
+            2 => Self::B,
+            3 => Self::C,
+            4 => Self::D,
+            other => {
+                return Err(DecodeError::UnknownVariantDiscriminant {
+                    discriminant: u32::from(other),
+                });
+            }
+        };
+        Ok((val, 1))
+    }
 }
 
 impl From<Tier> for AdrTier {
@@ -175,7 +312,7 @@ impl From<AdrTier> for Tier {
 /// Native counterpart of [`Status`]. Mirrors all seven scrape-side
 /// variants (`SupersededBy`/`Invalid` payload data is not carried by
 /// either side today — see `frontmatter.rs`); appended-only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum AdrStatus {
     Draft = 0,
@@ -185,6 +322,41 @@ pub enum AdrStatus {
     Deprecated = 4,
     Superseded = 5,
     Invalid = 6,
+}
+
+impl PardosaType for AdrStatus {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::U8
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        buf.push(*self as u8);
+        Ok(())
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        if buf.is_empty() {
+            return Err(DecodeError::TruncatedPayload {
+                expected: 1,
+                available: 0,
+            });
+        }
+        let val = match buf[0] {
+            0 => Self::Draft,
+            1 => Self::Proposed,
+            2 => Self::Accepted,
+            3 => Self::Rejected,
+            4 => Self::Deprecated,
+            5 => Self::Superseded,
+            6 => Self::Invalid,
+            other => {
+                return Err(DecodeError::UnknownVariantDiscriminant {
+                    discriminant: u32::from(other),
+                });
+            }
+        };
+        Ok((val, 1))
+    }
 }
 
 impl From<Status> for AdrStatus {
@@ -216,13 +388,76 @@ impl From<AdrStatus> for Status {
 }
 
 /// Native counterpart of [`AdrFrontmatter`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AdrFrontmatterEvent {
     pub title: NonEmptyEventString<MAX_ADR_TITLE>,
     pub date: AdrDateEvent,
     pub last_reviewed: AdrDateEvent,
     pub tier: AdrTier,
     pub status: AdrStatus,
+}
+
+impl PardosaType for AdrFrontmatterEvent {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::Struct {
+            name: "AdrFrontmatterEvent".to_string(),
+            fields: vec![
+                FieldDescriptor {
+                    name: "title".to_string(),
+                    node: NonEmptyEventString::<MAX_ADR_TITLE>::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "date".to_string(),
+                    node: AdrDateEvent::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "last_reviewed".to_string(),
+                    node: AdrDateEvent::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "tier".to_string(),
+                    node: AdrTier::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "status".to_string(),
+                    node: AdrStatus::descriptor_node(),
+                },
+            ],
+        }
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.title.encode_type(buf)?;
+        self.date.encode_type(buf)?;
+        self.last_reviewed.encode_type(buf)?;
+        self.tier.encode_type(buf)?;
+        self.status.encode_type(buf)?;
+        Ok(())
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let mut cursor = 0;
+        let (title, c) = NonEmptyEventString::<MAX_ADR_TITLE>::decode_type(&buf[cursor..])?;
+        cursor += c;
+        let (date, c) = AdrDateEvent::decode_type(&buf[cursor..])?;
+        cursor += c;
+        let (last_reviewed, c) = AdrDateEvent::decode_type(&buf[cursor..])?;
+        cursor += c;
+        let (tier, c) = AdrTier::decode_type(&buf[cursor..])?;
+        cursor += c;
+        let (status, c) = AdrStatus::decode_type(&buf[cursor..])?;
+        cursor += c;
+        Ok((
+            Self {
+                title,
+                date,
+                last_reviewed,
+                tier,
+                status,
+            },
+            cursor,
+        ))
+    }
 }
 
 /// Failure converting a scrape-side [`AdrIngested`] into
@@ -248,7 +483,7 @@ pub enum NativeConversionError {
 /// event (CHE-0098 R2). Field set is total over [`AdrIngested`]'s
 /// vocabulary (CHE-0098 R3): `id`, `frontmatter`, `body_hash`,
 /// `references` all have a native home.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AdrIngestedEvent {
     pub id: AdrIdEvent,
     pub frontmatter: AdrFrontmatterEvent,
@@ -271,11 +506,68 @@ impl AdrIngestedEvent {
     }
 }
 
-impl Validate for AdrIngestedEvent {
-    type Error = core::convert::Infallible;
+impl PardosaSchema for AdrIngestedEvent {
+    fn schema_version() -> u32 {
+        1
+    }
 
-    fn validate(&self) -> Result<(), Self::Error> {
+    fn schema_descriptor() -> DescriptorNode {
+        DescriptorNode::Struct {
+            name: "AdrIngestedEvent".to_string(),
+            fields: vec![
+                FieldDescriptor {
+                    name: "id".to_string(),
+                    node: AdrIdEvent::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "frontmatter".to_string(),
+                    node: AdrFrontmatterEvent::descriptor_node(),
+                },
+                FieldDescriptor {
+                    name: "body_hash".to_string(),
+                    node: DescriptorNode::EventBytes { max_bytes: 16 },
+                },
+                FieldDescriptor {
+                    name: "references".to_string(),
+                    node: DescriptorNode::EventVec {
+                        inner: Box::new(AdrIdEvent::descriptor_node()),
+                        max_items: u32::try_from(MAX_ADR_REFERENCES).expect("fits u32"),
+                    },
+                },
+            ],
+        }
+    }
+
+    fn encode_payload(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.id.encode_type(buf)?;
+        self.frontmatter.encode_type(buf)?;
+        buf.extend_from_slice(&self.body_hash);
+        self.references.encode_type(buf)?;
         Ok(())
+    }
+
+    fn decode_payload(buf: &[u8]) -> Result<Self, DecodeError> {
+        let mut cursor = 0;
+        let (id, c) = AdrIdEvent::decode_type(&buf[cursor..])?;
+        cursor += c;
+        let (frontmatter, c) = AdrFrontmatterEvent::decode_type(&buf[cursor..])?;
+        cursor += c;
+        if buf.len() < cursor + 16 {
+            return Err(DecodeError::TruncatedPayload {
+                expected: cursor + 16,
+                available: buf.len(),
+            });
+        }
+        let mut body_hash = [0u8; 16];
+        body_hash.copy_from_slice(&buf[cursor..cursor + 16]);
+        cursor += 16;
+        let (references, _) = EventVec::decode_type(&buf[cursor..])?;
+        Ok(Self {
+            id,
+            frontmatter,
+            body_hash,
+            references,
+        })
     }
 }
 
@@ -288,14 +580,15 @@ impl TryFrom<&AdrIngested> for AdrIngestedEvent {
                 field: "id",
                 source,
             })?;
-        let title = NonEmptyEventString::try_new(domain.frontmatter.title.as_str()).map_err(
-            |err| match err {
-                pardosa_schema::DomainError::TooLong { .. } => {
-                    NativeConversionError::TooLong { field: "title" }
-                }
-                _ => NativeConversionError::EmptyTitle { field: "title" },
-            },
-        )?;
+        let title =
+            NonEmptyEventString::new(domain.frontmatter.title.as_str()).map_err(
+                |err| match err {
+                    DecodeError::LengthExceeded { .. } => {
+                        NativeConversionError::TooLong { field: "title" }
+                    }
+                    _ => NativeConversionError::EmptyTitle { field: "title" },
+                },
+            )?;
         let frontmatter = AdrFrontmatterEvent {
             title,
             date: domain.frontmatter.date.into(),
@@ -313,10 +606,9 @@ impl TryFrom<&AdrIngested> for AdrIngestedEvent {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let references =
-            EventVec::try_from(references).map_err(|_| NativeConversionError::TooMany {
-                field: "references",
-            })?;
+        let references = EventVec::new(references).map_err(|_| NativeConversionError::TooMany {
+            field: "references",
+        })?;
         Ok(Self {
             id,
             frontmatter,
@@ -352,14 +644,9 @@ impl TryFrom<&AdrIngestedEvent> for AdrIngested {
     }
 }
 
-impl pardosa::store::HasEventSchemaSource for AdrIngestedEvent {
-    const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some("adr-srv/AdrIngestedEvent");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pardosa_schema::{from_bytes, to_vec};
 
     fn frontmatter() -> AdrFrontmatter {
         AdrFrontmatter {
@@ -411,8 +698,11 @@ mod tests {
     fn native_event_wire_round_trips() {
         let domain = ingested();
         let native = AdrIngestedEvent::try_from(&domain).expect("total mapping");
-        let wire = to_vec(&native);
-        let decoded: AdrIngestedEvent = from_bytes(&wire).expect("decode native event");
+        let mut wire = Vec::new();
+        native
+            .encode_payload(&mut wire)
+            .expect("encode native event");
+        let decoded = AdrIngestedEvent::decode_payload(&wire).expect("decode native event");
         assert_eq!(decoded, native);
         assert_eq!(decoded.event_type(), "AdrIngested");
     }
@@ -428,8 +718,8 @@ mod tests {
 
     #[test]
     fn schema_hash_is_stable_across_reads() {
-        let first = <AdrIngestedEvent as GenomeSafe>::SCHEMA_HASH;
-        let second = <AdrIngestedEvent as GenomeSafe>::SCHEMA_HASH;
+        let first = AdrIngestedEvent::schema_identity();
+        let second = AdrIngestedEvent::schema_identity();
         assert_eq!(first, second);
     }
 }

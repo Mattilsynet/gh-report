@@ -1,5 +1,5 @@
 use jiff::Timestamp as JiffTimestamp;
-use pardosa_schema::{EventString, EventVec, NonEmptyEventString, Timestamp};
+use pardosa::prelude::*;
 
 use super::limits::{
     MAX_ALERT_BUCKET, MAX_ALERT_BUCKETS, MAX_ASSESSMENT_DATE, MAX_BRANCH_NAME,
@@ -48,7 +48,7 @@ pub(crate) fn to_es<const MAX: usize>(
     field: &'static str,
     value: String,
 ) -> Conv<EventString<MAX>> {
-    EventString::try_from(value).map_err(|_| EventConversionError::TooLong { field })
+    EventString::new(value).map_err(|_| EventConversionError::TooLong { field })
 }
 
 fn to_es_opt<const MAX: usize>(
@@ -64,14 +64,14 @@ fn to_event_vec<T, U, const MAX: usize>(
     convert: impl FnMut(T) -> Conv<U>,
 ) -> Conv<EventVec<U, MAX>> {
     let converted = values.into_iter().map(convert).collect::<Conv<Vec<_>>>()?;
-    EventVec::try_from(converted).map_err(|_| EventConversionError::TooMany { field })
+    EventVec::new(converted).map_err(|_| EventConversionError::TooMany { field })
 }
 
 pub(crate) fn to_nes<const MAX: usize>(
     field: &'static str,
     value: &str,
 ) -> Conv<NonEmptyEventString<MAX>> {
-    NonEmptyEventString::try_new(value).map_err(|_| {
+    NonEmptyEventString::new(value).map_err(|_| {
         if value.is_empty() {
             EventConversionError::Empty { field }
         } else {
@@ -90,7 +90,7 @@ pub(crate) fn ts_required(field: &'static str, value: &str) -> Conv<Timestamp> {
             field,
             value: value.to_string(),
         })?;
-    Timestamp::from_nanos(nanos).ok_or_else(|| EventConversionError::BadTimestamp {
+    Timestamp::new(nanos).map_err(|_| EventConversionError::BadTimestamp {
         field,
         value: value.to_string(),
     })
@@ -518,13 +518,13 @@ conversion_pair!(se::AssessmentMetadata => AssessmentMetadata {
         warm_start: v.warm_start,
     }
     from(v) {
-        date: v.date.into_inner(),
-        organization: v.organization.into_inner(),
-        schema_version: v.schema_version.into_inner(),
-        run_timestamp: v.run_timestamp.into_inner(),
-        run_id: v.run_id.into_inner(),
+        date: v.date.as_str().to_string(),
+        organization: v.organization.as_str().to_string(),
+        schema_version: v.schema_version.as_str().to_string(),
+        run_timestamp: v.run_timestamp.as_str().to_string(),
+        run_id: v.run_id.as_str().to_string(),
         token_tier: v.token_tier.into(),
-        token_scopes: v.token_scopes.into_inner(),
+        token_scopes: v.token_scopes.as_str().to_string(),
         auth_mode: v.auth_mode.into(),
         rate_limit_warnings: v.rate_limit_warnings,
         unavailable_capabilities: v
@@ -533,7 +533,7 @@ conversion_pair!(se::AssessmentMetadata => AssessmentMetadata {
             .into_iter()
             .map(Into::into)
             .collect(),
-        inventory_fetched_at: v.inventory_fetched_at.map(EventString::into_inner),
+        inventory_fetched_at: v.inventory_fetched_at.as_ref().map(|s| s.as_str().to_string()),
         warm_start: v.warm_start,
     }
 });
@@ -552,8 +552,8 @@ conversion_pair!(sm::RepoAlertSummary => RepoAlertSummary {
     }
     from(v) {
         open_alert_count: v.open_alert_count,
-        oldest_open_alert_created_at: v.oldest_open_alert_created_at.map(EventString::into_inner),
-        newest_open_alert_created_at: v.newest_open_alert_created_at.map(EventString::into_inner),
+        oldest_open_alert_created_at: v.oldest_open_alert_created_at.as_ref().map(|s| s.as_str().to_string()),
+        newest_open_alert_created_at: v.newest_open_alert_created_at.as_ref().map(|s| s.as_str().to_string()),
     }
 });
 
@@ -576,7 +576,7 @@ impl TryFrom<sm::OrgAlertSummary> for OrgAlertSummary {
                 .as_str()
                 .cmp(right.repository_id.as_str())
         });
-        let per_repo = EventVec::<_, MAX_ORG_ALERT_REPOS>::try_from(per_repo).map_err(|_| {
+        let per_repo = EventVec::<_, MAX_ORG_ALERT_REPOS>::new(per_repo).map_err(|_| {
             EventConversionError::TooMany {
                 field: "org_alert_summary.per_repo",
             }
@@ -595,12 +595,12 @@ impl TryFrom<sm::OrgAlertSummary> for OrgAlertSummary {
         }
         open_secret_alert_age_buckets
             .sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
-        let open_secret_alert_age_buckets = EventVec::<_, MAX_ALERT_BUCKETS>::try_from(
-            open_secret_alert_age_buckets,
-        )
-        .map_err(|_| EventConversionError::TooMany {
-            field: "org_alert_summary.open_secret_alert_age_buckets",
-        })?;
+        let open_secret_alert_age_buckets =
+            EventVec::<_, MAX_ALERT_BUCKETS>::new(open_secret_alert_age_buckets).map_err(|_| {
+                EventConversionError::TooMany {
+                    field: "org_alert_summary.open_secret_alert_age_buckets",
+                }
+            })?;
 
         Ok(Self {
             collection_status: v.collection_status.into(),
@@ -627,26 +627,33 @@ impl From<OrgAlertSummary> for sm::OrgAlertSummary {
     fn from(v: OrgAlertSummary) -> Self {
         Self {
             collection_status: v.collection_status.into(),
-            collection_reason: v.collection_reason.map(EventString::into_inner),
+            collection_reason: v.collection_reason.as_ref().map(|s| s.as_str().to_string()),
             per_repo: v
                 .per_repo
                 .into_inner()
                 .into_iter()
-                .map(|entry| (entry.repository_id.into_inner(), entry.summary.into()))
+                .map(|entry| {
+                    (
+                        entry.repository_id.as_str().to_string(),
+                        entry.summary.into(),
+                    )
+                })
                 .collect(),
             open_secret_alert_age_buckets: v
                 .open_secret_alert_age_buckets
                 .into_inner()
                 .into_iter()
-                .map(|entry| (entry.key.into_inner(), entry.value))
+                .map(|entry| (entry.key.as_str().to_string(), entry.value))
                 .collect(),
             total_open_secret_alerts: v.total_open_secret_alerts,
             oldest_open_secret_alert_created_at: v
                 .oldest_open_secret_alert_created_at
-                .map(EventString::into_inner),
+                .as_ref()
+                .map(|s| s.as_str().to_string()),
             newest_open_secret_alert_created_at: v
                 .newest_open_secret_alert_created_at
-                .map(EventString::into_inner),
+                .as_ref()
+                .map(|s| s.as_str().to_string()),
         }
     }
 }

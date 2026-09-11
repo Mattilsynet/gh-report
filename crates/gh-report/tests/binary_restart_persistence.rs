@@ -21,7 +21,7 @@
 
 use gh_report::app::state::EventStoreImpl;
 use gh_report::event::DomainEvent;
-use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
+use pardosa::prelude::*;
 
 use assert_cmd::Command;
 
@@ -136,9 +136,9 @@ async fn dump_baseline_against_seeded_store_exits_zero() {
 
 fn native_event(domain_key: &str, repo_name: &str) -> DomainEvent {
     DomainEvent::RepositoryStateCaptured {
-        domain_key: NonEmptyEventString::try_new(domain_key).expect("domain key"),
-        repo_name: NonEmptyEventString::try_new(repo_name).expect("repo name"),
-        timestamp: EventTimestamp::from_nanos(1_779_491_200_000_000_000).expect("timestamp"),
+        domain_key: NonEmptyEventString::new(domain_key).expect("domain key"),
+        repo_name: NonEmptyEventString::new(repo_name).expect("repo name"),
+        timestamp: Timestamp::new(1_779_491_200_000_000_000).expect("timestamp"),
         evidence: None,
     }
 }

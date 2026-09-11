@@ -6,55 +6,26 @@ use cherry_pit_core::{
     AggregateId, CorrelationContext, DomainEvent, EventEnvelope, EventStore, StoreCreateResult,
     StoreError,
 };
-use pardosa_schema::{EventBytes, GenomeSafe};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::PgnoEventStore;
 
 /// Upper bound on the JSON-serialized event byte length carried
-/// through [`SerdeEnvelopeDto`]. Generous enough for any test-fixture
-/// event this bridge exercises; not a production transport limit.
+/// through [`SerdeEnvelopeDto`].
 const SERDE_ENVELOPE_MAX: usize = 262_144;
 
-type SerdeBytesDto = EventBytes<SERDE_ENVELOPE_MAX>;
-
-/// Bridge-crate-local, `GenomeSafe` opaque-bytes envelope used by
+/// Bridge-crate-local opaque-bytes envelope used by
 /// [`PgnoSerdeStore`] to persist an arbitrary `serde`-capable event
-/// type without that type itself deriving `GenomeSafe`.
-///
-/// Mirrors the `payload`-as-`EventBytes` convention already used by
-/// [`crate::SchedulerEventDto`], generalized to the whole event rather
-/// than one field: the wrapped bytes are the JSON encoding of the
-/// caller's `Ev`, produced and consumed only inside this module.
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+/// type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerdeEnvelopeDto {
-    bytes: SerdeBytesDto,
+    bytes: Vec<u8>,
 }
 
 impl DomainEvent for SerdeEnvelopeDto {
     fn event_type(&self) -> &'static str {
         "pgno-serde-bridge.envelope"
-    }
-}
-
-impl serde::Serialize for SerdeEnvelopeDto {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut bytes = Vec::new();
-        pardosa_schema::Encode::encode(self, &mut bytes);
-        serializer.serialize_bytes(&bytes)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SerdeEnvelopeDto {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes = <Vec<u8>>::deserialize(deserializer)?;
-        pardosa_schema::from_bytes(&bytes).map_err(serde::de::Error::custom)
     }
 }
 
@@ -85,8 +56,10 @@ impl std::error::Error for SerdeBridgeError {}
 fn to_dto<Ev: serde::Serialize>(event: &Ev) -> Result<SerdeEnvelopeDto, SerdeBridgeError> {
     let json = serde_json::to_vec(event).map_err(SerdeBridgeError::Codec)?;
     let actual = json.len();
-    let bytes = SerdeBytesDto::try_from(json).map_err(|_| SerdeBridgeError::TooLarge { actual })?;
-    Ok(SerdeEnvelopeDto { bytes })
+    if actual > SERDE_ENVELOPE_MAX {
+        return Err(SerdeBridgeError::TooLarge { actual });
+    }
+    Ok(SerdeEnvelopeDto { bytes: json })
 }
 
 fn from_dto<Ev: DomainEvent + DeserializeOwned>(
@@ -116,33 +89,21 @@ fn remap_envelope<Ev: DomainEvent + DeserializeOwned>(
 }
 
 /// `.pgno`-backed [`EventStore`]`<Event = Ev>` for a caller-supplied
-/// `serde`-capable domain event type that cannot itself derive
-/// `GenomeSafe` (e.g. a test-local fixture defined outside this
-/// crate's dependency ring).
-///
-/// # Design: JSON-bytes bridge over `PgnoEventStore`
-///
-/// Delegates to `PgnoEventStore<SerdeEnvelopeDto>`, converting `Ev` to
-/// and from an opaque JSON-encoded byte payload at the boundary. This
-/// is deliberately more general than [`crate::PgnoSchedulerStore`]
-/// (which maps a single fixed type field-for-field): callers here
-/// supply an arbitrary `Ev: DomainEvent + Serialize + DeserializeOwned`
-/// with no per-type bridge code required, at the cost of losing
-/// field-level schema evolution guarantees `GenomeSafe` would give a
-/// purpose-built DTO. Appropriate for test fixtures; not a
-/// recommendation for production event types.
+/// `serde`-capable domain event type.
 pub struct PgnoSerdeStore<Ev> {
     inner: PgnoEventStore<SerdeEnvelopeDto>,
     _event: PhantomData<Ev>,
 }
 
-impl<Ev> PgnoSerdeStore<Ev> {
+impl<Ev> PgnoSerdeStore<Ev>
+where
+    Ev: DomainEvent + Serialize + DeserializeOwned + Clone + Send + 'static,
+{
     /// Create a fresh `.pgno`-backed store, truncating any existing file.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot
-    /// create the backing container.
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
+    /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
         Ok(Self {
             inner: PgnoEventStore::create_pgno(path)?,
@@ -150,11 +111,9 @@ impl<Ev> PgnoSerdeStore<Ev> {
         })
     }
 
-    /// Open an existing `.pgno`-backed store, rehydrating its fibers
-    /// and seeding the `AggregateId` counter from the max id observed.
+    /// Open an existing `.pgno`-backed store.
     ///
     /// # Errors
-    ///
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot open
     /// or fold the backing container.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
@@ -165,7 +124,9 @@ impl<Ev> PgnoSerdeStore<Ev> {
     }
 }
 
-impl<Ev: DomainEvent + serde::Serialize + DeserializeOwned> EventStore for PgnoSerdeStore<Ev> {
+impl<Ev: DomainEvent + serde::Serialize + DeserializeOwned + Clone + Send + 'static> EventStore
+    for PgnoSerdeStore<Ev>
+{
     type Event = Ev;
 
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {

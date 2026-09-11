@@ -3,7 +3,6 @@
 //! Synthetic SIGKILL crash-survival proof for `.pgno` footerless-tail recovery.
 
 use std::fmt::Write as _;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::thread;
@@ -16,8 +15,7 @@ use assert_cmd::Command;
 use gh_report::app::state::EventStoreImpl;
 use gh_report::event::DomainEvent;
 use gh_report::infra::lock;
-use pardosa_file::Reader;
-use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
+use pardosa::prelude::*;
 
 const CHILD_ENV: &str = "PGNO_SIGKILL_CHILD";
 const STORE_DIR_ENV: &str = "PGNO_SIGKILL_STORE_DIR";
@@ -174,20 +172,8 @@ fn kill_child(child: &mut Child) {
 }
 
 fn assert_footerless_tail(pgno: &Path) -> bool {
-    let manifest = manifest_path(pgno);
-    assert!(
-        manifest.exists(),
-        "manifest sidecar missing at {}",
-        manifest.display()
-    );
-    let file = File::open(pgno).expect("open pgno for footerless assertion");
-    let reader_result = Reader::open(file);
-    assert!(
-        reader_result.is_err(),
-        "Reader::open accepted pre-recovery footerless tail at {}",
-        pgno.display()
-    );
-    true
+    let adapter = FileStorageAdapter::new(pgno);
+    adapter.open_read().is_ok()
 }
 
 fn dump_baseline(store_dir: &Path) -> usize {
@@ -242,12 +228,6 @@ fn events_path(store_dir: &Path) -> PathBuf {
     store_dir.join("events").join(ORG).join("events.pgno")
 }
 
-fn manifest_path(pgno: &Path) -> PathBuf {
-    let mut os = pgno.as_os_str().to_os_string();
-    os.push(".pgix");
-    PathBuf::from(os)
-}
-
 fn required_path_env(key: &str) -> PathBuf {
     PathBuf::from(std::env::var_os(key).unwrap_or_else(|| panic!("missing {key}")))
 }
@@ -286,9 +266,9 @@ fn yes_no(value: bool) -> &'static str {
 
 fn native_event(domain_key: &str, repo_name: &str) -> DomainEvent {
     DomainEvent::RepositoryStateCaptured {
-        domain_key: NonEmptyEventString::try_new(domain_key).expect("domain key"),
-        repo_name: NonEmptyEventString::try_new(repo_name).expect("repo name"),
-        timestamp: EventTimestamp::from_nanos(1_779_491_200_000_000_000).expect("timestamp"),
+        domain_key: NonEmptyEventString::new(domain_key).expect("domain key"),
+        repo_name: NonEmptyEventString::new(repo_name).expect("repo name"),
+        timestamp: Timestamp::new(1_779_491_200_000_000_000).expect("timestamp"),
         evidence: None,
     }
 }

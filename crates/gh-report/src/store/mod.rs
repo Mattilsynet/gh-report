@@ -1,224 +1,333 @@
 //! Native pardosa-backed event store for gh-report.
 //!
-//! Each repository's natural domain key maps to one pardosa fiber. The
-//! first capture of a repo begins a fiber; subsequent captures append to
-//! the same fiber, recovered across restarts by validated-identity resume
-//! (PGN-0014) keyed through a [`pardosa::FiberIndex`] over the domain key.
-//! Removal is a soft delete via fiber detach; a returning repo is rescued.
+//! Each repository's natural domain key maps to one pardosa fiber.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use pardosa::store::{Event, JetStreamBackend, RecoveryOutcome};
-pub use pardosa_fiber_store::FiberStoreError as StoreError;
-use pardosa_fiber_store::ObservedFiberStore;
+use pardosa::prelude::*;
 
-use crate::event::{DomainEvent, OrgStateCaptured, TeamStateCaptured, team_domain_key};
+use crate::event::{DomainEvent, OrgStateCaptured, TeamStateCaptured};
+
+/// Failure surface of the native pardosa store.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum StoreError {
+    #[error("store already exists: {0}")]
+    AlreadyExists(String),
+    #[error("pardosa infrastructure error: {0}")]
+    Infrastructure(String),
+    #[error("concurrency conflict")]
+    ConcurrencyConflict {
+        expected_seq: Option<u64>,
+        actual_seq: Option<u64>,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+    #[error("torn write recovery failed: {source}")]
+    TornWriteRecovery {
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+    #[error("domain key {key:?} maps to multiple fibers")]
+    DivergedFiber { key: String },
+    #[error("store mutex poisoned")]
+    Poisoned,
+}
+
+impl StoreError {
+    #[must_use]
+    pub fn is_already_exists(&self) -> bool {
+        matches!(self, Self::AlreadyExists(_))
+    }
+}
+
+impl From<OperationFailure> for StoreError {
+    fn from(err: OperationFailure) -> Self {
+        if err.is_already_exists() {
+            StoreError::AlreadyExists(err.to_string())
+        } else {
+            StoreError::Infrastructure(err.to_string())
+        }
+    }
+}
+
+impl From<EncodeError> for StoreError {
+    fn from(err: EncodeError) -> Self {
+        StoreError::Infrastructure(err.to_string())
+    }
+}
+
+impl From<DecodeError> for StoreError {
+    fn from(err: DecodeError) -> Self {
+        StoreError::Infrastructure(err.to_string())
+    }
+}
+
+fn default_claim(epoch: u64, label: &str) -> OwnershipClaimRecord {
+    OwnershipClaimRecord {
+        epoch,
+        machine_id: [0u8; 16],
+        boot_id: [0u8; 16],
+        process_id: u64::from(std::process::id()),
+        process_start_time_ns: 0,
+        claim_time_ns: 0,
+        operator_label: label.to_string(),
+    }
+}
+
+struct StoreInner<E> {
+    path: PathBuf,
+    cached: Mutex<Vec<(bool, [u8; 16], E)>>,
+}
+
+impl<E: PardosaSchema> StoreInner<E> {
+    fn create_pgno(path: &Path, label: &'static str) -> Result<Self, StoreError> {
+        let adapter = FileStorageAdapter::new(path);
+        let claim = default_claim(1, label);
+        let _session = adapter.create(&claim)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            cached: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn open_pgno(path: &Path, _label: &'static str) -> Result<Self, StoreError> {
+        let adapter = FileStorageAdapter::new(path);
+        let mut reader = adapter.open_read()?;
+        let envelopes = reader.read_all_envelopes()?;
+        let mut cached = Vec::with_capacity(envelopes.len());
+        for env in envelopes {
+            let event = E::decode_payload(&env.payload)?;
+            cached.push((env.header.detached, env.header.fiber_id, event));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            cached: Mutex::new(cached),
+        })
+    }
+
+    fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
+        let adapter = FileStorageAdapter::new(path);
+        let mut reader = adapter.open_read()?;
+        let envelopes = reader.read_all_envelopes()?;
+        let mut cached = Vec::with_capacity(envelopes.len());
+        for env in envelopes {
+            let event = E::decode_payload(&env.payload)?;
+            cached.push((env.header.detached, env.header.fiber_id, event));
+        }
+        *self.cached.lock().map_err(|_| StoreError::Poisoned)? = cached;
+        Ok(())
+    }
+
+    fn record(&self, domain_key: &str, event: E) -> Result<(), StoreError> {
+        let adapter = FileStorageAdapter::new(&self.path);
+        let epoch = adapter.current_epoch()?;
+        let mut session = adapter.open_write(epoch)?;
+        let fiber_id = derive_fiber_id(domain_key);
+        let mut payload = Vec::new();
+        event.encode_payload(&mut payload)?;
+        let event_id = *uuid::Uuid::now_v7().as_bytes();
+
+        let handle = session.fiber(fiber_id)?;
+        if handle.is_detached() {
+            session.rescue_fiber(fiber_id, event_id, payload)?;
+        } else {
+            session.append_to_fiber(fiber_id, event_id, payload)?;
+        }
+        session.sync()?;
+        self.cached
+            .lock()
+            .map_err(|_| StoreError::Poisoned)?
+            .push((false, fiber_id, event));
+        Ok(())
+    }
+
+    fn detach(&self, domain_key: &str, event: E) -> Result<(), StoreError> {
+        let adapter = FileStorageAdapter::new(&self.path);
+        let epoch = adapter.current_epoch()?;
+        let mut session = adapter.open_write(epoch)?;
+        let fiber_id = derive_fiber_id(domain_key);
+        let handle = session.fiber(fiber_id)?;
+        if handle.is_active() {
+            let mut payload = Vec::new();
+            event.encode_payload(&mut payload)?;
+            let event_id = *uuid::Uuid::now_v7().as_bytes();
+            session.detach_fiber(fiber_id, event_id, payload)?;
+            session.sync()?;
+            self.cached
+                .lock()
+                .map_err(|_| StoreError::Poisoned)?
+                .push((true, fiber_id, event));
+        }
+        Ok(())
+    }
+
+    fn events(&self) -> Result<Vec<(bool, E)>, StoreError>
+    where
+        E: Clone,
+    {
+        let cached = self.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        Ok(cached
+            .iter()
+            .map(|(detached, _, event)| (*detached, event.clone()))
+            .collect())
+    }
+
+    fn fold_events<R>(
+        &self,
+        init: R,
+        mut fold: impl FnMut(&mut R, bool, &E),
+    ) -> Result<R, StoreError> {
+        let cached = self.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        let mut acc = init;
+        for (detached, _, event) in cached.iter() {
+            fold(&mut acc, *detached, event);
+        }
+        Ok(acc)
+    }
+
+    fn fold_defined_events<R>(
+        &self,
+        init: R,
+        mut fold: impl FnMut(&mut R, &E),
+    ) -> Result<R, StoreError> {
+        let cached = self.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        let mut acc = init;
+        for (detached, _, event) in cached.iter() {
+            if !*detached {
+                fold(&mut acc, event);
+            }
+        }
+        Ok(acc)
+    }
+
+    fn latest_defined(&self, key_fn: impl Fn(&E) -> String) -> Result<Vec<(String, E)>, StoreError>
+    where
+        E: Clone,
+    {
+        let cached = self.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        let mut latest: HashMap<[u8; 16], (String, E)> = HashMap::new();
+        for (detached, fiber_id, event) in cached.iter() {
+            if *detached {
+                latest.remove(fiber_id);
+            } else {
+                let key = key_fn(event);
+                latest.insert(*fiber_id, (key, event.clone()));
+            }
+        }
+        Ok(latest.into_values().collect())
+    }
+}
 
 /// Pardosa-native event store: one fiber per repository domain key.
-///
-/// Thin newtype over [`ObservedFiberStore`], which owns the swappable
-/// snapshot and backend-reachability tracking. Swappability backs
-/// [`Self::resync_pgno_from_authoritative`] /
-/// [`Self::resync_jetstream_from_authoritative`] — the consumer-owned
-/// Design-Y re-seed on `FencedConflict` (mission ghr-fea8b799).
-pub struct NativeStore(ObservedFiberStore<DomainEvent>);
+pub struct NativeStore {
+    inner: StoreInner<DomainEvent>,
+    backend_reachable: std::sync::atomic::AtomicBool,
+}
 
-/// Pardosa-native org event store: one fiber per org identity.
-///
-/// Thin newtype over [`ObservedFiberStore`]; swappable for the same
-/// Design-Y re-seed reason as [`NativeStore`] (mission ghr-fea8b799):
-/// `record` can raise the identical `PersistenceError::FencedConflict`
-/// the repos store can, through the same generic catch-all — this store
-/// needs the same atomic re-seed capability, not just the repos store.
-pub struct NativeOrgStore(ObservedFiberStore<OrgStateCaptured>);
+pub struct NativeOrgStore {
+    inner: StoreInner<OrgStateCaptured>,
+    backend_reachable: std::sync::atomic::AtomicBool,
+}
 
-/// Pardosa-native team event store: one fiber per `(org, team_slug)` pair,
-/// keyed by [`team_domain_key`] (CHE-0089:R2). Team is not the repository
-/// aggregate; team-repo is many-to-many via CODEOWNERS, so this store is
-/// fully decoupled from [`NativeStore`] and [`NativeOrgStore`].
-///
-/// Thin newtype over [`ObservedFiberStore`]; swappable for the same
-/// Design-Y re-seed reason as [`NativeStore`] (mission ghr-fea8b799):
-/// `record` can raise the identical `PersistenceError::FencedConflict`
-/// the repos store can.
-pub struct NativeTeamStore(ObservedFiberStore<TeamStateCaptured>);
+pub struct NativeTeamStore {
+    inner: StoreInner<TeamStateCaptured>,
+    backend_reachable: std::sync::atomic::AtomicBool,
+}
 
 impl NativeStore {
     /// Create a fresh `.pgno`-backed store, truncating any existing file.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
-    /// the backing container.
+    /// Returns [`StoreError`] if creating or claiming the store file fails.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::create_pgno(path)?))
+        Ok(Self {
+            inner: StoreInner::create_pgno(path, "gh-report-repos")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
     }
 
     /// Open an existing `.pgno`-backed store, rehydrating its fibers.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
-    /// fold the backing container.
+    /// Returns [`StoreError`] if reading or decoding existing envelopes fails.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = Self(ObservedFiberStore::open_pgno(path)?);
-        warn_pgno_recovery("repositories", path, store.last_recovery().as_ref());
-        Ok(store)
+        Ok(Self {
+            inner: StoreInner::open_pgno(path, "gh-report-repos")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
     }
 
-    /// Create a fresh JetStream-backed store.
+    /// Re-seed from a fresh authoritative read of the same `.pgno` backing file.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot author
-    /// the canonical-empty container on the backend.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime;
-    /// JetStream-backed pardosa calls are bridged with
-    /// `tokio::task::block_in_place`, which requires a multi-thread runtime.
-    pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::create_jetstream(backend)?))
-    }
-
-    /// Open an existing JetStream-backed store, rehydrating its fibers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot fetch or
-    /// rehydrate the JetStream-authoritative line.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime; see
-    /// [`Self::create_jetstream`].
-    pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::open_jetstream(backend)?))
-    }
-
-    /// Re-seed from a fresh authoritative read of the same `.pgno` backing
-    /// file, atomically replacing the fiber-store snapshot in place.
-    ///
-    /// Design-Y consumer-owned re-arm (ghr-fea8b799): on `FencedConflict`
-    /// the caller re-reads authoritative state through this method rather
-    /// than patching a cached sequence and redriving the same append
-    /// (R10-forbidden). Reuses the existing `FiberStore::open_pgno`
-    /// rehydrate path — no pardosa/pardosa-nats changes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot re-open
-    /// the backing container.
+    /// Returns [`StoreError`] if reading or decoding from `path` fails.
     pub fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
-        self.0.resync_pgno_from_authoritative(path)?;
-        warn_pgno_recovery("repositories", path, self.0.last_recovery().as_ref());
-        Ok(())
-    }
-
-    /// Re-seed from a fresh authoritative `JetStream` replay, atomically
-    /// replacing the fiber-store snapshot in place.
-    ///
-    /// Same Design-Y re-arm as [`Self::resync_pgno_from_authoritative`],
-    /// backed by [`FiberStore::open_jetstream`] — which reaches the
-    /// `pardosa-nats` crate's `replay_all` internally on open, correctly
-    /// re-seeding the cached fence sequence (ghr-f83210db terrain).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot fetch or
-    /// rehydrate the JetStream-authoritative line.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime; see
-    /// [`Self::create_jetstream`].
-    pub fn resync_jetstream_from_authoritative(
-        &self,
-        backend: JetStreamBackend,
-    ) -> Result<(), StoreError> {
-        self.0.resync_jetstream_from_authoritative(backend)
-    }
-
-    #[must_use]
-    pub(crate) fn last_recovery(&self) -> Option<RecoveryOutcome> {
-        self.0.last_recovery()
+        self.inner.resync_pgno_from_authoritative(path)
     }
 
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
-        self.0.backend_reachable()
+        self.backend_reachable
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     #[cfg(test)]
     pub(crate) fn mark_backend_connect_failure_for_test(&self) {
-        self.0.mark_backend_unreachable_for_test();
+        self.backend_reachable
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
-    /// Capture a repository state event onto the repo's fiber, growing it
-    /// by one event (or beginning it on first capture), then fence.
+    #[cfg(test)]
+    pub(crate) fn release_exclusion_for_test(&self) {
+        let _ = self;
+    }
+
+    /// Capture a repository state event onto the repo's fiber.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::DivergedFiber`] when the domain key already
-    /// maps to more than one fiber, [`StoreError::Infrastructure`] on
-    /// pardosa append/sync failure, or [`StoreError::Poisoned`].
+    /// Returns [`StoreError`] if encoding, appending, or syncing the event fails.
     pub fn record(&self, domain_key: &str, event: DomainEvent) -> Result<(), StoreError> {
-        self.0.record(domain_key, event, key_of)
+        self.inner.record(domain_key, event)
     }
 
-    /// Soft-delete a repository's fiber (detach), then fence. A later
-    /// [`Self::record`] of the same key rescues it back to live.
+    /// Soft-delete a repository's fiber (detach).
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::DivergedFiber`], [`StoreError::Infrastructure`],
-    /// or [`StoreError::Poisoned`]. A no-op (key never seen / already
-    /// detached) returns `Ok(())`.
+    /// Returns [`StoreError`] if encoding, detaching, or syncing the fiber fails.
     pub fn detach(&self, domain_key: &str, event: DomainEvent) -> Result<(), StoreError> {
-        self.0.detach(domain_key, event, key_of)
+        self.inner.detach(domain_key, event)
     }
 
-    /// The latest event of every live (`Defined`) fiber, paired with its
-    /// domain key. Detached fibers are excluded — the soft-delete effect.
+    /// The latest event of every live fiber, paired with its domain key.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] on pardosa read failure or
-    /// [`StoreError::Poisoned`].
+    /// Returns [`StoreError::Poisoned`] if the store cache lock is poisoned.
     pub fn latest_per_repo(&self) -> Result<Vec<(String, DomainEvent)>, StoreError> {
-        self.0.latest_defined(key_of)
+        self.inner.latest_defined(|event| match event {
+            DomainEvent::RepositoryStateCaptured { domain_key, .. }
+            | DomainEvent::RepositoryDeleted { domain_key, .. } => domain_key.as_str().to_string(),
+        })
     }
 
-    /// Every event in the store, in committed line order — the same
-    /// stream an external consumer replaying the journal would observe.
-    ///
-    /// Each item pairs the pardosa envelope `detached` flag with the
-    /// domain event payload.
-    ///
-    /// A projection folding this sequence behaves identically in-process
-    /// or in a separate service (EDA boundary: the log is the sole input).
+    /// Every event in the store, in committed line order.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] on pardosa read failure or
-    /// [`StoreError::Poisoned`].
+    /// Returns [`StoreError::Poisoned`] if the store cache lock is poisoned.
     pub fn events(&self) -> Result<Vec<(bool, DomainEvent)>, StoreError> {
-        self.0.all_events()
+        self.inner.events()
     }
 
-    /// Fold every event in committed line order without materialising an
-    /// owned event vector.
+    /// Fold every event in committed line order without materialising an owned vector.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Poisoned`] when the store mutex is poisoned.
+    /// Returns [`StoreError::Poisoned`] if the store cache lock is poisoned.
     pub fn fold_events<R>(
         &self,
         init: R,
         fold: impl FnMut(&mut R, bool, &DomainEvent),
     ) -> Result<R, StoreError> {
-        self.0.fold_events(init, fold)
+        self.inner.fold_events(init, fold)
     }
 }
 
@@ -226,121 +335,57 @@ impl NativeOrgStore {
     /// Create a fresh `.pgno`-backed org store, truncating any existing file.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
-    /// the backing container.
+    /// Returns [`StoreError`] if creating or claiming the store file fails.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::create_pgno(path)?))
+        Ok(Self {
+            inner: StoreInner::create_pgno(path, "gh-report-orgs")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
     }
 
     /// Open an existing `.pgno`-backed org store, rehydrating its fibers.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
-    /// fold the backing container.
+    /// Returns [`StoreError`] if reading or decoding existing envelopes fails.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = Self(ObservedFiberStore::open_pgno(path)?);
-        warn_pgno_recovery("orgs", path, store.last_recovery().as_ref());
-        Ok(store)
+        Ok(Self {
+            inner: StoreInner::open_pgno(path, "gh-report-orgs")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
     }
 
-    /// Create a fresh JetStream-backed org store.
+    /// Re-seed from a fresh authoritative read of the same `.pgno` backing file.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot author
-    /// the canonical-empty container on the backend.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime; see
-    /// [`NativeStore::create_jetstream`].
-    pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::create_jetstream(backend)?))
-    }
-
-    /// Open an existing JetStream-backed org store, rehydrating its fibers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot fetch or
-    /// rehydrate the JetStream-authoritative line.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime; see
-    /// [`NativeStore::create_jetstream`].
-    pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::open_jetstream(backend)?))
-    }
-
-    /// Re-seed from a fresh authoritative read of the same `.pgno` backing
-    /// file. See [`NativeStore::resync_pgno_from_authoritative`] for the
-    /// Design-Y rationale (mission ghr-fea8b799).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot re-open
-    /// the backing container.
+    /// Returns [`StoreError`] if reading or decoding from `path` fails.
     pub fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
-        self.0.resync_pgno_from_authoritative(path)?;
-        warn_pgno_recovery("orgs", path, self.0.last_recovery().as_ref());
-        Ok(())
-    }
-
-    /// Re-seed from a fresh authoritative `JetStream` replay. See
-    /// [`NativeStore::resync_jetstream_from_authoritative`] for the
-    /// Design-Y rationale (mission ghr-fea8b799).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot fetch or
-    /// rehydrate the JetStream-authoritative line.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime; see
-    /// [`NativeStore::create_jetstream`].
-    pub fn resync_jetstream_from_authoritative(
-        &self,
-        backend: JetStreamBackend,
-    ) -> Result<(), StoreError> {
-        self.0.resync_jetstream_from_authoritative(backend)
-    }
-
-    #[must_use]
-    pub(crate) fn last_recovery(&self) -> Option<RecoveryOutcome> {
-        self.0.last_recovery()
+        self.inner.resync_pgno_from_authoritative(path)
     }
 
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
-        self.0.backend_reachable()
+        self.backend_reachable
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Capture an org state event onto the org fiber, then fence.
+    /// Capture an org state event onto the org fiber.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::DivergedFiber`] when the org key already maps
-    /// to more than one fiber, [`StoreError::Infrastructure`] on pardosa
-    /// append/sync failure, or [`StoreError::Poisoned`].
+    /// Returns [`StoreError`] if encoding, appending, or syncing the event fails.
     pub fn record(&self, org_key: &str, event: OrgStateCaptured) -> Result<(), StoreError> {
-        self.0.record(org_key, event, org_key_of)
+        self.inner.record(org_key, event)
     }
 
     /// Fold every org event in committed line order without materialising an owned vector.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Poisoned`] when the store mutex is poisoned.
+    /// Returns [`StoreError::Poisoned`] if the store cache lock is poisoned.
     pub fn fold_events<R>(
         &self,
         init: R,
         fold: impl FnMut(&mut R, &OrgStateCaptured),
     ) -> Result<R, StoreError> {
-        self.0.fold_defined_events(init, fold)
+        self.inner.fold_defined_events(init, fold)
     }
 }
 
@@ -348,316 +393,82 @@ impl NativeTeamStore {
     /// Create a fresh `.pgno`-backed team store, truncating any existing file.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
-    /// the backing container.
+    /// Returns [`StoreError`] if creating or claiming the store file fails.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::create_pgno(path)?))
+        Ok(Self {
+            inner: StoreInner::create_pgno(path, "gh-report-teams")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
     }
 
     /// Open an existing `.pgno`-backed team store, rehydrating its fibers.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
-    /// fold the backing container.
+    /// Returns [`StoreError`] if reading or decoding existing envelopes fails.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = Self(ObservedFiberStore::open_pgno(path)?);
-        warn_pgno_recovery("teams", path, store.last_recovery().as_ref());
-        Ok(store)
+        Ok(Self {
+            inner: StoreInner::open_pgno(path, "gh-report-teams")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
     }
 
-    /// Create a fresh JetStream-backed team store.
+    /// Re-seed from a fresh authoritative read of the same `.pgno` backing file.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot author
-    /// the canonical-empty container on the backend.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime; see
-    /// [`NativeStore::create_jetstream`].
-    pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::create_jetstream(backend)?))
-    }
-
-    /// Open an existing JetStream-backed team store, rehydrating its fibers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot fetch or
-    /// rehydrate the JetStream-authoritative line.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime; see
-    /// [`NativeStore::create_jetstream`].
-    pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        Ok(Self(ObservedFiberStore::open_jetstream(backend)?))
-    }
-
-    /// Re-seed from a fresh authoritative read of the same `.pgno` backing
-    /// file. See [`NativeStore::resync_pgno_from_authoritative`] for the
-    /// Design-Y rationale (mission ghr-fea8b799).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot re-open
-    /// the backing container.
+    /// Returns [`StoreError`] if reading or decoding from `path` fails.
     pub fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
-        self.0.resync_pgno_from_authoritative(path)?;
-        warn_pgno_recovery("teams", path, self.0.last_recovery().as_ref());
-        Ok(())
-    }
-
-    /// Re-seed from a fresh authoritative `JetStream` replay. See
-    /// [`NativeStore::resync_jetstream_from_authoritative`] for the
-    /// Design-Y rationale (mission ghr-fea8b799).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Infrastructure`] when pardosa cannot fetch or
-    /// rehydrate the JetStream-authoritative line.
-    ///
-    /// # Panics
-    ///
-    /// Panics when called from inside a Tokio `current_thread` runtime; see
-    /// [`NativeStore::create_jetstream`].
-    pub fn resync_jetstream_from_authoritative(
-        &self,
-        backend: JetStreamBackend,
-    ) -> Result<(), StoreError> {
-        self.0.resync_jetstream_from_authoritative(backend)
-    }
-
-    #[must_use]
-    pub(crate) fn last_recovery(&self) -> Option<RecoveryOutcome> {
-        self.0.last_recovery()
+        self.inner.resync_pgno_from_authoritative(path)
     }
 
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
-        self.0.backend_reachable()
+        self.backend_reachable
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Capture a team roster event onto the team's own fiber
-    /// (`team_domain_key`), then fence.
+    /// Capture a team roster event onto the team's own fiber.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::DivergedFiber`] when the team key already maps
-    /// to more than one fiber, [`StoreError::Infrastructure`] on pardosa
-    /// append/sync failure, or [`StoreError::Poisoned`].
+    /// Returns [`StoreError`] if encoding, appending, or syncing the event fails.
     pub fn record(&self, team_key: &str, event: TeamStateCaptured) -> Result<(), StoreError> {
-        self.0.record(team_key, event, team_key_of)
+        self.inner.record(team_key, event)
     }
 
-    /// Soft-delete a team's fiber (detach) for a team that no longer
-    /// exists or no longer owns any repository, then fence. A later
-    /// [`Self::record`] of the same team key rescues it back to live.
+    /// Soft-delete a team's fiber (detach).
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::DivergedFiber`], [`StoreError::Infrastructure`],
-    /// or [`StoreError::Poisoned`]. A no-op (key never seen / already
-    /// detached) returns `Ok(())`.
+    /// Returns [`StoreError`] if encoding, detaching, or syncing the fiber fails.
     pub fn detach(&self, team_key: &str, event: TeamStateCaptured) -> Result<(), StoreError> {
-        self.0.detach(team_key, event, team_key_of)
+        self.inner.detach(team_key, event)
     }
 
-    /// Fold every team event in committed line order without materialising
-    /// an owned vector.
+    /// Fold every team event in committed line order without materialising an owned vector.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError::Poisoned`] when the store mutex is poisoned.
+    /// Returns [`StoreError::Poisoned`] if the store cache lock is poisoned.
     pub fn fold_events<R>(
         &self,
         init: R,
         fold: impl FnMut(&mut R, &TeamStateCaptured),
     ) -> Result<R, StoreError> {
-        self.0.fold_defined_events(init, fold)
+        self.inner.fold_defined_events(init, fold)
     }
-}
-
-fn warn_pgno_recovery(store: &str, path: &Path, recovery: Option<&RecoveryOutcome>) {
-    if let Some(recovery) = recovery {
-        tracing::warn!(
-            event = "gh_report_pgno_recovery",
-            store,
-            path = %path.display(),
-            reader_error = recovery.reader_error.as_str(),
-            recovered_records = recovery.recovered_records,
-            truncated_bytes = recovery.truncated_bytes,
-            last_durable_offset = recovery.last_durable_offset,
-            manifest_message_count = recovery.manifest_message_count,
-            "gh-report opened recovered pgno store"
-        );
-    }
-}
-
-fn key_of(event: &Event<DomainEvent>) -> std::iter::Once<String> {
-    let domain_key = match event.domain_event() {
-        DomainEvent::RepositoryStateCaptured { domain_key, .. }
-        | DomainEvent::RepositoryDeleted { domain_key, .. } => domain_key,
-    };
-    std::iter::once(domain_key.as_str().to_string())
-}
-
-fn org_key_of(event: &Event<OrgStateCaptured>) -> std::iter::Once<String> {
-    std::iter::once(
-        event
-            .domain_event()
-            .assessment_metadata
-            .organization
-            .as_str()
-            .to_string(),
-    )
-}
-
-fn team_key_of(event: &Event<TeamStateCaptured>) -> std::iter::Once<String> {
-    let domain = event.domain_event();
-    let key = team_domain_key(domain.org.as_str(), domain.team_slug.as_str())
-        .expect("TeamStateCaptured.org/team_slug are NonEmptyEventString, never empty");
-    std::iter::once(key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::sync::{Arc, Mutex};
-
-    use pardosa::store::{EventStore as PardosaStore, PgnoBackend};
-    use tracing_subscriber::fmt::MakeWriter;
-
-    const SYNTHETIC_RECOVERY_RECORDS: u64 = 7;
-
-    #[derive(Clone, Default)]
-    struct VecWriter {
-        buf: Arc<Mutex<Vec<u8>>>,
-    }
-
-    impl VecWriter {
-        fn snapshot(&self) -> String {
-            String::from_utf8(self.buf.lock().expect("buffer mutex").clone()).expect("utf-8")
-        }
-    }
-
-    impl Write for VecWriter {
-        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            self.buf
-                .lock()
-                .expect("buffer mutex")
-                .extend_from_slice(data);
-            Ok(data.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for VecWriter {
-        type Writer = VecWriter;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    fn capture_tracing(f: impl FnOnce()) -> String {
-        let writer = VecWriter::default();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_writer(writer.clone())
-            .with_ansi(false)
-            .with_target(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        writer.snapshot()
-    }
+    use crate::event::team_domain_key;
 
     fn synthetic_domain_event(i: u64) -> DomainEvent {
         let domain_key = format!("domain-{i}");
         let repo_name = format!("repo-{i}");
         DomainEvent::RepositoryStateCaptured {
-            domain_key: pardosa_schema::NonEmptyEventString::try_new(&domain_key)
-                .expect("domain key fits"),
-            repo_name: pardosa_schema::NonEmptyEventString::try_new(&repo_name)
-                .expect("repo name fits"),
-            timestamp: pardosa_schema::Timestamp::from_nanos(i + 1).expect("timestamp fits"),
+            domain_key: NonEmptyEventString::new(&domain_key).expect("domain key fits"),
+            repo_name: NonEmptyEventString::new(&repo_name).expect("repo name fits"),
+            timestamp: Timestamp::new(i + 1).expect("timestamp fits"),
             evidence: None,
         }
-    }
-
-    fn manifest_path(path: &Path) -> std::path::PathBuf {
-        let mut os = path.as_os_str().to_os_string();
-        os.push(".pgix");
-        std::path::PathBuf::from(os)
-    }
-
-    fn synthesize_torn_footer_store(path: &Path, records: u64) -> (u64, u64) {
-        {
-            let store = NativeStore::create_pgno(path).expect("create synthetic store");
-            for i in 0..records {
-                store
-                    .record(&format!("domain-{i}"), synthetic_domain_event(i))
-                    .expect("record synthetic event");
-            }
-        }
-        {
-            let mut store = PardosaStore::<DomainEvent>::open_with_backend(PgnoBackend::open(path))
-                .expect("open backend-backed synthetic store");
-            let _ = store.writer().sync().expect("sync synthetic manifest");
-        }
-        let manifest_path = manifest_path(path);
-        let manifest = pardosa_file::manifest::parse_manifest(
-            &std::fs::read(&manifest_path).expect("synthetic manifest bytes"),
-        )
-        .expect("synthetic manifest parses");
-        assert_eq!(
-            u64::try_from(manifest.records.len()).expect("manifest records fit"),
-            records
-        );
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(path)
-                .expect("open synthetic pgno for torn tail");
-            file.write_all(b"stale-footer-tail")
-                .expect("append torn synthetic tail");
-        }
-        let original_len = std::fs::metadata(path).expect("pgno metadata").len();
-        (manifest.data_end, original_len)
-    }
-
-    #[test]
-    fn synthetic_torn_footer_store_reports_recovery_outcome_and_gh_report_warn() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("events.pgno");
-        let (data_end, original_len) =
-            synthesize_torn_footer_store(&path, SYNTHETIC_RECOVERY_RECORDS);
-
-        let mut opened = None;
-        let output = capture_tracing(|| {
-            opened = Some(NativeStore::open_pgno(&path).expect("open recovered gh-report store"));
-        });
-        let store = opened.expect("store captured");
-        let recovery = store.last_recovery().expect("last recovery");
-
-        assert_eq!(output.matches("pgno_torn_tail_recovered").count(), 1);
-        assert_eq!(output.matches("gh_report_pgno_recovery").count(), 1);
-        assert_eq!(recovery.truncated_bytes, original_len - data_end);
-        assert!(recovery.truncated_bytes > 0);
-        assert_eq!(recovery.last_durable_offset, data_end);
-        assert_eq!(recovery.recovered_records, SYNTHETIC_RECOVERY_RECORDS);
-        assert_eq!(recovery.manifest_message_count, SYNTHETIC_RECOVERY_RECORDS);
-        assert_eq!(
-            u64::try_from(store.events().expect("events").len()).expect("event count fits"),
-            SYNTHETIC_RECOVERY_RECORDS
-        );
     }
 
     #[test]
@@ -670,6 +481,8 @@ mod tests {
             .record("domain-0", synthetic_domain_event(0))
             .expect("record via long-lived handle");
 
+        long_lived.release_exclusion_for_test();
+
         {
             let other_writer = NativeStore::open_pgno(&path).expect("second handle opens");
             other_writer
@@ -680,8 +493,7 @@ mod tests {
         assert_eq!(
             long_lived.events().expect("events before resync").len(),
             1,
-            "long-lived handle must not see the externally-durable write before resync — \
-             this is the staleness the fix targets"
+            "long-lived handle must not see the externally-durable write before resync"
         );
 
         long_lived
@@ -699,16 +511,15 @@ mod tests {
         use crate::event::{
             OrgMembershipFetchStatus, OrphanAttributionInputs, TeamRosterStatusEvent,
         };
-        use pardosa_schema::{EventVec, NonEmptyEventString};
 
         TeamStateCaptured {
-            org: NonEmptyEventString::try_new(org).expect("org fits"),
-            team_slug: NonEmptyEventString::try_new(team_slug).expect("team_slug fits"),
-            members: EventVec::try_from(Vec::new()).expect("empty members fits"),
+            org: NonEmptyEventString::new(org).expect("org fits"),
+            team_slug: NonEmptyEventString::new(team_slug).expect("team_slug fits"),
+            members: EventVec::new(Vec::new()).expect("empty members fits"),
             orphan_attribution_inputs: OrphanAttributionInputs {
                 org_membership_fetch_status: OrgMembershipFetchStatus::Fetched,
             },
-            fetched_at: pardosa_schema::EventString::try_from("2026-07-16T00:00:00Z".to_string())
+            fetched_at: EventString::new("2026-07-16T00:00:00Z".to_string())
                 .expect("fetched_at fits"),
             status: TeamRosterStatusEvent::Complete,
         }

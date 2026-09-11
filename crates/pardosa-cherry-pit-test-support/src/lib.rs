@@ -11,15 +11,15 @@ use cherry_pit_core::{
     AggregateId, CorrelationContext, DomainEvent, EventEnvelope, EventStore, StoreCreateResult,
     StoreError,
 };
-use pardosa::store::{Decode, Encode, Event as PardosaEvent, HasEventSchemaSource};
-use pardosa_fiber_store::{FiberStoreError, ObservedFiberStore};
-use pardosa_schema::GenomeSafe;
+use pardosa::prelude::*;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 const SINGLE_EVENT_ONLY: &str = "PgnoEventStore accepts only single-event batches (create/append); \
      multi-event atomic commit has no primitive in the pardosa substrate today \
      (see bd ghr-00b572de option (a))";
 
-#[derive(Clone, GenomeSafe)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct PgnoEnvelope<Ev> {
     event_id: uuid::Uuid,
     aggregate_id: u64,
@@ -30,66 +30,70 @@ struct PgnoEnvelope<Ev> {
     payload: Ev,
 }
 
-impl<Ev: GenomeSafe> HasEventSchemaSource for PgnoEnvelope<Ev> {
-    const EVENT_SCHEMA_SOURCE: Option<&'static str> = None;
-}
-
-fn aggregate_key<Ev: Clone>(event: &PardosaEvent<PgnoEnvelope<Ev>>) -> std::iter::Once<String> {
-    std::iter::once(event.domain_event().aggregate_id.to_string())
+fn default_claim(epoch: u64) -> OwnershipClaimRecord {
+    OwnershipClaimRecord {
+        epoch,
+        machine_id: [0u8; 16],
+        boot_id: [0u8; 16],
+        process_id: u64::from(std::process::id()),
+        process_start_time_ns: 0,
+        claim_time_ns: 0,
+        operator_label: "test-support".to_string(),
+    }
 }
 
 /// Test-only `.pgno`-backed [`EventStore`] adapter over
-/// `pardosa-fiber-store`'s facade — bridge crate per CHE-0084:R4-R6.
-///
-/// One pardosa fiber per [`AggregateId`] (domain key = the id's decimal
-/// string). `create`/`append` accept only single-event batches: single
-/// pardosa `record()` call is honestly atomic (one `StoreWriter`
-/// commit); a multi-event `Vec` looped over `record()` would let a
-/// crash between calls leave a partial stream durably observable,
-/// violating [`EventStore::append`]'s atomicity contract. See bd
-/// ghr-00b572de.
-pub struct PgnoEventStore<Ev: DomainEvent + GenomeSafe + Encode + Decode> {
-    store: ObservedFiberStore<PgnoEnvelope<Ev>>,
+/// `pardosa`'s facade — bridge crate per CHE-0084:R4-R6.
+pub struct PgnoEventStore<Ev: DomainEvent + Serialize + DeserializeOwned + Clone + Send + 'static> {
+    session: StdMutex<FileWriterSession>,
     next_id: AtomicU64,
     locks: StdMutex<HashMap<u64, Arc<StdMutex<()>>>>,
+    _marker: std::marker::PhantomData<Ev>,
 }
 
-impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> PgnoEventStore<Ev> {
+impl<Ev: DomainEvent + Serialize + DeserializeOwned + Clone + Send + 'static> PgnoEventStore<Ev> {
     /// Create a fresh `.pgno`-backed store, truncating any existing file.
     ///
     /// # Errors
-    ///
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
     /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = ObservedFiberStore::create_pgno(path).map_err(to_store_error)?;
-        Ok(Self::from_store(store))
+        let adapter = FileStorageAdapter::new(path);
+        let _ = std::fs::remove_file(adapter.meta_path());
+        let _ = std::fs::remove_file(adapter.pgno_path());
+        let claim = default_claim(1);
+        let session = adapter.create(&claim).map_err(to_store_error)?;
+        Ok(Self::from_session(session))
     }
 
     /// Open an existing `.pgno`-backed store, rehydrating its fibers and
     /// seeding the `AggregateId` counter from the max id observed.
     ///
     /// # Errors
-    ///
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot open
     /// or fold the backing container.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = ObservedFiberStore::open_pgno(path).map_err(to_store_error)?;
-        Ok(Self::from_store(store))
+        let adapter = FileStorageAdapter::new(path);
+        let epoch = adapter.current_epoch().map_err(to_store_error)?;
+        let session = adapter.open_write(epoch).map_err(to_store_error)?;
+        Ok(Self::from_session(session))
     }
 
-    fn from_store(store: ObservedFiberStore<PgnoEnvelope<Ev>>) -> Self {
-        let max_id = store.all_events().map_or(0, |events| {
-            events
-                .iter()
-                .map(|(_, event)| event.aggregate_id)
-                .max()
-                .unwrap_or(0)
-        });
+    fn from_session(mut session: FileWriterSession) -> Self {
+        let envelopes = session.read_all_envelopes().unwrap_or_default();
+        let max_id = envelopes
+            .iter()
+            .filter_map(|env| {
+                let record = serde_json::from_slice::<PgnoEnvelope<Ev>>(&env.payload).ok()?;
+                Some(record.aggregate_id)
+            })
+            .max()
+            .unwrap_or(0);
         Self {
-            store,
+            session: StdMutex::new(session),
             next_id: AtomicU64::new(max_id),
             locks: StdMutex::new(HashMap::new()),
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -103,36 +107,42 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> PgnoEventStore<Ev> {
     }
 
     fn ordered_stream(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Ev>>, StoreError> {
-        let mut envelopes: Vec<EventEnvelope<Ev>> = self
-            .store
-            .all_events()
-            .map_err(to_store_error)?
-            .into_iter()
-            .filter(|(detached, event)| !detached && event.aggregate_id == id.get())
-            .map(|(_, event)| {
-                let sequence = NonZeroU64::new(event.sequence).ok_or_else(|| {
+        let mut session = self.session.lock().expect("session lock poisoned");
+        let envelopes = session.read_all_envelopes().map_err(to_store_error)?;
+        let mut result = Vec::new();
+        for env in envelopes {
+            if env.header.detached {
+                continue;
+            }
+            let record = serde_json::from_slice::<PgnoEnvelope<Ev>>(&env.payload)
+                .map_err(|e| StoreError::CorruptData(Box::new(e)))?;
+            if record.aggregate_id == id.get() {
+                let sequence = NonZeroU64::new(record.sequence).ok_or_else(|| {
                     StoreError::CorruptData(Box::<dyn std::error::Error + Send + Sync>::from(
                         "stored sequence must be non-zero",
                     ))
                 })?;
-                let timestamp = jiff::Timestamp::from_nanosecond(i128::from(event.timestamp_nanos))
-                    .map_err(|e| StoreError::CorruptData(Box::new(e)))?;
-                EventEnvelope::new(
-                    event.event_id,
-                    id,
-                    sequence,
-                    timestamp,
-                    event.correlation_id,
-                    event.causation_id,
-                    event.payload,
-                )
-                .map_err(|e| StoreError::CorruptData(Box::new(e)))
-            })
-            .collect::<Result<_, _>>()?;
-        envelopes.sort_by_key(EventEnvelope::sequence);
-        EventEnvelope::validate_stream(id, &envelopes)
+                let timestamp =
+                    jiff::Timestamp::from_nanosecond(i128::from(record.timestamp_nanos))
+                        .map_err(|e| StoreError::CorruptData(Box::new(e)))?;
+                result.push(
+                    EventEnvelope::new(
+                        record.event_id,
+                        id,
+                        sequence,
+                        timestamp,
+                        record.correlation_id,
+                        record.causation_id,
+                        record.payload,
+                    )
+                    .map_err(|e| StoreError::CorruptData(Box::new(e)))?,
+                );
+            }
+        }
+        result.sort_by_key(EventEnvelope::sequence);
+        EventEnvelope::validate_stream(id, &result)
             .map_err(|e| StoreError::CorruptData(Box::new(e)))?;
-        Ok(envelopes)
+        Ok(result)
     }
 
     fn record_single(
@@ -154,21 +164,34 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> PgnoEventStore<Ev> {
             causation_id,
             payload,
         };
-        self.store
-            .record(&aggregate_id.to_string(), envelope, aggregate_key)
-            .map_err(to_store_error)
+        let payload_bytes =
+            serde_json::to_vec(&envelope).map_err(|e| StoreError::Infrastructure(Box::new(e)))?;
+        let key = aggregate_id.to_string();
+        let fiber_id = derive_fiber_id(&key);
+        let event_id_bytes = *event_id.as_bytes();
+
+        let mut session = self.session.lock().expect("session lock poisoned");
+        let handle = session.fiber(fiber_id).map_err(to_store_error)?;
+        if handle.is_detached() {
+            session
+                .rescue_fiber(fiber_id, event_id_bytes, payload_bytes)
+                .map_err(to_store_error)?;
+        } else {
+            session
+                .append_to_fiber(fiber_id, event_id_bytes, payload_bytes)
+                .map_err(to_store_error)?;
+        }
+        session.sync().map_err(to_store_error)?;
+        Ok(())
     }
 }
 
-/// Reusable event fixtures for external consumers of [`PgnoEventStore`]
-/// (e.g. `cherry-pit-gateway` test targets) that cannot depend on
-/// `pardosa-schema` directly per CHE-0084:R5 severance.
+/// Reusable event fixtures for external consumers of [`PgnoEventStore`].
 pub mod fixture {
     use cherry_pit_core::DomainEvent;
-    use pardosa_schema::GenomeSafe;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[repr(u8)]
     pub enum RecordedEvent {
         Recorded { value: u32 } = 0,
@@ -189,17 +212,8 @@ pub use scheduler_store::{
 pub mod serde_bridge;
 pub use serde_bridge::{PgnoSerdeStore, SerdeBridgeError, SerdeEnvelopeDto};
 
-fn to_store_error(error: FiberStoreError) -> StoreError {
-    match error {
-        FiberStoreError::ConcurrencyConflict {
-            expected_seq,
-            actual_seq,
-            source,
-        } => StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(format!(
-            "pardosa fiber store concurrency conflict (expected {expected_seq:?}, actual {actual_seq:?}): {source}"
-        ))),
-        other => StoreError::Infrastructure(Box::new(other)),
-    }
+fn to_store_error(error: impl std::error::Error + Send + Sync + 'static) -> StoreError {
+    StoreError::Infrastructure(Box::new(error))
 }
 
 fn single_event_error() -> StoreError {
@@ -208,12 +222,14 @@ fn single_event_error() -> StoreError {
     ))
 }
 
-impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> EventStore for PgnoEventStore<Ev> {
+impl<Ev: DomainEvent + Serialize + DeserializeOwned + Clone + Send + 'static> EventStore
+    for PgnoEventStore<Ev>
+{
     type Event = Ev;
 
     #[expect(
         clippy::unused_async_trait_impl,
-        reason = "test-support store operates on in-memory pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
+        reason = "test-support store operates on sync pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
     )]
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         self.ordered_stream(id)
@@ -221,7 +237,7 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> EventStore for PgnoEventSto
 
     #[expect(
         clippy::unused_async_trait_impl,
-        reason = "test-support store operates on in-memory pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
+        reason = "test-support store operates on sync pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
     )]
     async fn create(
         &self,
@@ -263,7 +279,7 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> EventStore for PgnoEventSto
 
     #[expect(
         clippy::unused_async_trait_impl,
-        reason = "test-support store operates on in-memory pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
+        reason = "test-support store operates on sync pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
     )]
     async fn append(
         &self,
@@ -320,37 +336,12 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> EventStore for PgnoEventSto
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::{Deserialize, Serialize};
     use std::sync::Arc as StdArc;
     use std::thread;
 
-    #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
-    #[repr(u8)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     enum TestEvent {
-        Happened { value: EventStr } = 0,
-    }
-
-    type EventStr = pardosa_schema::EventString<64>;
-
-    impl Serialize for TestEvent {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: serde::Serializer,
-        {
-            let Self::Happened { value } = self;
-            serializer.serialize_str(value.as_str())
-        }
-    }
-
-    impl<'de> Deserialize<'de> for TestEvent {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            let raw = String::deserialize(deserializer)?;
-            let value = EventStr::try_from(raw).map_err(serde::de::Error::custom)?;
-            Ok(Self::Happened { value })
-        }
+        Happened { value: String },
     }
 
     impl DomainEvent for TestEvent {
@@ -361,7 +352,7 @@ mod tests {
 
     fn event(value: &str) -> TestEvent {
         TestEvent::Happened {
-            value: EventStr::try_from(value.to_string()).expect("fits within bound"),
+            value: value.to_string(),
         }
     }
 

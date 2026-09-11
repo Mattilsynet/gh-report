@@ -46,15 +46,13 @@ dependencies = [
  "http",
  "jiff",
  "pardosa",
- "pardosa-fiber-store",
- "pardosa-schema",
- "pardosa-wire",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tower",
+ "uuid",
  "xxhash-rust",
 ]
 
@@ -628,9 +626,6 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "blake3"
@@ -806,8 +801,6 @@ dependencies = [
  "jiff",
  "pardosa",
  "pardosa-cherry-pit-test-support",
- "pardosa-fiber-store",
- "pardosa-schema",
  "proptest",
  "serde",
  "serde_json",
@@ -1160,6 +1153,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "crc32c"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+dependencies = [
+ "rustc_version",
 ]
 
 [[package]]
@@ -1827,10 +1829,6 @@ dependencies = [
  "jsonwebtoken",
  "moka",
  "pardosa",
- "pardosa-fiber-store",
- "pardosa-file",
- "pardosa-nats",
- "pardosa-schema",
  "pem 4.0.0",
  "percent-encoding",
  "proptest",
@@ -2942,25 +2940,12 @@ dependencies = [
 
 [[package]]
 name = "pardosa"
-version = "0.4.0"
+version = "0.5.5"
 dependencies = [
- "async-nats",
  "blake3",
+ "crc32c",
  "pardosa-derive",
- "pardosa-file",
- "pardosa-nats",
- "pardosa-schema",
- "pardosa-wire",
- "proptest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "trybuild",
+ "uuid",
 ]
 
 [[package]]
@@ -2970,8 +2955,6 @@ dependencies = [
  "cherry-pit-core",
  "jiff",
  "pardosa",
- "pardosa-fiber-store",
- "pardosa-schema",
  "serde",
  "serde_json",
  "tempfile",
@@ -2981,105 +2964,11 @@ dependencies = [
 
 [[package]]
 name = "pardosa-derive"
-version = "0.1.0"
+version = "0.5.5"
 dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 3.0.5",
-]
-
-[[package]]
-name = "pardosa-fiber-store"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "pardosa",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "pardosa-file"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "criterion",
- "tempfile",
- "trybuild",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
-name = "pardosa-mint-private-tests"
-version = "0.0.0"
-dependencies = [
- "pardosa",
- "trybuild",
-]
-
-[[package]]
-name = "pardosa-nats"
-version = "0.1.0"
-dependencies = [
- "async-nats",
- "blake3",
- "bytes",
- "futures-util",
- "tempfile",
- "tokio",
- "zeroize",
-]
-
-[[package]]
-name = "pardosa-read"
-version = "0.1.0"
-dependencies = [
- "clap",
- "pardosa",
- "pardosa-nats",
- "pardosa-wire",
- "ron",
- "serde",
- "tokio",
-]
-
-[[package]]
-name = "pardosa-schema"
-version = "0.1.0"
-dependencies = [
- "pardosa-derive",
- "pardosa-wire",
- "proptest",
- "serde",
- "serde_json",
- "trybuild",
- "uuid",
- "xxhash-rust",
-]
-
-[[package]]
-name = "pardosa-test-support-harness"
-version = "0.0.0"
-dependencies = [
- "async-nats",
- "pardosa",
- "pardosa-file",
- "pardosa-nats",
- "proptest",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "pardosa-wire"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "criterion",
- "proptest",
- "uuid",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3725,20 +3614,6 @@ dependencies = [
  "libc",
  "untrusted 0.9.0",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "ron"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81116b9531d61eabc41aeb228e4b6b2435bcca3233b98cf3b3077d4e6e9debb3"
-dependencies = [
- "bitflags 2.13.2",
- "once_cell",
- "serde",
- "serde_derive",
- "typeid",
- "unicode-ident",
 ]
 
 [[package]]
@@ -5027,12 +4902,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "typeid"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "typenum"

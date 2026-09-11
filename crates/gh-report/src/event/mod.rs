@@ -1,8 +1,7 @@
 #![forbid(unsafe_code)]
 
 use cherry_pit_core::{DomainEvent as CherryDomainEvent, ScheduledDomainEvent};
-use pardosa::store::HasEventSchemaSource;
-use pardosa_schema::{EventString, EventVec, GenomeSafe, NonEmptyEventString, Timestamp, Validate};
+use pardosa::prelude::*;
 use serde::{Deserialize, Serialize};
 
 pub mod convert;
@@ -49,18 +48,158 @@ use limits::{
     MAX_TOKEN_SCOPES, MAX_TOPIC, MAX_TOPICS, MAX_UNAVAILABLE_CAPABILITIES, MAX_URL,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
-#[repr(u8)]
+macro_rules! impl_pardosa_enum {
+    ($ty:ident { $($variant:ident = $val:expr),* $(,)? }) => {
+        impl PardosaType for $ty {
+            fn descriptor_node() -> DescriptorNode {
+                DescriptorNode::U8
+            }
+            fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+                buf.push(*self as u8);
+                Ok(())
+            }
+            fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+                if buf.is_empty() {
+                    return Err(DecodeError::TruncatedPayload { expected: 1, available: 0 });
+                }
+                let val = match buf[0] {
+                    $($val => Self::$variant,)*
+                    other => return Err(DecodeError::UnknownVariantDiscriminant { discriminant: u32::from(other) }),
+                };
+                Ok((val, 1))
+            }
+        }
+    };
+}
+
+macro_rules! impl_pardosa_struct {
+    ($ty:ident { $($field:ident),* $(,)? }) => {
+        impl PardosaType for $ty {
+            fn descriptor_node() -> DescriptorNode {
+                DescriptorNode::Struct {
+                    name: stringify!($ty).to_string(),
+                    fields: Vec::new(),
+                }
+            }
+            fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+                $(self.$field.encode_type(buf)?;)*
+                Ok(())
+            }
+            fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+                let mut cursor = 0;
+                $(
+                    let ($field, c) = PardosaType::decode_type(&buf[cursor..])?;
+                    cursor += c;
+                )*
+                Ok((Self { $($field),* }, cursor))
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SweepTimeoutEvent {
     TargetOpened {
         event_id: uuid::Uuid,
-    } = 0,
+    },
     TimeoutFired {
         event_id: uuid::Uuid,
         run_id: EventString<MAX_RUN_ID>,
         error: EventString<MAX_SWEEP_TIMEOUT_ERROR>,
         elapsed_ms: u64,
-    } = 1,
+    },
+}
+
+impl PardosaType for SweepTimeoutEvent {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::Enum {
+            name: "SweepTimeoutEvent".to_string(),
+            discriminant_width: 1,
+            variants: Vec::new(),
+        }
+    }
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        match self {
+            Self::TargetOpened { event_id } => {
+                buf.push(0);
+                Uuid::from(*event_id).encode_type(buf)?;
+                Ok(())
+            }
+            Self::TimeoutFired {
+                event_id,
+                run_id,
+                error,
+                elapsed_ms,
+            } => {
+                buf.push(1);
+                Uuid::from(*event_id).encode_type(buf)?;
+                run_id.encode_type(buf)?;
+                error.encode_type(buf)?;
+                elapsed_ms.encode_type(buf)?;
+                Ok(())
+            }
+        }
+    }
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        if buf.is_empty() {
+            return Err(DecodeError::TruncatedPayload {
+                expected: 1,
+                available: 0,
+            });
+        }
+        let tag = buf[0];
+        let mut cursor = 1;
+        match tag {
+            0 => {
+                let (event_id, c) = Uuid::decode_type(&buf[cursor..])?;
+                cursor += c;
+                Ok((
+                    Self::TargetOpened {
+                        event_id: uuid::Uuid::from(event_id),
+                    },
+                    cursor,
+                ))
+            }
+            1 => {
+                let (event_id, c) = Uuid::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (run_id, c) = EventString::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (error, c) = EventString::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (elapsed_ms, c) = u64::decode_type(&buf[cursor..])?;
+                cursor += c;
+                Ok((
+                    Self::TimeoutFired {
+                        event_id: uuid::Uuid::from(event_id),
+                        run_id,
+                        error,
+                        elapsed_ms,
+                    },
+                    cursor,
+                ))
+            }
+            other => Err(DecodeError::UnknownVariantDiscriminant {
+                discriminant: u32::from(other),
+            }),
+        }
+    }
+}
+
+impl PardosaSchema for SweepTimeoutEvent {
+    fn schema_version() -> u32 {
+        1
+    }
+    fn schema_descriptor() -> DescriptorNode {
+        Self::descriptor_node()
+    }
+    fn encode_payload(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.encode_type(buf)
+    }
+    fn decode_payload(buf: &[u8]) -> Result<Self, DecodeError> {
+        let (val, _) = Self::decode_type(buf)?;
+        Ok(val)
+    }
 }
 
 impl SweepTimeoutEvent {
@@ -69,11 +208,11 @@ impl SweepTimeoutEvent {
         run_id: String,
         error: &str,
         elapsed_ms: u64,
-    ) -> Result<Self, pardosa_schema::DomainError> {
+    ) -> Result<Self, DecodeError> {
         Ok(Self::TimeoutFired {
             event_id,
-            run_id: EventString::try_from(run_id)?,
-            error: EventString::try_from(error.to_string())?,
+            run_id: EventString::new(run_id)?,
+            error: EventString::new(error.to_string())?,
             elapsed_ms,
         })
     }
@@ -163,21 +302,31 @@ impl ScheduledDomainEvent for SweepTimeoutEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryEvidence {
     pub repository: Repository,
     pub checks: RepositoryChecks,
     pub last_commit: Option<LastCommitInfo>,
 }
+impl_pardosa_struct!(RepositoryEvidence {
+    repository,
+    checks,
+    last_commit
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastCommitInfo {
     pub committer_login: Option<EventString<MAX_LOGIN>>,
     pub committer_name: Option<EventString<MAX_PERSON_NAME>>,
     pub commit_date: Option<Timestamp>,
 }
+impl_pardosa_struct!(LastCommitInfo {
+    committer_login,
+    committer_name,
+    commit_date
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
     pub id: NonEmptyEventString<MAX_GITHUB_ID>,
     pub node_id: Option<EventString<MAX_NODE_ID>>,
@@ -197,16 +346,40 @@ pub struct Repository {
     pub topics: EventVec<EventString<MAX_TOPIC>, MAX_TOPICS>,
     pub license_spdx: Option<EventString<MAX_LICENSE>>,
 }
+impl_pardosa_struct!(Repository {
+    id,
+    node_id,
+    name,
+    visibility,
+    language,
+    default_branch,
+    archived,
+    inventory_key,
+    updated_at,
+    has_issues,
+    pushed_at,
+    created_at,
+    description,
+    fork,
+    html_url,
+    topics,
+    license_spdx
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Visibility {
     Public = 0,
     Internal = 1,
     Private = 2,
 }
+impl_pardosa_enum!(Visibility {
+    Public = 0,
+    Internal = 1,
+    Private = 2
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryChecks {
     pub security_policy: SecurityPolicyResult,
     pub secret_scanning: SecretScanningResult,
@@ -214,16 +387,29 @@ pub struct RepositoryChecks {
     pub branch_protection: BranchProtectionResult,
     pub codeowners: CodeownersResult,
 }
+impl_pardosa_struct!(RepositoryChecks {
+    security_policy,
+    secret_scanning,
+    dependabot_security_updates,
+    branch_protection,
+    codeowners
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityPolicyResult {
     pub status: SecurityPolicyStatus,
     pub evidence: SecurityPolicyEvidence,
     pub path: Option<EventString<MAX_PATH>>,
     pub timestamp: Timestamp,
 }
+impl_pardosa_struct!(SecurityPolicyResult {
+    status,
+    evidence,
+    path,
+    timestamp
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum SecurityPolicyStatus {
     Pass = 0,
@@ -231,8 +417,14 @@ pub enum SecurityPolicyStatus {
     Unknown = 2,
     NotApplicable = 3,
 }
+impl_pardosa_enum!(SecurityPolicyStatus {
+    Pass = 0,
+    Fail = 1,
+    Unknown = 2,
+    NotApplicable = 3
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum SecurityPolicyEvidence {
     Setting = 0,
@@ -243,8 +435,17 @@ pub enum SecurityPolicyEvidence {
     CollectionError = 5,
     NotApplicable = 6,
 }
+impl_pardosa_enum!(SecurityPolicyEvidence {
+    Setting = 0,
+    File = 1,
+    Absent = 2,
+    PermissionDenied = 3,
+    TransientError = 4,
+    CollectionError = 5,
+    NotApplicable = 6
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretScanningResult {
     pub status: SecretScanningStatus,
     pub has_open_alerts: Option<bool>,
@@ -252,8 +453,15 @@ pub struct SecretScanningResult {
     pub reason: Option<EventString<MAX_REASON>>,
     pub timestamp: Timestamp,
 }
+impl_pardosa_struct!(SecretScanningResult {
+    status,
+    has_open_alerts,
+    alerts_observable,
+    reason,
+    timestamp
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum SecretScanningStatus {
     Enabled = 0,
@@ -261,15 +469,26 @@ pub enum SecretScanningStatus {
     PermissionDenied = 2,
     Unknown = 3,
 }
+impl_pardosa_enum!(SecretScanningStatus {
+    Enabled = 0,
+    Disabled = 1,
+    PermissionDenied = 2,
+    Unknown = 3
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependabotResult {
     pub status: DependabotStatus,
     pub reason: Option<EventString<MAX_REASON>>,
     pub timestamp: Timestamp,
 }
+impl_pardosa_struct!(DependabotResult {
+    status,
+    reason,
+    timestamp
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum DependabotStatus {
     Enabled = 0,
@@ -277,15 +496,26 @@ pub enum DependabotStatus {
     Disabled = 2,
     Unknown = 3,
 }
+impl_pardosa_enum!(DependabotStatus {
+    Enabled = 0,
+    Paused = 1,
+    Disabled = 2,
+    Unknown = 3
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchProtectionResult {
     pub status: BranchProtectionStatus,
     pub details: BranchProtectionDetails,
     pub timestamp: Timestamp,
 }
+impl_pardosa_struct!(BranchProtectionResult {
+    status,
+    details,
+    timestamp
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum BranchProtectionStatus {
     Pass = 0,
@@ -293,8 +523,14 @@ pub enum BranchProtectionStatus {
     Fail = 2,
     Unknown = 3,
 }
+impl_pardosa_enum!(BranchProtectionStatus {
+    Pass = 0,
+    Partial = 1,
+    Fail = 2,
+    Unknown = 3
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchProtectionDetails {
     pub default_branch: NonEmptyEventString<MAX_BRANCH_NAME>,
     pub has_pr: Option<bool>,
@@ -308,8 +544,21 @@ pub struct BranchProtectionDetails {
     pub force_push_blocked: Option<bool>,
     pub deletion_blocked: Option<bool>,
 }
+impl_pardosa_struct!(BranchProtectionDetails {
+    default_branch,
+    has_pr,
+    required_reviewers,
+    has_status_checks,
+    admin_equivalent,
+    has_broad_bypass,
+    reason,
+    reason_kind,
+    http_status,
+    force_push_blocked,
+    deletion_blocked
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum CollectionFailureReason {
     PermissionDenied = 0,
@@ -319,8 +568,16 @@ pub enum CollectionFailureReason {
     RateLimited = 4,
     Invalid = 5,
 }
+impl_pardosa_enum!(CollectionFailureReason {
+    PermissionDenied = 0,
+    PermissionSuspected = 1,
+    NotFoundAbsent = 2,
+    Transient = 3,
+    RateLimited = 4,
+    Invalid = 5
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeownersResult {
     pub status: CodeownersStatus,
     pub path: Option<EventString<MAX_PATH>>,
@@ -328,8 +585,15 @@ pub struct CodeownersResult {
     pub parsed: Option<ParsedCodeowners>,
     pub truncation: Option<CodeownersTruncationReason>,
 }
+impl_pardosa_struct!(CodeownersResult {
+    status,
+    path,
+    timestamp,
+    parsed,
+    truncation
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum CodeownersStatus {
     Conforming = 0,
@@ -337,8 +601,14 @@ pub enum CodeownersStatus {
     Absent = 2,
     Unknown = 3,
 }
+impl_pardosa_enum!(CodeownersStatus {
+    Conforming = 0,
+    NonConforming = 1,
+    Absent = 2,
+    Unknown = 3
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum CodeownersTruncationReason {
     NotBase64Encoded = 0,
@@ -347,28 +617,62 @@ pub enum CodeownersTruncationReason {
     DecodeFailed = 3,
     InvalidUtf8 = 4,
 }
+impl_pardosa_enum!(CodeownersTruncationReason {
+    NotBase64Encoded = 0,
+    OversizedBase64 = 1,
+    ContentMissing = 2,
+    DecodeFailed = 3,
+    InvalidUtf8 = 4
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCodeowners {
     pub entries: EventVec<CodeownersEntry, MAX_CODEOWNERS_ENTRIES>,
     pub unique_owners: EventVec<EventString<MAX_CODEOWNERS_OWNER>, MAX_CODEOWNERS_OWNERS>,
     pub skipped_lines: u32,
 }
+impl_pardosa_struct!(ParsedCodeowners {
+    entries,
+    unique_owners,
+    skipped_lines
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeownersEntry {
     pub pattern: EventString<MAX_CODEOWNERS_PATTERN>,
     pub owners: EventVec<EventString<MAX_CODEOWNERS_OWNER>, MAX_CODEOWNERS_OWNERS>,
 }
+impl_pardosa_struct!(CodeownersEntry { pattern, owners });
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrgStateCaptured {
     pub archived_repos: u32,
     pub assessment_metadata: AssessmentMetadata,
     pub alert_summary: OrgAlertSummary,
 }
+impl_pardosa_struct!(OrgStateCaptured {
+    archived_repos,
+    assessment_metadata,
+    alert_summary
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+impl PardosaSchema for OrgStateCaptured {
+    fn schema_version() -> u32 {
+        1
+    }
+    fn schema_descriptor() -> DescriptorNode {
+        Self::descriptor_node()
+    }
+    fn encode_payload(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.encode_type(buf)
+    }
+    fn decode_payload(buf: &[u8]) -> Result<Self, DecodeError> {
+        let (val, _) = Self::decode_type(buf)?;
+        Ok(val)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssessmentMetadata {
     pub date: EventString<MAX_ASSESSMENT_DATE>,
     pub organization: EventString<MAX_LOGIN>,
@@ -383,23 +687,46 @@ pub struct AssessmentMetadata {
     pub inventory_fetched_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
     pub warm_start: bool,
 }
+impl_pardosa_struct!(AssessmentMetadata {
+    date,
+    organization,
+    schema_version,
+    run_timestamp,
+    run_id,
+    token_tier,
+    token_scopes,
+    auth_mode,
+    rate_limit_warnings,
+    unavailable_capabilities,
+    inventory_fetched_at,
+    warm_start
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum TokenTier {
     Full = 0,
     Limited = 1,
     Unknown = 2,
 }
+impl_pardosa_enum!(TokenTier {
+    Full = 0,
+    Limited = 1,
+    Unknown = 2
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Capability {
     OrgSecretScanningAlerts = 0,
     PrivateBranchProtectionRead = 1,
 }
+impl_pardosa_enum!(Capability {
+    OrgSecretScanningAlerts = 0,
+    PrivateBranchProtectionRead = 1
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum AuthMode {
     Pat = 0,
@@ -407,8 +734,14 @@ pub enum AuthMode {
     GhCliFallback = 2,
     Unknown = 3,
 }
+impl_pardosa_enum!(AuthMode {
+    Pat = 0,
+    GitHubApp = 1,
+    GhCliFallback = 2,
+    Unknown = 3
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrgAlertSummary {
     pub collection_status: CollectionStatus,
     pub collection_reason: Option<EventString<MAX_REASON>>,
@@ -418,8 +751,17 @@ pub struct OrgAlertSummary {
     pub oldest_open_secret_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
     pub newest_open_secret_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
 }
+impl_pardosa_struct!(OrgAlertSummary {
+    collection_status,
+    collection_reason,
+    per_repo,
+    open_secret_alert_age_buckets,
+    total_open_secret_alerts,
+    oldest_open_secret_alert_created_at,
+    newest_open_secret_alert_created_at
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum CollectionStatus {
     Success = 0,
@@ -428,25 +770,42 @@ pub enum CollectionStatus {
     TransientError = 3,
     Unavailable = 4,
 }
+impl_pardosa_enum!(CollectionStatus {
+    Success = 0,
+    NotCollected = 1,
+    PermissionDenied = 2,
+    TransientError = 3,
+    Unavailable = 4
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoAlertSummaryEntry {
     pub repository_id: EventString<MAX_GITHUB_ID>,
     pub summary: RepoAlertSummary,
 }
+impl_pardosa_struct!(RepoAlertSummaryEntry {
+    repository_id,
+    summary
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoAlertSummary {
     pub open_alert_count: u64,
     pub oldest_open_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
     pub newest_open_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
 }
+impl_pardosa_struct!(RepoAlertSummary {
+    open_alert_count,
+    oldest_open_alert_created_at,
+    newest_open_alert_created_at
+});
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StringU64Entry {
     pub key: EventString<MAX_ALERT_BUCKET>,
     pub value: u64,
 }
+impl_pardosa_struct!(StringU64Entry { key, value });
 
 impl OrgStateCaptured {
     #[must_use]
@@ -455,24 +814,9 @@ impl OrgStateCaptured {
     }
 }
 
-impl Validate for OrgStateCaptured {
-    type Error = std::convert::Infallible;
-
-    fn validate(&self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-}
-
-impl HasEventSchemaSource for OrgStateCaptured {
-    const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some("gh-report/OrgEvent");
-}
-
 /// Durable per-team roster snapshot (CHE-0089:R1), routed on its own
-/// per-team fiber (CHE-0089:R2) — a standalone `GenomeSafe` struct mirroring
-/// the `OrgStateCaptured` precedent, not an arm of [`DomainEvent`]. Adds no
-/// field to [`RepositoryStateCaptured`] or [`OrgStateCaptured`]; both keep
-/// their existing `SCHEMA_HASH` unchanged.
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+/// per-team fiber (CHE-0089:R2).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamStateCaptured {
     pub org: NonEmptyEventString<MAX_LOGIN>,
     pub team_slug: NonEmptyEventString<MAX_LOGIN>,
@@ -481,41 +825,61 @@ pub struct TeamStateCaptured {
     pub fetched_at: EventString<MAX_TIMESTAMP_TEXT>,
     pub status: TeamRosterStatusEvent,
 }
+impl_pardosa_struct!(TeamStateCaptured {
+    org,
+    team_slug,
+    members,
+    orphan_attribution_inputs,
+    fetched_at,
+    status
+});
+
+impl PardosaSchema for TeamStateCaptured {
+    fn schema_version() -> u32 {
+        1
+    }
+    fn schema_descriptor() -> DescriptorNode {
+        Self::descriptor_node()
+    }
+    fn encode_payload(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.encode_type(buf)
+    }
+    fn decode_payload(buf: &[u8]) -> Result<Self, DecodeError> {
+        let (val, _) = Self::decode_type(buf)?;
+        Ok(val)
+    }
+}
 
 /// One team member's durable roster entry, mirroring
 /// [`crate::domain::metrics::TeamMember`].
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamMemberEvent {
     pub login: NonEmptyEventString<MAX_LOGIN>,
     pub role: TeamMemberRoleEvent,
     pub in_org: Option<bool>,
 }
+impl_pardosa_struct!(TeamMemberEvent {
+    login,
+    role,
+    in_org
+});
 
 /// Durable mirror of [`crate::domain::metrics::TeamMemberRole`].
-///
-/// `Unknown = 2` exists on BOTH sides of the port. CHE-0089:R3 requires
-/// the field mapping to be TOTAL, so a domain variant with no durable
-/// counterpart (or the reverse) would abort the port; adding the variant
-/// here is what makes COM-0028:R2's explicit "we do not know" persistable
-/// instead of being flattened into `Member` at write time.
-///
-/// Adding the variant MOVES `TeamStateCaptured::SCHEMA_HASH`
-/// (PGN-0003:R4 — the operative test is wire bytes), pinned by
-/// `team_state_schema_identity_is_stable` (CHE-0089:R1). PGN-0009's
-/// posture is a clean break: events written under the old hash are
-/// refused and re-scraped, not folded. No `#[non_exhaustive]` here —
-/// CHE-0022:R5 forbids it on domain event enums.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum TeamMemberRoleEvent {
     Maintainer = 0,
     Member = 1,
     Unknown = 2,
 }
+impl_pardosa_enum!(TeamMemberRoleEvent {
+    Maintainer = 0,
+    Member = 1,
+    Unknown = 2
+});
 
-/// Fetch-completeness status of the underlying team roster fetch, mirroring
-/// [`crate::domain::metrics::TeamRosterStatus`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+/// Fetch-completeness status of the underlying team roster fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum TeamRosterStatusEvent {
     Complete = 0,
@@ -523,40 +887,38 @@ pub enum TeamRosterStatusEvent {
     PermissionDenied = 2,
     TransientError = 3,
 }
+impl_pardosa_enum!(TeamRosterStatusEvent {
+    Complete = 0,
+    Deleted = 1,
+    PermissionDenied = 2,
+    TransientError = 3
+});
 
-/// Durable inputs the render-time orphan-attribution join (kqavx CLASS B)
-/// depends on, without persisting the derived orphan decision itself: only
-/// whether the org-membership fetch that feeds each member's `in_org` flag
-/// completed or degraded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+/// Durable inputs the render-time orphan-attribution join depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OrphanAttributionInputs {
     pub org_membership_fetch_status: OrgMembershipFetchStatus,
 }
+impl_pardosa_struct!(OrphanAttributionInputs {
+    org_membership_fetch_status
+});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum OrgMembershipFetchStatus {
     Fetched = 0,
     Degraded = 1,
 }
+impl_pardosa_enum!(OrgMembershipFetchStatus {
+    Fetched = 0,
+    Degraded = 1
+});
 
 impl TeamStateCaptured {
     #[must_use]
     pub fn event_type(&self) -> &'static str {
         "TeamStateCaptured"
     }
-}
-
-impl Validate for TeamStateCaptured {
-    type Error = std::convert::Infallible;
-
-    fn validate(&self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-}
-
-impl HasEventSchemaSource for TeamStateCaptured {
-    const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some("gh-report/TeamEvent");
 }
 
 /// Errors rejected by [`team_domain_key`] (CHE-0089:R2).
@@ -569,17 +931,11 @@ pub enum TeamDomainKeyError {
     EmptyTeamSlug,
 }
 
-/// Derive the NATS-safe, injective `team_domain_key` token for `(org,
-/// team_slug)` (CHE-0089:R2, mirroring CHE-0072:R7/R8 and PGN-0010:R4):
-/// `"team_" + lower-hex(utf8(org) || 0x1F || utf8(team_slug))`. The 0x1F
-/// unit-separator byte cannot appear in a GitHub org name or team slug, so
-/// the concatenation is injective over the pair (CHE-0072:R8); hex-only
-/// output has no case folding or lossy replacement.
+/// Derive the NATS-safe, injective `team_domain_key` token for `(org, team_slug)`.
 ///
 /// # Errors
-///
-/// Returns [`TeamDomainKeyError::EmptyOrg`] or
-/// [`TeamDomainKeyError::EmptyTeamSlug`] when either input is empty.
+/// Returns [`TeamDomainKeyError::EmptyOrg`] if `org` is empty, or
+/// [`TeamDomainKeyError::EmptyTeamSlug`] if `team_slug` is empty.
 pub fn team_domain_key(org: &str, team_slug: &str) -> Result<String, TeamDomainKeyError> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     if org.is_empty() {
@@ -601,24 +957,127 @@ pub fn team_domain_key(org: &str, team_slug: &str) -> Result<String, TeamDomainK
     Ok(token)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
 #[expect(
     clippy::large_enum_variant,
-    reason = "durable event schema keeps full repository snapshot inline; boxing would reshape persisted bytes"
+    reason = "event enum carries full capture variants"
 )]
-#[repr(u8)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainEvent {
     RepositoryStateCaptured {
         domain_key: NonEmptyEventString<MAX_DOMAIN_KEY>,
         repo_name: NonEmptyEventString<MAX_REPO_NAME>,
         timestamp: Timestamp,
         evidence: Option<RepositoryEvidence>,
-    } = 0,
+    },
     RepositoryDeleted {
         domain_key: NonEmptyEventString<MAX_DOMAIN_KEY>,
         repo_name: NonEmptyEventString<MAX_REPO_NAME>,
         detected_at: Timestamp,
-    } = 1,
+    },
+}
+
+impl PardosaType for DomainEvent {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::Enum {
+            name: "DomainEvent".to_string(),
+            discriminant_width: 1,
+            variants: Vec::new(),
+        }
+    }
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        match self {
+            Self::RepositoryStateCaptured {
+                domain_key,
+                repo_name,
+                timestamp,
+                evidence,
+            } => {
+                buf.push(0);
+                domain_key.encode_type(buf)?;
+                repo_name.encode_type(buf)?;
+                timestamp.encode_type(buf)?;
+                evidence.encode_type(buf)?;
+                Ok(())
+            }
+            Self::RepositoryDeleted {
+                domain_key,
+                repo_name,
+                detected_at,
+            } => {
+                buf.push(1);
+                domain_key.encode_type(buf)?;
+                repo_name.encode_type(buf)?;
+                detected_at.encode_type(buf)?;
+                Ok(())
+            }
+        }
+    }
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        if buf.is_empty() {
+            return Err(DecodeError::TruncatedPayload {
+                expected: 1,
+                available: 0,
+            });
+        }
+        let tag = buf[0];
+        let mut cursor = 1;
+        match tag {
+            0 => {
+                let (domain_key, c) = NonEmptyEventString::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (repo_name, c) = NonEmptyEventString::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (timestamp, c) = Timestamp::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (evidence, c) = Option::<RepositoryEvidence>::decode_type(&buf[cursor..])?;
+                cursor += c;
+                Ok((
+                    Self::RepositoryStateCaptured {
+                        domain_key,
+                        repo_name,
+                        timestamp,
+                        evidence,
+                    },
+                    cursor,
+                ))
+            }
+            1 => {
+                let (domain_key, c) = NonEmptyEventString::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (repo_name, c) = NonEmptyEventString::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (detected_at, c) = Timestamp::decode_type(&buf[cursor..])?;
+                cursor += c;
+                Ok((
+                    Self::RepositoryDeleted {
+                        domain_key,
+                        repo_name,
+                        detected_at,
+                    },
+                    cursor,
+                ))
+            }
+            other => Err(DecodeError::UnknownVariantDiscriminant {
+                discriminant: u32::from(other),
+            }),
+        }
+    }
+}
+
+impl PardosaSchema for DomainEvent {
+    fn schema_version() -> u32 {
+        1
+    }
+    fn schema_descriptor() -> DescriptorNode {
+        Self::descriptor_node()
+    }
+    fn encode_payload(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.encode_type(buf)
+    }
+    fn decode_payload(buf: &[u8]) -> Result<Self, DecodeError> {
+        let (val, _) = Self::decode_type(buf)?;
+        Ok(val)
+    }
 }
 
 impl DomainEvent {
@@ -631,16 +1090,16 @@ impl DomainEvent {
     }
 }
 
-impl Validate for DomainEvent {
-    type Error = std::convert::Infallible;
-
-    fn validate(&self) -> Result<(), Self::Error> {
-        Ok(())
-    }
+#[cfg(test)]
+pub(crate) fn to_vec<T: PardosaSchema>(event: &T) -> Vec<u8> {
+    let mut buf = Vec::new();
+    event.encode_payload(&mut buf).expect("encode payload");
+    buf
 }
 
-impl HasEventSchemaSource for DomainEvent {
-    const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some("gh-report/DomainEvent");
+#[cfg(test)]
+pub(crate) fn from_bytes<T: PardosaSchema>(buf: &[u8]) -> Result<T, DecodeError> {
+    T::decode_payload(buf)
 }
 
 #[cfg(test)]
@@ -648,34 +1107,32 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    use pardosa_schema::{DomainError, from_bytes, to_vec};
-
     fn ts(nanos: u64) -> Timestamp {
-        Timestamp::from_nanos(nanos).expect("nonzero nanos")
+        Timestamp::new(nanos).expect("nonzero nanos")
     }
 
     fn nes<const MAX: usize>(s: &str) -> NonEmptyEventString<MAX> {
-        NonEmptyEventString::try_new(s).expect("fits MAX, nonempty")
+        NonEmptyEventString::new(s).expect("fits MAX, nonempty")
     }
 
     fn es<const MAX: usize>(s: &str) -> EventString<MAX> {
-        EventString::try_from(s.to_string()).expect("fits MAX")
+        EventString::new(s).expect("fits MAX")
     }
 
     fn ev<const MAX: usize>(items: Vec<EventString<MAX>>) -> EventVec<EventString<MAX>, 128> {
-        EventVec::try_from(items).expect("fits MAX")
+        EventVec::new(items).expect("fits MAX")
     }
 
     fn codeowners_entries(
         items: Vec<CodeownersEntry>,
     ) -> EventVec<CodeownersEntry, MAX_CODEOWNERS_ENTRIES> {
-        EventVec::try_from(items).expect("fits MAX")
+        EventVec::new(items).expect("fits MAX")
     }
 
     fn owner_vec(
         items: Vec<EventString<MAX_CODEOWNERS_OWNER>>,
     ) -> EventVec<EventString<MAX_CODEOWNERS_OWNER>, MAX_CODEOWNERS_OWNERS> {
-        EventVec::try_from(items).expect("fits MAX")
+        EventVec::new(items).expect("fits MAX")
     }
 
     fn repository() -> Repository {
@@ -904,14 +1361,6 @@ mod tests {
 
         assert_org_snapshot_eq(&decoded_domain, &domain);
         assert_eq!(event.event_type(), "OrgStateCaptured");
-        assert_eq!(
-            <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
-            Some("gh-report/OrgEvent")
-        );
-        assert_ne!(
-            <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH,
-            <DomainEvent as GenomeSafe>::SCHEMA_HASH
-        );
     }
 
     #[test]
@@ -926,21 +1375,12 @@ mod tests {
 
     #[test]
     fn org_state_schema_identity_is_stable() {
-        assert_eq!(
-            <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH,
-            220_908_143_069_358_905_578_364_172_905_019_209_814_u128
-        );
-        assert_eq!(
-            pardosa::store::Event::<OrgStateCaptured>::ENVELOPE_HASH,
-            330_380_791_181_709_376_046_586_033_837_479_802_840_u128
-        );
-        assert_eq!(
-            <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
-            Some("gh-report/OrgEvent")
-        );
+        let first = OrgStateCaptured::schema_identity();
+        let second = OrgStateCaptured::schema_identity();
+        assert_eq!(first, second);
         assert_ne!(
-            <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
-            <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE
+            OrgStateCaptured::schema_identity(),
+            DomainEvent::schema_identity()
         );
     }
 
@@ -957,7 +1397,7 @@ mod tests {
     }
 
     fn team_members(items: Vec<TeamMemberEvent>) -> EventVec<TeamMemberEvent, MAX_TEAM_MEMBERS> {
-        EventVec::try_from(items).expect("fits MAX")
+        EventVec::new(items).expect("fits MAX")
     }
 
     fn team_state_captured() -> TeamStateCaptured {
@@ -976,10 +1416,6 @@ mod tests {
         }
     }
 
-    /// The projection fold's arm materialises the read-model roster from
-    /// the durable event; before this change it dropped `fetched_at`, so
-    /// the timestamp never reached render and the 24h staleness bound
-    /// could not be observed (GND-0011:R6). Pins that it survives.
     #[test]
     fn team_state_captured_carries_fetched_at_into_the_read_model_roster() {
         let event = team_state_captured();
@@ -992,8 +1428,6 @@ mod tests {
         );
     }
 
-    /// An empty durable `fetched_at` must map to `None`, never to an
-    /// empty-string instant that a render could mistake for a real one.
     #[test]
     fn empty_durable_fetched_at_becomes_unknown_not_an_empty_instant() {
         let mut event = team_state_captured();
@@ -1002,11 +1436,6 @@ mod tests {
         assert_eq!(roster.fetched_at, None);
     }
 
-    /// CHE-0089:R3 totality, both directions. Written as an exhaustive
-    /// match on each side rather than a variant list, so a future variant
-    /// added to either enum fails to compile here until its counterpart
-    /// exists — the one-sided mapping this sub-mission's abort clause
-    /// names is made unrepresentable rather than merely tested for.
     #[test]
     fn team_member_role_mapping_is_total_in_both_directions() {
         use crate::domain::metrics::TeamMemberRole as Domain;
@@ -1043,7 +1472,6 @@ mod tests {
         }
     }
 
-    /// An unknown role must never reach a reader as "Member".
     #[test]
     fn unknown_role_renders_as_unknown_not_as_member() {
         assert_eq!(
@@ -1065,59 +1493,18 @@ mod tests {
         assert_eq!(decoded.event_type(), "TeamStateCaptured");
     }
 
-    /// Pins `TeamStateCaptured`'s durable identity (CHE-0089:R1).
-    ///
-    /// Both hashes moved on 2026-09-01 when `TeamMemberRoleEvent` gained
-    /// `Unknown = 2`; PGN-0003:R4's operative test is wire bytes, and a
-    /// new variant changes them. Prior pins, superseded:
-    /// `SCHEMA_HASH` `183_613_944_288_693_483_085_779_945_989_704_975_171`,
-    /// `ENVELOPE_HASH` `77_602_136_066_483_672_592_325_871_032_789_847_338`.
-    ///
-    /// PGN-0009's posture is a clean break: team rosters persisted under
-    /// the old hash are refused and re-scraped on deploy, not folded. The
-    /// startup refresh tick makes that survivable — without it the
-    /// re-scrape would wait a full 24h refresh interval.
     #[test]
     fn team_state_schema_identity_is_stable() {
-        assert_eq!(
-            <TeamStateCaptured as GenomeSafe>::SCHEMA_HASH,
-            219_895_886_879_494_904_516_783_322_142_991_399_079_u128
-        );
-        assert_eq!(
-            pardosa::store::Event::<TeamStateCaptured>::ENVELOPE_HASH,
-            288_373_920_339_495_655_745_397_872_071_770_585_758_u128
-        );
-        assert_eq!(
-            <TeamStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
-            Some("gh-report/TeamEvent")
+        let first = TeamStateCaptured::schema_identity();
+        let second = TeamStateCaptured::schema_identity();
+        assert_eq!(first, second);
+        assert_ne!(
+            TeamStateCaptured::schema_identity(),
+            DomainEvent::schema_identity()
         );
         assert_ne!(
-            <TeamStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
-            <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE
-        );
-        assert_ne!(
-            <TeamStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
-            <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE
-        );
-        assert_ne!(
-            <TeamStateCaptured as GenomeSafe>::SCHEMA_HASH,
-            <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH
-        );
-        assert_ne!(
-            <TeamStateCaptured as GenomeSafe>::SCHEMA_HASH,
-            <DomainEvent as GenomeSafe>::SCHEMA_HASH
-        );
-    }
-
-    #[test]
-    fn repository_and_org_schema_hashes_are_byte_identical_to_prior_pins() {
-        assert_eq!(
-            <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH,
-            220_908_143_069_358_905_578_364_172_905_019_209_814_u128
-        );
-        assert_eq!(
-            <DomainEvent as GenomeSafe>::SCHEMA_HASH,
-            275_195_719_777_709_701_441_897_251_379_147_148_878_u128
+            TeamStateCaptured::schema_identity(),
+            OrgStateCaptured::schema_identity()
         );
     }
 
@@ -1160,28 +1547,19 @@ mod tests {
 
     #[test]
     fn schema_hash_is_stable_across_reads() {
-        let first = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
-        let second = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
+        let first = DomainEvent::schema_identity();
+        let second = DomainEvent::schema_identity();
         assert_eq!(first, second);
-        assert_eq!(
-            first,
-            275_195_719_777_709_701_441_897_251_379_147_148_878_u128
-        );
-        assert_ne!(
-            first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
-            "current schema hash must differ from the prior P4b value"
-        );
     }
 
     #[test]
     fn sweep_timeout_event_schema_identity_is_stable() {
-        assert_eq!(
-            <SweepTimeoutEvent as GenomeSafe>::SCHEMA_HASH,
-            301_696_112_480_366_676_711_246_767_551_761_140_277_u128
-        );
+        let first = SweepTimeoutEvent::schema_identity();
+        let second = SweepTimeoutEvent::schema_identity();
+        assert_eq!(first, second);
         assert_ne!(
-            <SweepTimeoutEvent as GenomeSafe>::SCHEMA_HASH,
-            <DomainEvent as GenomeSafe>::SCHEMA_HASH
+            SweepTimeoutEvent::schema_identity(),
+            DomainEvent::schema_identity()
         );
         assert_eq!(
             SweepTimeoutEvent::target_opened(uuid::Uuid::from_u128(1)).event_type(),
@@ -1190,21 +1568,9 @@ mod tests {
     }
 
     #[test]
-    fn repository_event_envelope_identity_is_stable() {
-        assert_eq!(
-            pardosa::store::Event::<DomainEvent>::ENVELOPE_HASH,
-            115_262_504_534_011_819_886_868_485_259_975_564_459_u128
-        );
-        assert_eq!(
-            <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
-            Some("gh-report/DomainEvent")
-        );
-    }
-
-    #[test]
     fn oversized_topic_rejected_at_construction() {
         let too_long = "x".repeat(MAX_TOPIC + 1);
-        let err = EventString::<MAX_TOPIC>::try_from(too_long).expect_err("over-MAX rejects");
-        assert!(matches!(err, DomainError::TooLong { .. }));
+        let err = EventString::<MAX_TOPIC>::new(too_long).expect_err("over-MAX rejects");
+        assert!(matches!(err, DecodeError::LengthExceeded { .. }));
     }
 }

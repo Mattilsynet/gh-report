@@ -146,6 +146,7 @@ async fn rebuild_from_markdown_corpus_reconstructs_aggregates() {
     }
 
     drop(service);
+    drop(store);
     reopen_and_replay_populated_store_reconstructs_without_rescrape(&store_path).await;
 }
 

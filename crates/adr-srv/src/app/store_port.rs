@@ -82,7 +82,7 @@ impl AdrStorePort for NativeAdrStore {
     )]
     async fn create(&self, event: AdrIngested) -> Result<((), NonZeroU64), Self::Error> {
         let native = AdrIngestedEvent::try_from(&event)?;
-        self.record(native)?;
+        self.record(&native)?;
         Ok(((), NonZeroU64::new(1).expect("1 is non-zero")))
     }
 
@@ -97,7 +97,7 @@ impl AdrStorePort for NativeAdrStore {
         event: AdrIngested,
     ) -> Result<NonZeroU64, Self::Error> {
         let native = AdrIngestedEvent::try_from(&event)?;
-        self.record(native)?;
+        self.record(&native)?;
         Ok(NonZeroU64::new(1).expect("1 is non-zero"))
     }
 

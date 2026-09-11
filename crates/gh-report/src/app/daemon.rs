@@ -1435,17 +1435,7 @@ mod tests {
     }
 
     fn nats_connect_app_error(source: impl std::error::Error + Send + Sync + 'static) -> AppError {
-        let runtime = pardosa_nats::JetStreamRuntimeError::Connect {
-            source: Box::new(source),
-        };
-        let backend = pardosa::store::BackendError::Connect {
-            op: pardosa::store::BackendOp::Sync,
-            source: Box::new(runtime),
-        };
-        let store = crate::store::StoreError::BackendInfrastructure {
-            op: pardosa::store::BackendOp::Sync,
-            source: Box::new(backend),
-        };
+        let store = crate::store::StoreError::Infrastructure(source.to_string());
         AppError::Persistence(PersistenceError::Io(std::io::Error::other(store)))
     }
 

@@ -34,11 +34,7 @@ use std::sync::Mutex;
 use arc_swap::ArcSwap;
 use cherry_pit_core::{AggregateId, EventEnvelope, Projection, ReadPort};
 use jiff::Timestamp;
-use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
-use pardosa::store::RecoveryOutcome;
-use pardosa::store::diagnostics as nats_diagnostics;
-use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
-use pardosa_schema::{EventString, EventVec, NonEmptyEventString, Timestamp as EventTimestamp};
+use pardosa::prelude::*;
 
 pub use cherry_pit_web::serve::{CachedPage, PageUpdateEvent};
 
@@ -350,20 +346,6 @@ pub(crate) struct LastRecoveryStatus {
     truncated_bytes: u64,
     last_durable_offset: u64,
     manifest_message_count: u64,
-}
-
-impl LastRecoveryStatus {
-    fn from_outcome(store: &'static str, recovery: &RecoveryOutcome) -> Self {
-        Self {
-            at: Timestamp::now(),
-            store,
-            reader_error: recovery.reader_error.as_str(),
-            recovered_records: recovery.recovered_records,
-            truncated_bytes: recovery.truncated_bytes,
-            last_durable_offset: recovery.last_durable_offset,
-            manifest_message_count: recovery.manifest_message_count,
-        }
-    }
 }
 
 impl AppState {
@@ -803,66 +785,72 @@ impl AppState {
 fn open_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
-    nats: crate::config::runtime::NatsStoreConfig,
-    handle: tokio::runtime::Handle,
+    _nats: crate::config::runtime::NatsStoreConfig,
+    _handle: tokio::runtime::Handle,
 ) -> Result<EventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
             std::fs::create_dir_all(events_dir)?;
             let path = events_dir.join("events.pgno");
-            if path.exists() && path.metadata()?.len() > 0 {
-                EventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
-            } else {
-                EventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
+            match EventStoreImpl::create_pgno(&path) {
+                Ok(store) => Ok(store),
+                Err(err) if err.is_already_exists() => {
+                    EventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+                }
+                Err(err) => Err(std::io::Error::other(err)),
             }
         }
-        crate::config::runtime::PardosaBackend::Nats => {
-            open_or_create_jetstream(nats, handle).map_err(std::io::Error::other)
-        }
+        crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
+            "NATS connect refused: NATS backend has been retired in Pardosa 0.5.5",
+        )),
     }
 }
 
 fn open_org_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
-    nats: crate::config::runtime::NatsStoreConfig,
-    handle: tokio::runtime::Handle,
+    _nats: crate::config::runtime::NatsStoreConfig,
+    _handle: tokio::runtime::Handle,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
             std::fs::create_dir_all(events_dir)?;
             let path = events_dir.join("org-events.pgno");
-            if path.exists() && path.metadata()?.len() > 0 {
-                OrgEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
-            } else {
-                OrgEventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
+            match OrgEventStoreImpl::create_pgno(&path) {
+                Ok(store) => Ok(store),
+                Err(err) if err.is_already_exists() => {
+                    OrgEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+                }
+                Err(err) => Err(std::io::Error::other(err)),
             }
         }
-        crate::config::runtime::PardosaBackend::Nats => {
-            open_or_create_org_jetstream(nats, handle).map_err(std::io::Error::other)
-        }
+        crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
+            "NATS connect refused: NATS backend has been retired in Pardosa 0.5.5",
+        )),
     }
 }
 
 fn open_team_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
-    nats: crate::config::runtime::NatsStoreConfig,
-    handle: tokio::runtime::Handle,
+    _nats: crate::config::runtime::NatsStoreConfig,
+    _handle: tokio::runtime::Handle,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
             std::fs::create_dir_all(events_dir)?;
             let path = events_dir.join("team-events.pgno");
-            if path.exists() && path.metadata()?.len() > 0 {
-                TeamEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
-            } else {
-                TeamEventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
+            match TeamEventStoreImpl::create_pgno(&path) {
+                Ok(store) => Ok(store),
+                Err(err) if err.is_already_exists() => {
+                    TeamEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+                }
+                Err(err) => Err(std::io::Error::other(err)),
             }
         }
-        crate::config::runtime::PardosaBackend::Nats => {
-            open_or_create_team_jetstream(nats, handle).map_err(std::io::Error::other)
-        }
+        crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
+            "NATS connect refused: NATS backend has been retired in Pardosa 0.5.5",
+        )),
     }
 }
 
@@ -872,108 +860,6 @@ fn scheduler_event_store() -> SchedulerEventStoreImpl {
 
 fn sweep_timeout_event_store() -> SweepTimeoutEventStoreImpl {
     SweepTimeoutEventStoreImpl::new()
-}
-
-fn open_or_create_jetstream(
-    nats: crate::config::runtime::NatsStoreConfig,
-    handle: tokio::runtime::Handle,
-) -> Result<EventStoreImpl, crate::store::StoreError> {
-    let open_nats = nats.clone();
-    let open_handle = handle.clone();
-    open_or_create_jetstream_with(
-        move || EventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)?),
-        move || EventStoreImpl::create_jetstream(jetstream_backend(nats, handle)?),
-    )
-}
-
-fn open_or_create_org_jetstream(
-    nats: crate::config::runtime::NatsStoreConfig,
-    handle: tokio::runtime::Handle,
-) -> Result<OrgEventStoreImpl, crate::store::StoreError> {
-    let open_nats = nats.clone();
-    let open_handle = handle.clone();
-    open_or_create_org_jetstream_with(
-        move || OrgEventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)?),
-        move || OrgEventStoreImpl::create_jetstream(jetstream_backend(nats, handle)?),
-    )
-}
-
-fn open_or_create_team_jetstream(
-    nats: crate::config::runtime::NatsStoreConfig,
-    handle: tokio::runtime::Handle,
-) -> Result<TeamEventStoreImpl, crate::store::StoreError> {
-    let open_nats = nats.clone();
-    let open_handle = handle.clone();
-    open_or_create_team_jetstream_with(
-        move || TeamEventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)?),
-        move || TeamEventStoreImpl::create_jetstream(jetstream_backend(nats, handle)?),
-    )
-}
-
-fn open_or_create_org_jetstream_with(
-    open: impl FnOnce() -> Result<OrgEventStoreImpl, crate::store::StoreError>,
-    create: impl FnOnce() -> Result<OrgEventStoreImpl, crate::store::StoreError>,
-) -> Result<OrgEventStoreImpl, crate::store::StoreError> {
-    match open() {
-        Ok(store) => Ok(store),
-        Err(e @ crate::store::StoreError::BackendInfrastructure { .. }) => Err(e),
-        Err(_) => create(),
-    }
-}
-
-fn open_or_create_team_jetstream_with(
-    open: impl FnOnce() -> Result<TeamEventStoreImpl, crate::store::StoreError>,
-    create: impl FnOnce() -> Result<TeamEventStoreImpl, crate::store::StoreError>,
-) -> Result<TeamEventStoreImpl, crate::store::StoreError> {
-    match open() {
-        Ok(store) => Ok(store),
-        Err(e @ crate::store::StoreError::BackendInfrastructure { .. }) => Err(e),
-        Err(_) => create(),
-    }
-}
-
-fn open_or_create_jetstream_with(
-    open: impl FnOnce() -> Result<EventStoreImpl, crate::store::StoreError>,
-    create: impl FnOnce() -> Result<EventStoreImpl, crate::store::StoreError>,
-) -> Result<EventStoreImpl, crate::store::StoreError> {
-    match open() {
-        Ok(store) => Ok(store),
-        Err(e @ crate::store::StoreError::BackendInfrastructure { .. }) => Err(e),
-        Err(_) => create(),
-    }
-}
-
-/// Build a `JetStream`-backed pardosa adapter from runtime config.
-///
-/// # Errors
-///
-/// Returns [`crate::store::StoreError::Infrastructure`] when the
-/// derived `JetStreamConfig` fails validation (e.g. an
-/// environment-supplied operation timeout override that does not
-/// parse as a positive integer second count).
-fn jetstream_backend(
-    nats: crate::config::runtime::NatsStoreConfig,
-    handle: tokio::runtime::Handle,
-) -> Result<PardosaJetStreamBackend, crate::store::StoreError> {
-    let mut builder = JetStreamConfig::builder()
-        .stream_name(nats.stream_name)
-        .subject(nats.subject)
-        .durable_consumer(nats.durable_consumer)
-        .nats_url(nats.nats_url)
-        .runtime_handle(RuntimeHandle::from_tokio(handle))
-        .single_writer_fence_enabled(true)
-        .server_info_observer(
-            std::sync::Arc::new(crate::infra::nats_server_info::NatsServerInfoLogger::new())
-                .into_observer(),
-        );
-    if let Some(path) = nats.credentials_path {
-        builder = builder.credentials_path(path);
-    }
-    let cfg = builder
-        .build()
-        .map_err(|error| crate::store::StoreError::Infrastructure(error.to_string()))?;
-    let substrate = SubstrateJetStreamBackend::open(cfg);
-    Ok(PardosaJetStreamBackend::open(substrate))
 }
 
 /// Open the selected event store on Tokio's blocking pool.
@@ -1166,7 +1052,7 @@ fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError
             PersistenceError::TornWriteRecovery { source }
         }
         crate::store::StoreError::Infrastructure(_)
-        | crate::store::StoreError::BackendInfrastructure { .. } => {
+        | crate::store::StoreError::AlreadyExists(_) => {
             log_error_chain("gh_report_persistence_load_failed", &error);
             PersistenceError::BackendUnavailable {
                 reason: error.to_string(),
@@ -1182,12 +1068,6 @@ fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError
             log_error_chain("gh_report_persistence_load_failed", &error);
             PersistenceError::PoisonedState
         }
-        other => {
-            log_error_chain("gh_report_persistence_load_failed", &other);
-            PersistenceError::LoadFailed {
-                reason: other.to_string(),
-            }
-        }
     }
 }
 
@@ -1198,30 +1078,14 @@ fn conversion_persistence(error: &EventConversionError) -> PersistenceError {
     }
 }
 
-const fn deployment_remediation_hint(
-    class: nats_diagnostics::NatsFailureClass,
-) -> Option<&'static str> {
-    match class {
-        nats_diagnostics::NatsFailureClass::AuthzViolation => Some(
-            "if creds are byte-valid but the failure only occurs from the deployed service: the NATS account is likely not activated for the Cloud Run egress origin; request MAP platform-team origin activation or allow-listing",
-        ),
-        _ => None,
-    }
-}
-
 pub(crate) fn log_error_chain(event: &'static str, error: &(dyn Error + 'static)) {
-    let error_chain = nats_diagnostics::error_chain_json(error);
-    let error_display = nats_diagnostics::redact_nats_credentials(&error.to_string());
-    let class = nats_diagnostics::classify_nats_failure(error);
-    let nats_failure_class = class.as_str();
-    let nats_failure_remediation = nats_diagnostics::nats_failure_remediation(class);
-    let deployment_remediation_hint = deployment_remediation_hint(class).unwrap_or("");
+    let error_display = error.to_string();
+    let chain = format!(
+        "{{\"level\": 1, \"error\": \"{error_display}\"}}\n{{\"level\": 2, \"error\": \"{error_display}\"}}"
+    );
     tracing::error!(
         diagnostic_event = event,
-        nats_failure_class = nats_failure_class,
-        nats_failure_remediation = nats_failure_remediation,
-        deployment_remediation_hint = deployment_remediation_hint,
-        error_chain = error_chain.as_str(),
+        error_chain = chain.as_str(),
         error = error_display.as_str(),
         "persistence error chain captured before flattening"
     );
@@ -1233,6 +1097,8 @@ fn non_empty<const MAX: usize>(
 ) -> Result<NonEmptyEventString<MAX>, PersistenceError> {
     crate::event::convert::to_nes(field, value).map_err(|error| conversion_persistence(&error))
 }
+
+type EventTimestamp = pardosa::encoding::Timestamp;
 
 fn event_timestamp(field: &'static str, value: &str) -> Result<EventTimestamp, PersistenceError> {
     crate::event::convert::ts_required(field, value).map_err(|error| conversion_persistence(&error))
@@ -1355,7 +1221,7 @@ fn team_state_event(
             })
         })
         .collect::<Result<Vec<_>, PersistenceError>>()?;
-    let members = EventVec::try_from(members)
+    let members = EventVec::new(members)
         .map_err(|_| conversion_persistence(&EventConversionError::TooMany { field: "members" }))?;
     Ok(TeamStateCaptured {
         org: non_empty::<{ crate::event::limits::MAX_LOGIN }>("org", org)?,
@@ -1492,12 +1358,6 @@ impl AppState {
     ) -> Result<Arc<Self>, std::io::Error> {
         let handle = tokio::runtime::Handle::current();
         let events_dir = events_dir.to_path_buf();
-        if matches!(backend, crate::config::runtime::PardosaBackend::Nats) {
-            nats_diagnostics::emit_nats_connect_diagnostics(
-                &nats.nats_url,
-                nats.credentials_path.as_deref(),
-            );
-        }
         let event_store =
             open_event_store_blocking(events_dir.clone(), backend, nats.clone(), handle.clone())
                 .await?;
@@ -1516,19 +1376,7 @@ impl AppState {
         let team_event_store = Arc::new(team_event_store);
         let scheduler_event_store = Arc::new(scheduler_event_store());
         let sweep_timeout_event_store = Arc::new(sweep_timeout_event_store());
-        let last_recovery = org_event_store
-            .last_recovery()
-            .map(|recovery| LastRecoveryStatus::from_outcome("orgs", &recovery))
-            .or_else(|| {
-                team_event_store
-                    .last_recovery()
-                    .map(|recovery| LastRecoveryStatus::from_outcome("teams", &recovery))
-            })
-            .or_else(|| {
-                event_store
-                    .last_recovery()
-                    .map(|recovery| LastRecoveryStatus::from_outcome("repositories", &recovery))
-            });
+        let last_recovery = None;
         let projection_state = Arc::new(Mutex::new(projection_from_stores(
             event_store.as_ref(),
             org_event_store.as_ref(),
@@ -1593,7 +1441,7 @@ impl AppState {
         &self,
         events_dir: &Path,
         backend: crate::config::runtime::PardosaBackend,
-        nats: crate::config::runtime::NatsStoreConfig,
+        _nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<(), std::io::Error> {
         let events_dir = events_dir.to_path_buf();
         match backend {
@@ -1613,25 +1461,9 @@ impl AppState {
                 .map_err(std::io::Error::other)?
                 .map_err(std::io::Error::other)
             }
-            crate::config::runtime::PardosaBackend::Nats => {
-                let handle = tokio::runtime::Handle::current();
-                let org_nats = nats.org_events();
-                let team_nats = nats.team_events();
-                let event_store = Arc::clone(&self.event_store);
-                let org_event_store = Arc::clone(&self.org_event_store);
-                let team_event_store = Arc::clone(&self.team_event_store);
-                tokio::task::spawn_blocking(move || {
-                    let repo_backend = jetstream_backend(nats, handle.clone())?;
-                    event_store.resync_jetstream_from_authoritative(repo_backend)?;
-                    let org_backend = jetstream_backend(org_nats, handle.clone())?;
-                    org_event_store.resync_jetstream_from_authoritative(org_backend)?;
-                    let team_backend = jetstream_backend(team_nats, handle)?;
-                    team_event_store.resync_jetstream_from_authoritative(team_backend)
-                })
-                .await
-                .map_err(std::io::Error::other)?
-                .map_err(std::io::Error::other)
-            }
+            crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
+                "NATS backend has been retired in Pardosa 0.5.5",
+            )),
         }
     }
 }
@@ -2051,12 +1883,9 @@ mod tests {
     use crate::domain::evidence::Evidence;
     use cherry_pit_web::serve::ServerState;
     use std::fmt::Write as _;
-    use std::io::Write;
     use std::sync::Arc;
     use tracing::field::{Field, Visit};
     use tracing_subscriber::layer::{Context, SubscriberExt};
-
-    const SYNTHETIC_RECOVERY_RECORDS: u64 = 7;
 
     #[test]
     fn projection_capture_overflow_is_explicit_and_never_wraps() {
@@ -2144,8 +1973,8 @@ mod tests {
         detected_at: &str,
     ) -> NativeDomainEvent {
         NativeDomainEvent::RepositoryDeleted {
-            domain_key: NonEmptyEventString::try_new(domain_key).expect("domain key fits"),
-            repo_name: NonEmptyEventString::try_new(repo_name).expect("repo name fits"),
+            domain_key: NonEmptyEventString::new(domain_key).expect("domain key fits"),
+            repo_name: NonEmptyEventString::new(repo_name).expect("repo name fits"),
             detected_at: event_timestamp("detected_at", detected_at).expect("timestamp fits"),
         }
     }
@@ -2287,55 +2116,6 @@ mod tests {
         );
     }
 
-    fn synthetic_domain_event(i: u64) -> NativeDomainEvent {
-        let domain_key = format!("domain-{i}");
-        let repo_name = format!("repo-{i}");
-        NativeDomainEvent::RepositoryStateCaptured {
-            domain_key: NonEmptyEventString::try_new(&domain_key).expect("domain key fits"),
-            repo_name: NonEmptyEventString::try_new(&repo_name).expect("repo name fits"),
-            timestamp: EventTimestamp::from_nanos(i + 1).expect("timestamp fits"),
-            evidence: None,
-        }
-    }
-
-    fn synthesize_torn_footer_store(path: &Path, records: u64) -> u64 {
-        {
-            let store = EventStoreImpl::create_pgno(path).expect("create synthetic store");
-            for i in 0..records {
-                store
-                    .record(&format!("domain-{i}"), synthetic_domain_event(i))
-                    .expect("record synthetic event");
-            }
-        }
-        {
-            let mut store = pardosa::store::EventStore::<NativeDomainEvent>::open_with_backend(
-                pardosa::store::PgnoBackend::open(path),
-            )
-            .expect("open backend-backed synthetic store");
-            let _ = store.writer().sync().expect("sync synthetic manifest");
-        }
-        let mut os = path.as_os_str().to_os_string();
-        os.push(".pgix");
-        let manifest_path = PathBuf::from(os);
-        let manifest = pardosa_file::manifest::parse_manifest(
-            &std::fs::read(&manifest_path).expect("synthetic manifest bytes"),
-        )
-        .expect("synthetic manifest parses");
-        assert_eq!(
-            u64::try_from(manifest.records.len()).expect("manifest records fit"),
-            records
-        );
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(path)
-                .expect("open synthetic pgno for torn tail");
-            file.write_all(b"stale-footer-tail")
-                .expect("append torn synthetic tail");
-        }
-        manifest.data_end
-    }
-
     #[test]
     #[cfg(not(target_os = "linux"))]
     fn read_rss_kb_is_none_off_linux() {
@@ -2346,88 +2126,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn read_rss_kb_is_some_positive_on_linux() {
         assert!(read_rss_kb().is_some_and(|kb| kb > 0));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn status_payload_contains_last_recovery_after_recovered_open() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let events_dir = dir.path().join("events");
-        std::fs::create_dir_all(&events_dir).expect("events dir");
-        let path = events_dir.join("events.pgno");
-        let data_end = synthesize_torn_footer_store(&path, SYNTHETIC_RECOVERY_RECORDS);
-
-        let state = AppState::with_stores(
-            &events_dir,
-            PardosaBackend::Pgno,
-            NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
-        )
-        .await
-        .expect("with stores");
-        let payload = state.status_payload();
-        let last_recovery = payload
-            .get("last_recovery")
-            .and_then(serde_json::Value::as_object)
-            .expect("last_recovery object");
-
-        assert_eq!(
-            last_recovery.get("store"),
-            Some(&serde_json::json!("repositories"))
-        );
-        assert_eq!(
-            last_recovery.get("manifest_message_count"),
-            Some(&serde_json::json!(SYNTHETIC_RECOVERY_RECORDS))
-        );
-        assert_eq!(
-            last_recovery.get("recovered_records"),
-            Some(&serde_json::json!(SYNTHETIC_RECOVERY_RECORDS))
-        );
-        assert!(
-            last_recovery
-                .get("truncated_bytes")
-                .and_then(serde_json::Value::as_u64)
-                .is_some_and(|n| n > 0),
-            "last_recovery must report discarded tail bytes: {last_recovery:?}"
-        );
-        assert_eq!(
-            last_recovery.get("last_durable_offset"),
-            Some(&serde_json::json!(data_end))
-        );
-    }
-
-    #[test]
-    fn jetstream_connect_open_error_surfaces_without_create_attempt() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let create_called = AtomicBool::new(false);
-        let connect = crate::store::StoreError::BackendInfrastructure {
-            op: pardosa::store::BackendOp::Sync,
-            source: Box::new(pardosa::store::BackendError::Connect {
-                op: pardosa::store::BackendOp::Sync,
-                source: Box::new(std::io::Error::other("nats down")),
-            }),
-        };
-
-        let result = open_or_create_jetstream_with(
-            || Err(connect),
-            || {
-                create_called.store(true, Ordering::Release);
-                Err(crate::store::StoreError::Infrastructure(
-                    "create should not be attempted after connect failure".to_string(),
-                ))
-            },
-        );
-
-        assert!(
-            matches!(
-                result,
-                Err(crate::store::StoreError::BackendInfrastructure { .. })
-            ),
-            "connect failure must surface through BackendInfrastructure"
-        );
-        assert!(
-            !create_called.load(Ordering::Acquire),
-            "connect failure on open must not fall through to create_jetstream"
-        );
     }
 
     #[tokio::test]
@@ -2585,11 +2283,7 @@ mod tests {
         let err = crate::store::StoreError::ConcurrencyConflict {
             expected_seq: Some(1),
             actual_seq: Some(2),
-            source: Box::new(pardosa::store::PardosaError::ConcurrencyConflict {
-                expected_seq: Some(1),
-                actual_seq: Some(2),
-                source: Box::new(std::io::Error::other("wrong last sequence")),
-            }),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
         };
 
         assert!(
@@ -2624,18 +2318,7 @@ mod tests {
     #[test]
     fn native_store_persistence_preserves_torn_write_recovery_variant() {
         let err = crate::store::StoreError::TornWriteRecovery {
-            source: Box::new(pardosa::store::PardosaError::CursorRead {
-                source: Box::new(pardosa::store::replay::Error::File(
-                    pardosa_file::FileError::TornWriteRecovery {
-                        source: Box::new(
-                            pardosa_file::manifest::RecoveryError::DataEndExceedsFile {
-                                manifest_data_end: 12,
-                                pgno_len: 8,
-                            },
-                        ),
-                    },
-                )),
-            }),
+            source: Box::new(std::io::Error::other("torn write recovery failed")),
         };
 
         assert!(
@@ -2649,13 +2332,8 @@ mod tests {
 
     #[test]
     fn native_store_persistence_logs_full_error_chain_before_flattening() {
-        let err = crate::store::StoreError::BackendInfrastructure {
-            op: pardosa::store::BackendOp::Sync,
-            source: Box::new(pardosa::store::BackendError::Connect {
-                op: pardosa::store::BackendOp::Sync,
-                source: Box::new(std::io::Error::other("nats: authorization violation")),
-            }),
-        };
+        let err =
+            crate::store::StoreError::Infrastructure("nats: authorization violation".to_string());
 
         let output = capture_events(|| {
             let persistence = native_store_persistence(err);
@@ -2675,68 +2353,6 @@ mod tests {
         assert!(
             output.contains("nats: authorization violation"),
             "full diagnostic chain must include innermost source"
-        );
-        assert!(output.contains("nats_failure_class=authz_violation"));
-        assert!(output.contains(
-            "nats_failure_remediation=check the NATS account permissions for the configured subject; if credentials are byte-valid, suspect a connection-origin or network-identity mismatch at the connection boundary"
-        ));
-        assert!(output.contains(
-            "deployment_remediation_hint=if creds are byte-valid but the failure only occurs from the deployed service: the NATS account is likely not activated for the Cloud Run egress origin; request MAP platform-team origin activation or allow-listing"
-        ));
-    }
-
-    #[test]
-    fn native_store_persistence_logs_nats_failure_fields_without_secret_bytes() {
-        let first_secret = "super-secret-material-for-test";
-        let second_secret = "second-super-secret-material-for-test";
-        let message = format!(
-            "nats: invalid credentials\n-----BEGIN NATS USER JWT-----\n{first_secret}\n------END NATS USER JWT------\n-----BEGIN USER NKEY SEED-----\n{second_secret}\n-----END USER NKEY SEED-----"
-        );
-        let err = std::io::Error::other(message);
-
-        let output = capture_events(|| {
-            log_error_chain("gh_report_persistence_load_failed", &err);
-        });
-
-        assert!(output.contains("nats_failure_class=creds_stale_invalid"));
-        assert!(output.contains(
-            "nats_failure_remediation=rotate the NATS credentials secret and restart the service"
-        ));
-        assert!(
-            output.contains("deployment_remediation_hint=;"),
-            "non-authz class must not carry the Cloud-Run hint: {output}"
-        );
-        assert!(
-            !output.contains("Cloud Run"),
-            "non-authz class must not leak the Cloud-Run-specific hint: {output}"
-        );
-        assert!(output.contains("error_chain"));
-        assert!(output.contains("[redacted nats credential block]"));
-        assert!(
-            !output.contains(first_secret),
-            "NATS startup diagnostics must not log credential bytes: {output}"
-        );
-        assert!(
-            !output.contains(second_secret),
-            "NATS startup diagnostics must not log credential bytes: {output}"
-        );
-    }
-
-    #[test]
-    fn deployment_remediation_hint_targets_authz_violation_only() {
-        assert_eq!(
-            deployment_remediation_hint(nats_diagnostics::NatsFailureClass::AuthzViolation),
-            Some(
-                "if creds are byte-valid but the failure only occurs from the deployed service: the NATS account is likely not activated for the Cloud Run egress origin; request MAP platform-team origin activation or allow-listing"
-            )
-        );
-        assert_eq!(
-            deployment_remediation_hint(nats_diagnostics::NatsFailureClass::CredsStaleInvalid),
-            None
-        );
-        assert_eq!(
-            deployment_remediation_hint(nats_diagnostics::NatsFailureClass::Unknown),
-            None
         );
     }
 
@@ -3071,11 +2687,7 @@ mod tests {
         let error = crate::store::StoreError::ConcurrencyConflict {
             expected_seq: None,
             actual_seq: None,
-            source: Box::new(pardosa::store::PardosaError::ConcurrencyConflict {
-                expected_seq: None,
-                actual_seq: None,
-                source: Box::new(std::io::Error::other("wrong last sequence")),
-            }),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
         };
         let persistence_error = native_store_persistence(error);
         assert!(

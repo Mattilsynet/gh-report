@@ -12,17 +12,7 @@ members = [
     "crates/cherry-pit-web",
     "crates/gh-report",
     "crates/gh-report-web-client",
-    "crates/pardosa",
-    "crates/pardosa-fiber-store",
-    "crates/pardosa-derive",
-    "crates/pardosa-file",
-    "crates/pardosa-nats",
-    "crates/pardosa-read",
-    "crates/pardosa-schema",
-    "crates/pardosa-wire",
     "crates/non-exhaustive-check",
-    "crates/pardosa-mint-private-tests",
-    "crates/pardosa-test-support-harness",
     "crates/pardosa-cherry-pit-test-support",
 ]
 
@@ -41,17 +31,7 @@ default-members = [
     "crates/cherry-pit-storage",
     "crates/cherry-pit-web",
     "crates/gh-report",
-    "crates/pardosa",
-    "crates/pardosa-fiber-store",
-    "crates/pardosa-derive",
-    "crates/pardosa-file",
-    "crates/pardosa-nats",
-    "crates/pardosa-read",
-    "crates/pardosa-schema",
-    "crates/pardosa-wire",
     "crates/non-exhaustive-check",
-    "crates/pardosa-mint-private-tests",
-    "crates/pardosa-test-support-harness",
     "crates/pardosa-cherry-pit-test-support",
 ]
 
@@ -165,6 +145,7 @@ cherry-pit-projection = { path = "crates/cherry-pit-projection", version = "0.1.
 cherry-pit-web = { path = "crates/cherry-pit-web", version = "0.1.0" }
 cherry-pit-app = { path = "crates/cherry-pit-app", version = "0.1.0" }
 cherry-pit-merger = { path = "crates/cherry-pit-merger", version = "0.1.0" }
+pardosa = { path = "../pardosa/crates/pardosa", version = "0.5.5" }
 
 # === Pardosa workspace tier (mission pardosa-migration-1748376000) ===
 # Added when the active Pardosa crates were imported from rescue-pardosa.
