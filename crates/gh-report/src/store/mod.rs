@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use pardosa::prelude::*;
+use pardosa_nats::NatsStorageAdapter;
 
 use crate::event::{DomainEvent, OrgStateCaptured, TeamStateCaptured};
 
@@ -74,8 +75,14 @@ fn default_claim(epoch: u64, label: &str) -> OwnershipClaimRecord {
     }
 }
 
+#[derive(Clone)]
+enum StorageBackend {
+    File(PathBuf),
+    Nats(Box<NatsStorageAdapter>),
+}
+
 struct StoreInner<E> {
-    path: PathBuf,
+    backend: StorageBackend,
     cached: Mutex<Vec<(bool, [u8; 16], E)>>,
 }
 
@@ -85,7 +92,7 @@ impl<E: PardosaSchema> StoreInner<E> {
         let claim = default_claim(1, label);
         let _session = adapter.create(&claim)?;
         Ok(Self {
-            path: path.to_path_buf(),
+            backend: StorageBackend::File(path.to_path_buf()),
             cached: Mutex::new(Vec::new()),
         })
     }
@@ -100,7 +107,30 @@ impl<E: PardosaSchema> StoreInner<E> {
             cached.push((env.header.detached, env.header.fiber_id, event));
         }
         Ok(Self {
-            path: path.to_path_buf(),
+            backend: StorageBackend::File(path.to_path_buf()),
+            cached: Mutex::new(cached),
+        })
+    }
+
+    fn create_nats(adapter: NatsStorageAdapter, label: &'static str) -> Result<Self, StoreError> {
+        let claim = default_claim(1, label);
+        let _session = adapter.create(&claim)?;
+        Ok(Self {
+            backend: StorageBackend::Nats(Box::new(adapter)),
+            cached: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn open_nats(adapter: NatsStorageAdapter, _label: &'static str) -> Result<Self, StoreError> {
+        let mut reader = adapter.open_read()?;
+        let envelopes = reader.read_all_envelopes()?;
+        let mut cached = Vec::with_capacity(envelopes.len());
+        for env in envelopes {
+            let event = E::decode_payload(&env.payload)?;
+            cached.push((env.header.detached, env.header.fiber_id, event));
+        }
+        Ok(Self {
+            backend: StorageBackend::Nats(Box::new(adapter)),
             cached: Mutex::new(cached),
         })
     }
@@ -119,21 +149,37 @@ impl<E: PardosaSchema> StoreInner<E> {
     }
 
     fn record(&self, domain_key: &str, event: E) -> Result<(), StoreError> {
-        let adapter = FileStorageAdapter::new(&self.path);
-        let epoch = adapter.current_epoch()?;
-        let mut session = adapter.open_write(epoch)?;
         let fiber_id = derive_fiber_id(domain_key);
         let mut payload = Vec::new();
         event.encode_payload(&mut payload)?;
         let event_id = *uuid::Uuid::now_v7().as_bytes();
 
-        let handle = session.fiber(fiber_id)?;
-        if handle.is_detached() {
-            session.rescue_fiber(fiber_id, event_id, payload)?;
-        } else {
-            session.append_to_fiber(fiber_id, event_id, payload)?;
+        match &self.backend {
+            StorageBackend::File(path) => {
+                let adapter = FileStorageAdapter::new(path);
+                let epoch = adapter.current_epoch()?;
+                let mut session = adapter.open_write(epoch)?;
+                let handle = session.fiber(fiber_id)?;
+                if handle.is_detached() {
+                    session.rescue_fiber(fiber_id, event_id, payload)?;
+                } else {
+                    session.append_to_fiber(fiber_id, event_id, payload)?;
+                }
+                session.sync()?;
+            }
+            StorageBackend::Nats(adapter) => {
+                let epoch = adapter.current_epoch()?;
+                let mut session = adapter.open_write(epoch)?;
+                let handle = session.fiber(fiber_id)?;
+                if handle.is_detached() {
+                    session.rescue_fiber(fiber_id, event_id, payload)?;
+                } else {
+                    session.append_to_fiber(fiber_id, event_id, payload)?;
+                }
+                session.sync()?;
+            }
         }
-        session.sync()?;
+
         self.cached
             .lock()
             .map_err(|_| StoreError::Poisoned)?
@@ -142,22 +188,37 @@ impl<E: PardosaSchema> StoreInner<E> {
     }
 
     fn detach(&self, domain_key: &str, event: E) -> Result<(), StoreError> {
-        let adapter = FileStorageAdapter::new(&self.path);
-        let epoch = adapter.current_epoch()?;
-        let mut session = adapter.open_write(epoch)?;
         let fiber_id = derive_fiber_id(domain_key);
-        let handle = session.fiber(fiber_id)?;
-        if handle.is_active() {
-            let mut payload = Vec::new();
-            event.encode_payload(&mut payload)?;
-            let event_id = *uuid::Uuid::now_v7().as_bytes();
-            session.detach_fiber(fiber_id, event_id, payload)?;
-            session.sync()?;
-            self.cached
-                .lock()
-                .map_err(|_| StoreError::Poisoned)?
-                .push((true, fiber_id, event));
+        let mut payload = Vec::new();
+        event.encode_payload(&mut payload)?;
+        let event_id = *uuid::Uuid::now_v7().as_bytes();
+
+        match &self.backend {
+            StorageBackend::File(path) => {
+                let adapter = FileStorageAdapter::new(path);
+                let epoch = adapter.current_epoch()?;
+                let mut session = adapter.open_write(epoch)?;
+                let handle = session.fiber(fiber_id)?;
+                if handle.is_active() {
+                    session.detach_fiber(fiber_id, event_id, payload)?;
+                    session.sync()?;
+                }
+            }
+            StorageBackend::Nats(adapter) => {
+                let epoch = adapter.current_epoch()?;
+                let mut session = adapter.open_write(epoch)?;
+                let handle = session.fiber(fiber_id)?;
+                if handle.is_active() {
+                    session.detach_fiber(fiber_id, event_id, payload)?;
+                    session.sync()?;
+                }
+            }
         }
+
+        self.cached
+            .lock()
+            .map_err(|_| StoreError::Poisoned)?
+            .push((true, fiber_id, event));
         Ok(())
     }
 
@@ -257,6 +318,28 @@ impl NativeStore {
         })
     }
 
+    /// Create a fresh NATS-backed store.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if creating or claiming the store streams fails.
+    pub fn create_nats(adapter: NatsStorageAdapter) -> Result<Self, StoreError> {
+        Ok(Self {
+            inner: StoreInner::create_nats(adapter, "gh-report-repos")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+
+    /// Open an existing NATS-backed store, rehydrating its fibers.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if reading or decoding existing envelopes fails.
+    pub fn open_nats(adapter: NatsStorageAdapter) -> Result<Self, StoreError> {
+        Ok(Self {
+            inner: StoreInner::open_nats(adapter, "gh-report-repos")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+
     /// Re-seed from a fresh authoritative read of the same `.pgno` backing file.
     ///
     /// # Errors
@@ -298,6 +381,15 @@ impl NativeStore {
         self.inner.detach(domain_key, event)
     }
 
+    /// Return all cached events with their detached status and fiber ID.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Poisoned`] if the store cache lock is poisoned.
+    pub fn events_with_fibers(&self) -> Result<Vec<(bool, [u8; 16], DomainEvent)>, StoreError> {
+        let cached = self.inner.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        Ok(cached.clone())
+    }
+
     /// The latest event of every live fiber, paired with its domain key.
     ///
     /// # Errors
@@ -306,6 +398,13 @@ impl NativeStore {
         self.inner.latest_defined(|event| match event {
             DomainEvent::RepositoryStateCaptured { domain_key, .. }
             | DomainEvent::RepositoryDeleted { domain_key, .. } => domain_key.as_str().to_string(),
+            DomainEvent::OrgStateCaptured(org) => {
+                org.assessment_metadata.organization.as_str().to_string()
+            }
+            DomainEvent::TeamStateCaptured(team) => {
+                crate::event::team_domain_key(team.org.as_str(), team.team_slug.as_str())
+                    .unwrap_or_default()
+            }
         })
     }
 
@@ -349,6 +448,28 @@ impl NativeOrgStore {
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
         Ok(Self {
             inner: StoreInner::open_pgno(path, "gh-report-orgs")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+
+    /// Create a fresh NATS-backed org store.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if creating or claiming the store streams fails.
+    pub fn create_nats(adapter: NatsStorageAdapter) -> Result<Self, StoreError> {
+        Ok(Self {
+            inner: StoreInner::create_nats(adapter, "gh-report-orgs")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+
+    /// Open an existing NATS-backed org store, rehydrating its fibers.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if reading or decoding existing envelopes fails.
+    pub fn open_nats(adapter: NatsStorageAdapter) -> Result<Self, StoreError> {
+        Ok(Self {
+            inner: StoreInner::open_nats(adapter, "gh-report-orgs")?,
             backend_reachable: std::sync::atomic::AtomicBool::new(true),
         })
     }
@@ -407,6 +528,28 @@ impl NativeTeamStore {
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
         Ok(Self {
             inner: StoreInner::open_pgno(path, "gh-report-teams")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+
+    /// Create a fresh NATS-backed team store.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if creating or claiming the store streams fails.
+    pub fn create_nats(adapter: NatsStorageAdapter) -> Result<Self, StoreError> {
+        Ok(Self {
+            inner: StoreInner::create_nats(adapter, "gh-report-teams")?,
+            backend_reachable: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+
+    /// Open an existing NATS-backed team store, rehydrating its fibers.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if reading or decoding existing envelopes fails.
+    pub fn open_nats(adapter: NatsStorageAdapter) -> Result<Self, StoreError> {
+        Ok(Self {
+            inner: StoreInner::open_nats(adapter, "gh-report-teams")?,
             backend_reachable: std::sync::atomic::AtomicBool::new(true),
         })
     }

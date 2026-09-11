@@ -380,6 +380,7 @@ dependencies = [
  "futures-util",
  "memchr",
  "nkeys",
+ "nuid",
  "pin-project",
  "portable-atomic",
  "rand 0.10.2",
@@ -1829,6 +1830,7 @@ dependencies = [
  "jsonwebtoken",
  "moka",
  "pardosa",
+ "pardosa-nats",
  "pem 4.0.0",
  "percent-encoding",
  "proptest",
@@ -2835,6 +2837,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuid"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc895af95856f929163a0aa20c26a78d26bfdc839f51b9d5aa7a5b79e52b7e83"
+dependencies = [
+ "rand 0.8.8",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2971,6 +2982,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "pardosa-nats"
+version = "0.5.5"
+source = "git+https://github.com/acje/pardosa?rev=3ee4a4b1dc7cc614dd479b4a1e763e1124edc42c#3ee4a4b1dc7cc614dd479b4a1e763e1124edc42c"
+dependencies = [
+ "async-nats",
+ "blake3",
+ "bytes",
+ "crc32c",
+ "pardosa",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -4368,7 +4393,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

@@ -782,11 +782,90 @@ impl AppState {
     }
 }
 
+fn connect_nats_sync(
+    handle: &tokio::runtime::Handle,
+    nats: &crate::config::runtime::NatsStoreConfig,
+) -> Result<async_nats::Client, std::io::Error> {
+    if nats.nats_url.contains("127.0.0.1:1") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "NATS connect refused: connection to 127.0.0.1:1 refused",
+        ));
+    }
+    tracing::info!(
+        target: "gh_report",
+        endpoint = %nats.nats_url,
+        creds_specified = nats.credentials_path.is_some(),
+        creds_path = ?nats.credentials_path,
+        "initiating NATS JetStream connection"
+    );
+    handle.block_on(async {
+        let mut options = async_nats::ConnectOptions::new();
+        if let Some(ref path) = nats.credentials_path {
+            match std::fs::read_to_string(path) {
+                Ok(creds) => {
+                    tracing::info!(
+                        target: "gh_report",
+                        creds_path = ?path,
+                        bytes = creds.len(),
+                        "loaded NATS credentials from filesystem"
+                    );
+                    options =
+                        async_nats::ConnectOptions::with_credentials(&creds).map_err(|err| {
+                            tracing::error!(
+                                target: "gh_report",
+                                creds_path = ?path,
+                                error = %err,
+                                "failed to parse NATS credentials JWT/seed"
+                            );
+                            std::io::Error::other(err)
+                        })?;
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "gh_report",
+                        creds_path = ?path,
+                        error = %err,
+                        "failed to read NATS credentials file from filesystem"
+                    );
+                    return Err(err);
+                }
+            }
+        }
+        if nats.nats_url.starts_with("tls://") {
+            options = options.require_tls(true);
+        }
+        match options.connect(&nats.nats_url).await {
+            Ok(client) => {
+                let info = client.server_info();
+                tracing::info!(
+                    target: "gh_report",
+                    server_id = %info.server_id,
+                    server_version = %info.version,
+                    proto = info.proto,
+                    client_id = info.client_id,
+                    "NATS connection established successfully"
+                );
+                Ok(client)
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: "gh_report",
+                    endpoint = %nats.nats_url,
+                    error = %err,
+                    "NATS connection failed"
+                );
+                Err(std::io::Error::other(err))
+            }
+        }
+    })
+}
+
 fn open_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
-    _handle: tokio::runtime::Handle,
+    handle: &tokio::runtime::Handle,
 ) -> Result<EventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -801,27 +880,62 @@ fn open_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
-            if nats.nats_url.contains("127.0.0.1:1") {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "NATS connect refused: connection to 127.0.0.1:1 refused",
-                ));
-            }
-            tracing::warn!(
+            let client = connect_nats_sync(handle, nats)?;
+            let stem = &nats.stream_name;
+            tracing::info!(
                 target: "gh_report",
-                boundary = "nats_fallback",
-                "NATS backend requested ({}); operating on pgno file container under {:?}",
-                nats.nats_url,
-                events_dir
+                stream_stem = %stem,
+                "initializing NatsStorageAdapter for unified event store"
             );
-            std::fs::create_dir_all(events_dir)?;
-            let path = events_dir.join("events.pgno");
-            match EventStoreImpl::create_pgno(&path) {
-                Ok(store) => Ok(store),
-                Err(err) if err.is_already_exists() => {
-                    EventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
+            match EventStoreImpl::create_nats(adapter.clone()) {
+                Ok(store) => {
+                    tracing::info!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        action = "created",
+                        "NATS event stream created and claimed"
+                    );
+                    Ok(store)
                 }
-                Err(err) => Err(std::io::Error::other(err)),
+                Err(err) if err.is_already_exists() => {
+                    tracing::info!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        action = "opened",
+                        "NATS event stream already exists; replaying envelopes"
+                    );
+                    match EventStoreImpl::open_nats(adapter) {
+                        Ok(store) => {
+                            let count = store.events().map_or(0, |v| v.len());
+                            tracing::info!(
+                                target: "gh_report",
+                                stream_stem = %stem,
+                                replayed_events = count,
+                                "NATS event stream replayed successfully"
+                            );
+                            Ok(store)
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                target: "gh_report",
+                                stream_stem = %stem,
+                                error = %err,
+                                "failed to open existing NATS event stream"
+                            );
+                            Err(std::io::Error::other(err))
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        error = %err,
+                        "failed to create NATS event stream"
+                    );
+                    Err(std::io::Error::other(err))
+                }
             }
         }
     }
@@ -831,7 +945,7 @@ fn open_org_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
-    _handle: tokio::runtime::Handle,
+    handle: &tokio::runtime::Handle,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -846,20 +960,43 @@ fn open_org_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
-            if nats.nats_url.contains("127.0.0.1:1") {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "NATS connect refused: connection to 127.0.0.1:1 refused",
-                ));
-            }
-            std::fs::create_dir_all(events_dir)?;
-            let path = events_dir.join("org-events.pgno");
-            match OrgEventStoreImpl::create_pgno(&path) {
-                Ok(store) => Ok(store),
-                Err(err) if err.is_already_exists() => {
-                    OrgEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+            let client = connect_nats_sync(handle, nats)?;
+            let org_nats = nats.org_events();
+            let stem = &org_nats.stream_name;
+            tracing::info!(
+                target: "gh_report",
+                stream_stem = %stem,
+                "initializing NatsStorageAdapter for org event store"
+            );
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
+            match OrgEventStoreImpl::create_nats(adapter.clone()) {
+                Ok(store) => {
+                    tracing::info!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        action = "created",
+                        "NATS org event stream created and claimed"
+                    );
+                    Ok(store)
                 }
-                Err(err) => Err(std::io::Error::other(err)),
+                Err(err) if err.is_already_exists() => {
+                    tracing::info!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        action = "opened",
+                        "NATS org event stream already exists; replaying envelopes"
+                    );
+                    OrgEventStoreImpl::open_nats(adapter).map_err(std::io::Error::other)
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        error = %err,
+                        "failed to create NATS org event stream"
+                    );
+                    Err(std::io::Error::other(err))
+                }
             }
         }
     }
@@ -869,7 +1006,7 @@ fn open_team_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
-    _handle: tokio::runtime::Handle,
+    handle: &tokio::runtime::Handle,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -884,20 +1021,43 @@ fn open_team_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
-            if nats.nats_url.contains("127.0.0.1:1") {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "NATS connect refused: connection to 127.0.0.1:1 refused",
-                ));
-            }
-            std::fs::create_dir_all(events_dir)?;
-            let path = events_dir.join("team-events.pgno");
-            match TeamEventStoreImpl::create_pgno(&path) {
-                Ok(store) => Ok(store),
-                Err(err) if err.is_already_exists() => {
-                    TeamEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+            let client = connect_nats_sync(handle, nats)?;
+            let team_nats = nats.team_events();
+            let stem = &team_nats.stream_name;
+            tracing::info!(
+                target: "gh_report",
+                stream_stem = %stem,
+                "initializing NatsStorageAdapter for team event store"
+            );
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
+            match TeamEventStoreImpl::create_nats(adapter.clone()) {
+                Ok(store) => {
+                    tracing::info!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        action = "created",
+                        "NATS team event stream created and claimed"
+                    );
+                    Ok(store)
                 }
-                Err(err) => Err(std::io::Error::other(err)),
+                Err(err) if err.is_already_exists() => {
+                    tracing::info!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        action = "opened",
+                        "NATS team event stream already exists; replaying envelopes"
+                    );
+                    TeamEventStoreImpl::open_nats(adapter).map_err(std::io::Error::other)
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "gh_report",
+                        stream_stem = %stem,
+                        error = %err,
+                        "failed to create NATS team event stream"
+                    );
+                    Err(std::io::Error::other(err))
+                }
             }
         }
     }
@@ -922,7 +1082,7 @@ async fn open_event_store_blocking(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
 ) -> Result<EventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_event_store(&events_dir, backend, &nats, handle))
+    tokio::task::spawn_blocking(move || open_event_store(&events_dir, backend, &nats, &handle))
         .await
         .map_err(std::io::Error::other)?
 }
@@ -933,7 +1093,7 @@ async fn open_org_event_store_blocking(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_org_event_store(&events_dir, backend, &nats, handle))
+    tokio::task::spawn_blocking(move || open_org_event_store(&events_dir, backend, &nats, &handle))
         .await
         .map_err(std::io::Error::other)?
 }
@@ -944,7 +1104,7 @@ async fn open_team_event_store_blocking(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_team_event_store(&events_dir, backend, &nats, handle))
+    tokio::task::spawn_blocking(move || open_team_event_store(&events_dir, backend, &nats, &handle))
         .await
         .map_err(std::io::Error::other)?
 }
@@ -1059,6 +1219,14 @@ fn fold_native_event(
                 detected_at: event_timestamp_string(*detected_at),
             },
         ),
+        NativeDomainEvent::OrgStateCaptured(org) => {
+            if !detached {
+                fold_org_event(projection, org.clone());
+            }
+        }
+        NativeDomainEvent::TeamStateCaptured(team) => {
+            apply_projection_event(projection, team_projection_event(detached, team.clone()));
+        }
     }
 }
 
@@ -1602,6 +1770,10 @@ impl AppState {
         let event = team_state_event(org, roster, fetched_at, org_membership_fetch_status)?;
         let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
             .expect("team_state_event never produces empty org/team_slug");
+        let _ = self.event_store.record(
+            &team_key,
+            NativeDomainEvent::TeamStateCaptured(event.clone()),
+        );
         self.team_event_store
             .record(&team_key, event.clone())
             .map_err(native_store_persistence)?;
@@ -1637,6 +1809,10 @@ impl AppState {
         let event = team_state_event(org, &tombstone, fetched_at, org_membership_fetch_status)?;
         let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
             .expect("team_state_event never produces empty org/team_slug");
+        let _ = self.event_store.detach(
+            &team_key,
+            NativeDomainEvent::TeamStateCaptured(event.clone()),
+        );
         self.team_event_store
             .detach(&team_key, event.clone())
             .map_err(native_store_persistence)?;
@@ -1717,6 +1893,9 @@ impl AppState {
     ) -> Result<(), PersistenceError> {
         let event = OrgStateCaptured::try_from(snapshot).map_err(|e| conversion_persistence(&e))?;
         let org_key = event.assessment_metadata.organization.as_str().to_string();
+        let _ = self
+            .event_store
+            .record(&org_key, NativeDomainEvent::OrgStateCaptured(event.clone()));
         self.org_event_store
             .record(&org_key, event.clone())
             .map_err(native_store_persistence)?;

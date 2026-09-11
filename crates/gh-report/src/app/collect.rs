@@ -1465,7 +1465,22 @@ async fn resolve_team_rosters(
     evidence_repos: &[RepositoryEvidence],
 ) -> (Vec<crate::domain::metrics::TeamRoster>, bool) {
     if config.team_roster_read_from_projection {
-        (team_rosters_from_projection(state), true)
+        let from_projection = team_rosters_from_projection(state);
+        let team_slugs = crate::domain::metrics::team_owner_slugs(evidence_repos);
+        if !from_projection.is_empty() || team_slugs.is_empty() {
+            (from_projection, true)
+        } else {
+            tracing::info!(
+                target: "gh_report",
+                boundary = "team_roster_cold_start",
+                expected_teams = team_slugs.len(),
+                "projection contains 0 team rosters; performing live fallback fetch for report render"
+            );
+            (
+                team_membership::collect_team_rosters(client, &team_slugs).await,
+                false,
+            )
+        }
     } else {
         let team_slugs = crate::domain::metrics::team_owner_slugs(evidence_repos);
         (

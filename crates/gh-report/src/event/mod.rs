@@ -973,6 +973,8 @@ pub enum DomainEvent {
         repo_name: NonEmptyEventString<MAX_REPO_NAME>,
         detected_at: Timestamp,
     },
+    OrgStateCaptured(OrgStateCaptured),
+    TeamStateCaptured(TeamStateCaptured),
 }
 
 impl PardosaType for DomainEvent {
@@ -1007,6 +1009,16 @@ impl PardosaType for DomainEvent {
                 domain_key.encode_type(buf)?;
                 repo_name.encode_type(buf)?;
                 detected_at.encode_type(buf)?;
+                Ok(())
+            }
+            Self::OrgStateCaptured(org) => {
+                buf.push(2);
+                org.encode_type(buf)?;
+                Ok(())
+            }
+            Self::TeamStateCaptured(team) => {
+                buf.push(3);
+                team.encode_type(buf)?;
                 Ok(())
             }
         }
@@ -1056,6 +1068,16 @@ impl PardosaType for DomainEvent {
                     cursor,
                 ))
             }
+            2 => {
+                let (org, c) = OrgStateCaptured::decode_type(&buf[cursor..])?;
+                cursor += c;
+                Ok((Self::OrgStateCaptured(org), cursor))
+            }
+            3 => {
+                let (team, c) = TeamStateCaptured::decode_type(&buf[cursor..])?;
+                cursor += c;
+                Ok((Self::TeamStateCaptured(team), cursor))
+            }
             other => Err(DecodeError::UnknownVariantDiscriminant {
                 discriminant: u32::from(other),
             }),
@@ -1085,6 +1107,8 @@ impl DomainEvent {
         match self {
             Self::RepositoryStateCaptured { .. } => "RepositoryStateCaptured",
             Self::RepositoryDeleted { .. } => "RepositoryDeleted",
+            Self::OrgStateCaptured(_) => "OrgStateCaptured",
+            Self::TeamStateCaptured(_) => "TeamStateCaptured",
         }
     }
 }

@@ -42,6 +42,8 @@ cherry-pit-app = { workspace = true }
 # cherry-pit-core — correlation context threaded through cherry-pit-wq jobs.
 cherry-pit-core = { workspace = true }
 pardosa = { workspace = true }
+pardosa-nats = { workspace = true }
+async-nats = { workspace = true }
 
 # cherry-pit-web — security/transport helpers (sanitize_path_segment,
 # SVG_CSP, http_trace_layer, normalize_request_path, security_headers)
