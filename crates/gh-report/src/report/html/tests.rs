@@ -1,6 +1,6 @@
 use super::*;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::domain::auth::{AuthMode, Capability, TokenTier};
 use crate::domain::checks::{CollectionFailureReason, ExclusionReason};
@@ -450,7 +450,7 @@ fn render_dashboard_produces_all_pages() {
         );
     }
     assert!(!pages.contains_key("OPERATIONS.html"));
-    assert_eq!(pages.len(), 16);
+    assert_eq!(pages.len(), 18);
 }
 
 #[test]
@@ -6959,6 +6959,61 @@ fn repo_names_in_rows(page: &str, marker: &str) -> HashSet<String> {
     names
 }
 
+fn card_for_drilldown<'a>(index: &'a str, drilldown: &str) -> &'a str {
+    let needle = format!("href=\"{drilldown}\"");
+    let at = index.find(&needle).expect("drilldown card must exist");
+    let start = index[..at].rfind("<a ").unwrap_or(at);
+    let end = index[at..].find("</a>").map_or(index.len(), |e| at + e + 4);
+    &index[start..end]
+}
+
+fn repo_verdicts_in_rows(html: &str, row_attr: &str) -> HashMap<String, String> {
+    let needle = format!("<tr {row_attr} data-repo=\"");
+    let mut verdicts = HashMap::new();
+    let mut rest = html;
+    while let Some(at) = rest.find(&needle) {
+        rest = &rest[at + needle.len()..];
+        let end = rest
+            .find('"')
+            .expect("data-repo attribute must be terminated");
+        let repo = rest[..end].to_string();
+        rest = &rest[end..];
+        let row_end = rest.find("</tr>").expect("closing tr");
+        let row_slice = &rest[..row_end];
+        if row_slice.contains(">Met</td>") {
+            verdicts.insert(repo, "Met".to_string());
+        } else if row_slice.contains(">Not met</td>") {
+            verdicts.insert(repo, "Not met".to_string());
+        }
+        rest = &rest[row_end..];
+    }
+    verdicts
+}
+
+fn repo_reasons_in_unmeasured_rows(html: &str) -> HashMap<String, String> {
+    let needle = "<tr data-unmeasured-row data-repo=\"";
+    let mut reasons = HashMap::new();
+    let mut rest = html;
+    while let Some(at) = rest.find(needle) {
+        rest = &rest[at + needle.len()..];
+        let end = rest
+            .find('"')
+            .expect("data-repo attribute must be terminated");
+        let repo = rest[..end].to_string();
+        rest = &rest[end..];
+        let row_end = rest.find("</tr>").expect("closing tr");
+        let row_slice = &rest[..row_end];
+        if let Some(td_start) = row_slice.rfind("<td>") {
+            let td_content = &row_slice[td_start + 4..];
+            if let Some(td_end) = td_content.find("</td>") {
+                reasons.insert(repo, td_content[..td_end].to_string());
+            }
+        }
+        rest = &rest[row_end..];
+    }
+    reasons
+}
+
 /// THE invariant: each drill-down page lists exactly the repositories in its
 /// card's coverage denominator.
 ///
@@ -7151,4 +7206,476 @@ fn every_denominator_drill_down_is_linked_from_the_index_card() {
             "{file_name} is linked from index.html but never rendered"
         );
     }
+
+    assert!(index.contains("href=\"alert_free.html\""));
+    assert!(pages.contains_key("alert_free.html"));
+    assert!(index.contains("href=\"lifecycle_retirement.html\""));
+    assert!(pages.contains_key("lifecycle_retirement.html"));
+}
+
+#[test]
+fn render_dashboard_alert_free_page_contents() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let page = pages
+        .get("alert_free.html")
+        .expect("alert_free.html must be rendered");
+
+    assert!(page.contains("Alert-Free Status Coverage"));
+    assert!(page.contains("In the denominator"));
+    assert!(
+        page.contains("repositories where secret scanning is enabled and alerts are observable")
+    );
+}
+
+#[test]
+fn render_dashboard_lifecycle_retirement_page_contents() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let page = pages
+        .get("lifecycle_retirement.html")
+        .expect("lifecycle_retirement.html must be rendered");
+
+    assert!(page.contains("Lifecycle: Retirement Coverage"));
+    assert!(page.contains("Stale-lifecycle repositories"));
+    assert!(page.contains(
+        "stale-lifecycle repositories (archived repositories and active repositories not updated in 2+ years)"
+    ));
+}
+
+fn evidence_with_alert_free_mixed_population() -> Evidence {
+    let repositories = vec![
+        test_fixtures::make_repo_with_updated_at(
+            "repo-alert-free",
+            Some("2026-09-01T00:00:00Z"),
+            true,
+            Some(false),
+            true,
+            &[],
+        ),
+        test_fixtures::make_repo_with_updated_at(
+            "repo-with-alerts",
+            Some("2026-09-01T00:00:00Z"),
+            true,
+            Some(true),
+            true,
+            &[],
+        ),
+        test_fixtures::make_repo_with_updated_at(
+            "repo-unknown-alerts",
+            Some("2026-09-01T00:00:00Z"),
+            true,
+            None,
+            true,
+            &[],
+        ),
+        test_fixtures::make_repo_with_updated_at(
+            "repo-disabled",
+            Some("2026-09-01T00:00:00Z"),
+            false,
+            None,
+            false,
+            &[],
+        ),
+        test_fixtures::make_repository_evidence(
+            "repo-perm-denied",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_permission_denied(),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_conforming(),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "repo-archived",
+            Visibility::Public,
+            true,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_conforming(),
+            ),
+        ),
+    ];
+    let metrics = crate::aggregate::metrics::aggregate_metrics(&repositories);
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        test_fixtures::make_collection_statistics(6, 6, 0, 0),
+        metrics,
+        test_fixtures::make_observability(),
+        repositories,
+    )
+}
+
+fn evidence_with_lifecycle_retirement_mixed_population() -> Evidence {
+    let mut repo_archived_fresh = test_fixtures::make_repository_evidence(
+        "repo-archived-fresh",
+        Visibility::Public,
+        true,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_conforming(),
+        ),
+    );
+    repo_archived_fresh.repository.updated_at =
+        crate::domain::repository::UpdatedAt::new("2025-09-01T00:00:00Z");
+
+    let mut repo_archived_stale = test_fixtures::make_repository_evidence(
+        "repo-archived-stale",
+        Visibility::Public,
+        true,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_conforming(),
+        ),
+    );
+    repo_archived_stale.repository.updated_at =
+        crate::domain::repository::UpdatedAt::new("2023-01-01T00:00:00Z");
+
+    let mut repo_active_stale = test_fixtures::make_repository_evidence(
+        "repo-active-stale",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_conforming(),
+        ),
+    );
+    repo_active_stale.repository.updated_at =
+        crate::domain::repository::UpdatedAt::new("2023-01-01T00:00:00Z");
+
+    let mut repo_active_fresh = test_fixtures::make_repository_evidence(
+        "repo-active-fresh",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_conforming(),
+        ),
+    );
+    repo_active_fresh.repository.updated_at =
+        crate::domain::repository::UpdatedAt::new("2026-09-01T00:00:00Z");
+
+    let repositories = vec![
+        repo_active_fresh,
+        repo_active_stale,
+        repo_archived_fresh,
+        repo_archived_stale,
+    ];
+    let metrics = crate::aggregate::metrics::aggregate_metrics(&repositories);
+    let mut stats = test_fixtures::make_collection_statistics(4, 4, 0, 0);
+    stats.archived_repos = 2;
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repositories,
+    )
+}
+
+#[test]
+fn alert_free_drill_down_mixed_population_agrees_with_card_metrics() {
+    let evidence = evidence_with_alert_free_mixed_population();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let page = pages
+        .get("alert_free.html")
+        .expect("alert_free.html must be rendered");
+    let index = &pages["index.html"];
+
+    let rendered_denominator = repo_names_in_rows(page, "data-denominator-row");
+    let rendered_unmeasured = repo_names_in_rows(page, "data-unmeasured-row");
+
+    let mut expected_denominator = HashSet::new();
+    expected_denominator.insert("repo-alert-free".to_string());
+    expected_denominator.insert("repo-with-alerts".to_string());
+
+    let mut expected_unmeasured = HashSet::new();
+    expected_unmeasured.insert("repo-unknown-alerts".to_string());
+    expected_unmeasured.insert("repo-disabled".to_string());
+    expected_unmeasured.insert("repo-perm-denied".to_string());
+
+    assert_eq!(rendered_denominator, expected_denominator);
+    assert_eq!(rendered_unmeasured, expected_unmeasured);
+    assert!(rendered_denominator.is_disjoint(&rendered_unmeasured));
+    assert!(!rendered_denominator.contains("repo-archived"));
+    assert!(!rendered_unmeasured.contains("repo-archived"));
+
+    let verdicts = repo_verdicts_in_rows(page, "data-denominator-row");
+    assert_eq!(
+        verdicts.get("repo-alert-free").map(String::as_str),
+        Some("Met")
+    );
+    assert_eq!(
+        verdicts.get("repo-with-alerts").map(String::as_str),
+        Some("Not met")
+    );
+    assert_eq!(verdicts.len(), 2);
+
+    let unmeasured_reasons = repo_reasons_in_unmeasured_rows(page);
+    assert_eq!(
+        unmeasured_reasons
+            .get("repo-unknown-alerts")
+            .map(String::as_str),
+        Some("Unknown")
+    );
+    assert_eq!(
+        unmeasured_reasons.get("repo-disabled").map(String::as_str),
+        Some("Secret scanning disabled")
+    );
+    assert_eq!(
+        unmeasured_reasons
+            .get("repo-perm-denied")
+            .map(String::as_str),
+        Some("Permission denied")
+    );
+    assert_eq!(unmeasured_reasons.len(), 3);
+
+    assert!(page.contains("50.0% (1/2)"));
+    assert!(page.contains("The 1 of 2 repositories"));
+
+    let alert_card = card_for_drilldown(index, "alert_free.html");
+    assert!(alert_card.contains("Alert-Free Status"));
+    assert!(alert_card.contains("50.0% (1/2)"));
+    assert!(alert_card.contains("card-bright-red"));
+}
+
+#[test]
+fn alert_free_drill_down_unobservable_population_agrees_with_card_metrics() {
+    let repositories = vec![
+        test_fixtures::make_repository_evidence(
+            "repo-disabled",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_disabled(),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_conforming(),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "repo-perm-denied",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_permission_denied(),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_conforming(),
+            ),
+        ),
+    ];
+    let metrics = crate::aggregate::metrics::aggregate_metrics(&repositories);
+    let evidence = test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        test_fixtures::make_collection_statistics(2, 2, 0, 0),
+        metrics,
+        test_fixtures::make_observability(),
+        repositories,
+    );
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let page = pages
+        .get("alert_free.html")
+        .expect("alert_free.html must be rendered");
+    let index = &pages["index.html"];
+
+    let rendered_denominator = repo_names_in_rows(page, "data-denominator-row");
+    let rendered_unmeasured = repo_names_in_rows(page, "data-unmeasured-row");
+
+    assert!(rendered_denominator.is_empty());
+    assert_eq!(rendered_unmeasured.len(), 2);
+    assert!(page.contains("N/A (0/0)"));
+    assert!(page.contains("The 0 of 0 repositories"));
+    assert!(page.contains("No repository in this organization could be measured for this control"));
+    assert!(index.contains("N/A (0/0)"));
+    assert!(index.contains("card-bright-red"));
+}
+
+#[test]
+fn lifecycle_retirement_drill_down_mixed_population_agrees_with_card_metrics() {
+    let evidence = evidence_with_lifecycle_retirement_mixed_population();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let page = pages
+        .get("lifecycle_retirement.html")
+        .expect("lifecycle_retirement.html must be rendered");
+    let index = &pages["index.html"];
+
+    let rendered_denominator = repo_names_in_rows(page, "data-denominator-row");
+    let rendered_unmeasured = repo_names_in_rows(page, "data-unmeasured-row");
+
+    let mut expected_denominator = HashSet::new();
+    expected_denominator.insert("repo-archived-fresh".to_string());
+    expected_denominator.insert("repo-archived-stale".to_string());
+    expected_denominator.insert("repo-active-stale".to_string());
+
+    assert_eq!(rendered_denominator, expected_denominator);
+    assert!(rendered_unmeasured.is_empty());
+    assert!(!rendered_denominator.contains("repo-active-fresh"));
+
+    let verdicts = repo_verdicts_in_rows(page, "data-denominator-row");
+    assert_eq!(
+        verdicts.get("repo-archived-fresh").map(String::as_str),
+        Some("Met")
+    );
+    assert_eq!(
+        verdicts.get("repo-archived-stale").map(String::as_str),
+        Some("Met")
+    );
+    assert_eq!(
+        verdicts.get("repo-active-stale").map(String::as_str),
+        Some("Not met")
+    );
+    assert_eq!(verdicts.len(), 3);
+
+    assert!(page.contains("66.7% (2/3)"));
+    assert!(page.contains("The 2 of 3 repositories"));
+    assert!(page.contains("Stale-lifecycle repositories (3 detailed)"));
+    assert!(!page.contains("the table below is exactly the denominator"));
+
+    let lr_card = card_for_drilldown(index, "lifecycle_retirement.html");
+    assert!(lr_card.contains("Lifecycle: Retirement"));
+    assert!(lr_card.contains("66.7% (2/3)"));
+}
+
+#[test]
+fn lifecycle_retirement_drill_down_org_statistics_exceeding_rows_discloses_gap() {
+    let mut repo_active_stale = test_fixtures::make_repository_evidence(
+        "repo-active-stale",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_conforming(),
+        ),
+    );
+    repo_active_stale.repository.updated_at =
+        crate::domain::repository::UpdatedAt::new("2023-01-01T00:00:00Z");
+
+    let repositories = vec![repo_active_stale];
+    let metrics = crate::aggregate::metrics::aggregate_metrics(&repositories);
+    let mut stats = test_fixtures::make_collection_statistics(1, 1, 0, 0);
+    stats.archived_repos = 3;
+    let evidence = test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repositories,
+    );
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let page = pages
+        .get("lifecycle_retirement.html")
+        .expect("lifecycle_retirement.html must be rendered");
+    let index = &pages["index.html"];
+
+    let lr_card = card_for_drilldown(index, "lifecycle_retirement.html");
+    assert!(lr_card.contains("75.0% (3/4)"));
+    assert!(page.contains("The 3 of 4 repositories"));
+    assert!(page.contains("75.0% (3/4)"));
+    assert!(page.contains(
+        "3 archived repositories are counted from organization-level statistics without individual repository records in this report."
+    ));
+    assert!(page.contains("Stale-lifecycle repositories (1 detailed)"));
+    assert!(!page.contains("the table below is exactly the denominator"));
+}
+
+#[test]
+fn lifecycle_retirement_drill_down_empty_detailed_rows_with_org_archived_statistic() {
+    let repositories = Vec::new();
+    let metrics = crate::aggregate::metrics::aggregate_metrics(&repositories);
+    let mut stats = test_fixtures::make_collection_statistics(0, 0, 0, 0);
+    stats.archived_repos = 3;
+    let evidence = test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repositories,
+    );
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let page = pages
+        .get("lifecycle_retirement.html")
+        .expect("lifecycle_retirement.html must be rendered");
+    let index = &pages["index.html"];
+
+    let lr_card = card_for_drilldown(index, "lifecycle_retirement.html");
+    assert!(lr_card.contains("100.0% (3/3)"));
+    assert!(page.contains("100.0% (3/3)"));
+    assert!(page.contains("The 3 of 3 repositories"));
+    assert!(page.contains(
+        "3 archived repositories are counted from organization-level statistics without individual repository records in this report."
+    ));
+    assert!(!page.contains("no observable population"));
+    assert!(!page.contains("the table below is exactly the denominator"));
+    assert!(page.contains(
+        "No individual repository records available for stale-lifecycle repositories in this report."
+    ));
+}
+
+#[test]
+fn alert_free_card_bright_red_styling() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+    assert!(
+        index.contains("card-bright-red"),
+        "Alert-Free Status card must have card-bright-red class when rate is not 100%"
+    );
+
+    let mut perfect_evidence = sample_evidence();
+    perfect_evidence
+        .metrics
+        .secret_alert_counts
+        .repos_with_open_alerts = 0;
+    perfect_evidence
+        .metrics
+        .secret_alert_counts
+        .repos_without_open_alerts = 4;
+    perfect_evidence.metrics.open_secret_alert_prevalence = RateMetric::new(4, 4);
+    let perfect_pages = render_dashboard(&perfect_evidence, &DashboardConfig::default()).unwrap();
+    let perfect_index = &perfect_pages["index.html"];
+    assert!(
+        !perfect_index.contains("card-bright-red"),
+        "Alert-Free Status card must not have card-bright-red class when rate is 100%"
+    );
+
+    let mut na_evidence = sample_evidence();
+    na_evidence
+        .metrics
+        .secret_alert_counts
+        .repos_with_open_alerts = 0;
+    na_evidence
+        .metrics
+        .secret_alert_counts
+        .repos_without_open_alerts = 0;
+    na_evidence.metrics.open_secret_alert_prevalence = RateMetric::new(0, 0);
+    let na_pages = render_dashboard(&na_evidence, &DashboardConfig::default()).unwrap();
+    let na_index = &na_pages["index.html"];
+    assert!(
+        na_index.contains("card-bright-red"),
+        "Alert-Free Status card must have card-bright-red class when rate is None (N/A)"
+    );
 }

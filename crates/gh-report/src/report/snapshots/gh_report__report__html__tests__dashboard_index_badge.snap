@@ -50,14 +50,14 @@ expression: "&pages[\"index.html\"]"
                     </div>
                 </div>
             </a>
-            <div class="card tier-warn" title="Percentage of observable repositories with no open secret scanning alerts (secret scanning enabled and alerts observable). Higher is better. One of seven controls behind the Org Governance score. N/A when no repositories are observable.">
+            <a href="alert_free.html" class="card tier-warn card-bright-red" title="Percentage of observable repositories with no open secret scanning alerts (secret scanning enabled and alerts observable). Higher is better. One of seven controls behind the Org Governance score. N/A when no repositories are observable.">
                 <p class="card-label">Alert-Free Status</p>
                 <p class="card-value">75.0% (3/4)</p>
                 <div class="progress-bar">
                     <div class="progress-fill tier-warn w-75"></div>
                 </div>
                 <p class="card-detail">1 unmeasured</p>
-            </div>
+            </a>
             <a href="dependabot_status.html" class="card tier-warn" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies). Click through for the repositories behind this percentage.">
                 <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ<span class="sr-only">Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.</span></span></p>
                 <p class="card-value">60.0% (3/5)</p>
@@ -93,14 +93,14 @@ expression: "&pages[\"index.html\"]"
                     <div class="progress-fill tier-warn w-65"></div>
                 </div>
             </a>
-            <div class="card tier-na" title="Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better. One of seven controls behind the Org Governance score. It asks whether dead work has been retired, the later stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the per-owner Lifecycle: Freshness, which asks whether work is still happening and divides by all of an owner&#39;s repos rather than by stale-lifecycle repos only.">
+            <a href="lifecycle_retirement.html" class="card tier-na" title="Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better. One of seven controls behind the Org Governance score. It asks whether dead work has been retired, the later stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the per-owner Lifecycle: Freshness, which asks whether work is still happening and divides by all of an owner&#39;s repos rather than by stale-lifecycle repos only.">
                 <p class="card-label">Lifecycle: Retirement</p>
                 <p class="card-value">N/A (0/0)</p>
                 <p class="card-detail">0 archived · 0 stale</p>
                 <div class="progress-bar">
                     <div class="progress-fill tier-na w-0"></div>
                 </div>
-            </div>
+            </a>
         </div>
     </div>
 

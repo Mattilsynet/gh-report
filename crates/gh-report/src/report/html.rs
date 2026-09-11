@@ -12,8 +12,8 @@ use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use tracing::debug;
 
 use crate::aggregate::metrics::{
-    CoverageControl, DenominatorMembership, control_denominator_population, denominator_met_count,
-    denominator_repo_count,
+    ControlOutcome, CoverageControl, DenominatorMembership, UnmeasuredReason,
+    control_denominator_population, denominator_met_count, denominator_repo_count,
 };
 use crate::config;
 use crate::config::dashboard::{CoverageTiers, DashboardConfig};
@@ -31,11 +31,11 @@ use crate::error::ReportError;
 use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
     ControlDenominatorViewModel, CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel,
-    DenominatorRepoRow, DotState, DrillDownPage, GhostTeamRow, OrphanedRepoRow, OrphanedTeamGroup,
-    OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel,
-    ReportViewModel, RosterFreshness, RosterSection, StatusDot, SummaryCard, TeamMemberRow,
-    TeamRosterViewModel, TopNav, TopSecurityTeam, UnmeasuredRepoRow, WildcardOwnerRow,
-    bpr_band_metadata, compute_health_score, coverage_control_column_tooltip,
+    DenominatorRepoRow, DotState, DrillDownPage, GhostTeamRow, LifecycleRetirementViewModel,
+    OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
+    OwnerRepoRow, OwnersViewModel, ReportViewModel, RosterFreshness, RosterSection, StatusDot,
+    SummaryCard, TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, UnmeasuredRepoRow,
+    WildcardOwnerRow, bpr_band_metadata, compute_health_score, coverage_control_column_tooltip,
     coverage_control_how_to_fix, format_exclusion, generate_slug, rate_to_width_class,
     strip_org_prefix,
 };
@@ -161,6 +161,16 @@ denominator_template!(SecurityPolicyDenominatorTemplate, "security_policy.html")
 denominator_template!(SecretScanningDenominatorTemplate, "secret_scanning.html");
 denominator_template!(DependabotDenominatorTemplate, "dependabot_status.html");
 denominator_template!(CodeownersDenominatorTemplate, "codeowners.html");
+denominator_template!(AlertFreeDenominatorTemplate, "alert_free.html");
+
+#[derive(Template)]
+#[template(path = "lifecycle_retirement.html")]
+struct LifecycleRetirementDenominatorTemplate {
+    vm: LifecycleRetirementViewModel,
+    nav: TopNav,
+    title: String,
+    warm_start: bool,
+}
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 ///
@@ -402,7 +412,7 @@ const NON_ORPHANED_CONTROL: ControlKey = ControlKey::NonOrphaned;
 /// This is stricter than no encoding (defense-in-depth against tampered
 /// evidence data) but avoids the cosmetic over-encoding of `NON_ALPHANUMERIC`
 /// which would turn `my-repo` into `my%2Drepo`.
-const PATH_SEGMENT: &AsciiSet = &CONTROLS
+pub(crate) const PATH_SEGMENT: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
     .add(b'#')
@@ -589,6 +599,7 @@ pub(crate) fn render_publication_streaming(
 
     render_secondary_pages(
         evidence,
+        tiers,
         orphaned_vm,
         deleted_vm,
         &nav,
@@ -610,6 +621,7 @@ pub(crate) fn render_publication_streaming(
 /// Returns [`ReportError::TemplateRenderFailed`] if any template rendering fails.
 fn render_secondary_pages(
     evidence: &Evidence,
+    tiers: &CoverageTiers,
     orphaned_vm: OrphanedViewModel,
     deleted_vm: DeletedViewModel,
     nav: &TopNav,
@@ -647,6 +659,30 @@ fn render_secondary_pages(
     );
 
     render_denominator_pages(evidence, nav, warm_start, sink)?;
+
+    let alert_free_vm = build_alert_free_view_model(evidence)?;
+    let alert_free_html = render_template(&AlertFreeDenominatorTemplate {
+        title: format!("Alert-Free Status Coverage — {org}"),
+        vm: alert_free_vm,
+        nav: nav.clone(),
+        warm_start,
+    })?;
+    sink(
+        DrillDownPage::AlertFree.file_name().to_string(),
+        alert_free_html,
+    );
+
+    let lr_vm = build_lifecycle_retirement_view_model(evidence, tiers);
+    let lr_html = render_template(&LifecycleRetirementDenominatorTemplate {
+        title: format!("{} Coverage — {org}", lr_vm.control_name()),
+        vm: lr_vm,
+        nav: nav.clone(),
+        warm_start,
+    })?;
+    sink(
+        DrillDownPage::LifecycleRetirement.file_name().to_string(),
+        lr_html,
+    );
 
     Ok(())
 }
@@ -751,6 +787,115 @@ fn build_control_denominator_view_model(
         eligible,
         unmeasured,
     }
+}
+
+fn build_alert_free_view_model(
+    evidence: &Evidence,
+) -> Result<ControlDenominatorViewModel, ReportError> {
+    let org = &evidence.assessment_metadata.organization;
+    let org_encoded = utf8_percent_encode(org, PATH_SEGMENT).to_string();
+
+    let mut eligible = Vec::new();
+    let mut unmeasured = Vec::new();
+
+    for repo in &evidence.repositories {
+        if repo.repository.archived {
+            continue;
+        }
+
+        let name_encoded = utf8_percent_encode(&repo.repository.name, PATH_SEGMENT);
+        let (repo_name, repo_url) = build_repo_display(repo, &org_encoded, &name_encoded);
+        let visibility = repo.repository.visibility.to_string();
+        let archived = repo.repository.archived;
+        let ss = &repo.checks.secret_scanning;
+
+        if ss.status == SecretScanningStatus::Enabled && ss.alerts_observable {
+            match ss.has_open_alerts {
+                Some(true) => eligible.push(DenominatorRepoRow::new(
+                    repo_name,
+                    repo_url,
+                    visibility,
+                    archived,
+                    ControlOutcome::Unmet,
+                )),
+                Some(false) => eligible.push(DenominatorRepoRow::new(
+                    repo_name,
+                    repo_url,
+                    visibility,
+                    archived,
+                    ControlOutcome::Met,
+                )),
+                None => unmeasured.push(UnmeasuredRepoRow {
+                    repo_name,
+                    repo_url,
+                    visibility,
+                    archived,
+                    reason_label: UnmeasuredReason::Unknown.label(),
+                }),
+            }
+        } else {
+            let reason_label = if ss.status == SecretScanningStatus::Disabled {
+                "Secret scanning disabled"
+            } else if ss.status == SecretScanningStatus::PermissionDenied {
+                "Permission denied"
+            } else if ss.status == SecretScanningStatus::Unknown {
+                "Unknown"
+            } else if !ss.alerts_observable {
+                "Alerts unobservable"
+            } else {
+                "Not applicable"
+            };
+            unmeasured.push(UnmeasuredRepoRow {
+                repo_name,
+                repo_url,
+                visibility,
+                archived,
+                reason_label,
+            });
+        }
+    }
+
+    eligible.sort_by(|a, b| a.repo_name().cmp(b.repo_name()));
+    unmeasured.sort_by(|a, b| a.repo_name.cmp(&b.repo_name));
+
+    let met_count = eligible
+        .iter()
+        .filter(|r| r.outcome() == ControlOutcome::Met)
+        .count();
+    let total_count = eligible.len();
+
+    let numerator = u32::try_from(met_count).map_err(|e| ReportError::TemplateRenderFailed {
+        reason: format!("alert-free met count {met_count} exceeds u32::MAX: {e}"),
+    })?;
+    let denominator =
+        u32::try_from(total_count).map_err(|e| ReportError::TemplateRenderFailed {
+            reason: format!("alert-free total count {total_count} exceeds u32::MAX: {e}"),
+        })?;
+    let coverage_formatted = if denominator > 0 {
+        let rate = (f64::from(numerator) / f64::from(denominator)) * 100.0;
+        format!("{rate:.1}% ({numerator}/{denominator})")
+    } else {
+        format!("N/A ({numerator}/{denominator})")
+    };
+
+    Ok(ControlDenominatorViewModel {
+        organization: org.clone(),
+        control_name: "Alert-Free Status",
+        population_description: "repositories where secret scanning is enabled and alerts are observable",
+        page_file_name: DrillDownPage::AlertFree.file_name(),
+        numerator,
+        denominator,
+        coverage_formatted,
+        eligible,
+        unmeasured,
+    })
+}
+
+fn build_lifecycle_retirement_view_model(
+    evidence: &Evidence,
+    tiers: &CoverageTiers,
+) -> LifecycleRetirementViewModel {
+    LifecycleRetirementViewModel::from_evidence(evidence, tiers)
 }
 
 /// Everything [`render_owner_pages`] needs beyond its output sink.
@@ -1658,7 +1803,7 @@ fn extract_last_commit_display(repo: &RepositoryEvidence) -> LastCommitDisplay {
 }
 
 /// Build display name and URL for a repository.
-fn build_repo_display(
+pub(crate) fn build_repo_display(
     repo: &RepositoryEvidence,
     org_encoded: &str,
     name_encoded: &percent_encoding::PercentEncode<'_>,

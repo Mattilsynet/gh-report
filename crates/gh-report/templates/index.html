@@ -35,7 +35,7 @@
                 <p class="card-detail">{{ vm.secret_scanning_excluded_formatted }}</p>
                 {%- endif %}
             </a>
-            <div class="card {{ vm.alert_free_tier.css_class() }}" title="{{ vm.alert_free_tooltip }}">
+            <a href="{{ vm.alert_free_drill_down }}" class="card {{ vm.alert_free_tier.css_class() }}{% if vm.alert_free_is_bright_red() %} card-bright-red{% endif %}" title="{{ vm.alert_free_tooltip }}">
                 <p class="card-label">Alert-Free Status</p>
                 <p class="card-value">{{ vm.alert_free_formatted }}</p>
                 <div class="progress-bar">
@@ -44,7 +44,7 @@
                 {%- if vm.alert_free_excluded_total() > 0 %}
                 <p class="card-detail">{{ vm.alert_free_excluded_formatted() }}</p>
                 {%- endif %}
-            </div>
+            </a>
             <a href="{{ vm.dependabot_drill_down }}" class="card {{ vm.dependabot_tier.css_class() }}" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies). Click through for the repositories behind this percentage.">
                 <p class="card-label">Dependabot Status {% call tooltip::tooltip(vm.dependabot_how_to_fix) %}{% endcall %}</p>
                 <p class="card-value">{{ vm.dependabot_coverage_formatted }}</p>
@@ -87,14 +87,14 @@
                 <p class="card-detail">{{ vm.policy_excluded_formatted }}</p>
                 {%- endif %}
             </a>
-            <div class="card {{ vm.stale_tier.css_class() }}" title="{{ vm.lifecycle_retirement_tooltip }}">
+            <a href="{{ vm.lifecycle_retirement_drill_down }}" class="card {{ vm.stale_tier.css_class() }}" title="{{ vm.lifecycle_retirement_tooltip }}">
                 <p class="card-label">{{ vm.lifecycle_retirement_label }}</p>
                 <p class="card-value">{{ vm.stale_rate_formatted }}</p>
                 <p class="card-detail">{{ vm.archived_repos }} archived · {{ vm.stale_active_repos }} stale</p>
                 <div class="progress-bar">
                     <div class="progress-fill {{ vm.stale_tier.css_class() }} {{ vm.stale_width_class }}"></div>
                 </div>
-            </div>
+            </a>
         </div>
     </div>
 

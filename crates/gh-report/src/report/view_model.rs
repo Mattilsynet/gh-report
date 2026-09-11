@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use jiff::{SignedDuration, Timestamp};
+use percent_encoding::utf8_percent_encode;
 
 use crate::aggregate::metrics::ControlOutcome;
 use crate::config;
@@ -23,6 +24,7 @@ use crate::domain::metrics::{
     ScoreExclusionCount, TeamMemberRole,
 };
 use crate::domain::time::{is_repo_stale, parse_iso8601};
+use crate::report::html::{PATH_SEGMENT, build_repo_display};
 
 /// Coverage tier classification for dashboard display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +205,10 @@ drill_down_pages! {
     DependabotStatus => "dependabot_status.html",
     /// The CODEOWNERS coverage-denominator drill-down page.
     Codeowners => "codeowners.html",
+    /// The Alert-Free Status coverage-denominator drill-down page.
+    AlertFree => "alert_free.html",
+    /// The Lifecycle: Retirement coverage-denominator drill-down page.
+    LifecycleRetirement => "lifecycle_retirement.html",
 }
 
 /// A depth-resolved link to a [`DrillDownPage`].
@@ -943,6 +949,140 @@ pub struct ControlDenominatorViewModel {
     pub coverage_formatted: String,
 }
 
+/// The repositories behind the Lifecycle: Retirement coverage percentage.
+///
+/// Unlike standard controls where `eligible` is the exact denominator,
+/// retirement coverage can count uninventoried archived repositories from
+/// organization-level statistics (`uninventoried_archived > 0`).
+#[derive(Debug, Clone)]
+pub struct LifecycleRetirementViewModel {
+    organization: String,
+    control_name: &'static str,
+    population_description: &'static str,
+    page_file_name: &'static str,
+    numerator: u32,
+    denominator: u32,
+    coverage_formatted: String,
+    uninventoried_archived: u32,
+    eligible: Vec<DenominatorRepoRow>,
+}
+
+impl LifecycleRetirementViewModel {
+    /// Build a new view model for the Lifecycle: Retirement drilldown page from evidence.
+    #[must_use]
+    pub(crate) fn from_evidence(evidence: &Evidence, tiers: &CoverageTiers) -> Self {
+        let org = &evidence.assessment_metadata.organization;
+        let org_encoded = utf8_percent_encode(org, PATH_SEGMENT).to_string();
+        let run_timestamp = &evidence.assessment_metadata.run_timestamp;
+
+        let (archived, stale_active, _, _, coverage_formatted, _) =
+            compute_archival_coverage(evidence, tiers);
+        let numerator = archived;
+        let denominator = archived.saturating_add(stale_active);
+
+        let mut eligible = Vec::new();
+        for repo in &evidence.repositories {
+            let name_encoded = utf8_percent_encode(&repo.repository.name, PATH_SEGMENT);
+            let (repo_name, repo_url) = build_repo_display(repo, &org_encoded, &name_encoded);
+            let visibility = repo.repository.visibility.to_string();
+            if repo.repository.archived {
+                eligible.push(DenominatorRepoRow::new(
+                    repo_name,
+                    repo_url,
+                    visibility,
+                    true,
+                    ControlOutcome::Met,
+                ));
+            } else if is_repo_stale(repo.repository.updated_at.as_deref(), run_timestamp) {
+                eligible.push(DenominatorRepoRow::new(
+                    repo_name,
+                    repo_url,
+                    visibility,
+                    false,
+                    ControlOutcome::Unmet,
+                ));
+            }
+        }
+        eligible.sort_by(|a, b| a.repo_name().cmp(b.repo_name()));
+
+        let archived_in_details =
+            u32::try_from(eligible.iter().filter(|r| r.archived()).count()).unwrap_or(u32::MAX);
+        let uninventoried_archived = archived.saturating_sub(archived_in_details);
+
+        let population_description = if uninventoried_archived > 0 {
+            "stale-lifecycle repositories (archived repositories counted from organization statistics and active repositories not updated in 2+ years)"
+        } else {
+            "stale-lifecycle repositories (archived repositories and active repositories not updated in 2+ years)"
+        };
+
+        Self {
+            organization: org.clone(),
+            control_name: LIFECYCLE_RETIREMENT_LABEL,
+            population_description,
+            page_file_name: DrillDownPage::LifecycleRetirement.file_name(),
+            numerator,
+            denominator,
+            coverage_formatted,
+            uninventoried_archived,
+            eligible,
+        }
+    }
+
+    /// Organization name (for the page title and prose).
+    #[must_use]
+    pub fn organization(&self) -> &str {
+        &self.organization
+    }
+
+    /// Display name of the control.
+    #[must_use]
+    pub fn control_name(&self) -> &'static str {
+        self.control_name
+    }
+
+    /// Prose description of the population considered.
+    #[must_use]
+    pub fn population_description(&self) -> &'static str {
+        self.population_description
+    }
+
+    /// Filename of this page, owned by [`DrillDownPage::file_name`].
+    #[must_use]
+    pub fn page_file_name(&self) -> &'static str {
+        self.page_file_name
+    }
+
+    /// Coverage numerator (archived repositories).
+    #[must_use]
+    pub fn numerator(&self) -> u32 {
+        self.numerator
+    }
+
+    /// Coverage denominator (archived + active stale repositories).
+    #[must_use]
+    pub fn denominator(&self) -> u32 {
+        self.denominator
+    }
+
+    /// The card's formatted percentage, e.g. `"66.7% (2/3)"` or `"N/A"`.
+    #[must_use]
+    pub fn coverage_formatted(&self) -> &str {
+        &self.coverage_formatted
+    }
+
+    /// Archived repositories counted from organization-level statistics without detailed rows.
+    #[must_use]
+    pub fn uninventoried_archived(&self) -> u32 {
+        self.uninventoried_archived
+    }
+
+    /// Detailed stale-lifecycle repository rows, sorted by name.
+    #[must_use]
+    pub fn eligible(&self) -> &[DenominatorRepoRow] {
+        &self.eligible
+    }
+}
+
 /// One Branch Protection Regime band and its member repos.
 #[derive(Debug, Clone)]
 pub struct BprBandGroup {
@@ -1607,6 +1747,12 @@ pub struct ReportViewModel {
     /// Link from the dashboard index to the CODEOWNERS
     /// coverage-denominator drill-down page.
     pub codeowners_drill_down: DrillDownLink,
+    /// Link from the dashboard index to the Alert-Free Status
+    /// coverage-denominator drill-down page.
+    pub alert_free_drill_down: DrillDownLink,
+    /// Link from the dashboard index to the Lifecycle: Retirement
+    /// coverage-denominator drill-down page.
+    pub lifecycle_retirement_drill_down: DrillDownLink,
 
     /// Composite Org Governance score (geometric mean of available coverage
     /// rates), rendered on the dashboard as the "Overall Organization
@@ -1967,6 +2113,9 @@ impl ReportViewModel {
             secret_scanning_drill_down: DrillDownPage::SecretScanning.link(DashboardHref::Root),
             dependabot_drill_down: DrillDownPage::DependabotStatus.link(DashboardHref::Root),
             codeowners_drill_down: DrillDownPage::Codeowners.link(DashboardHref::Root),
+            alert_free_drill_down: DrillDownPage::AlertFree.link(DashboardHref::Root),
+            lifecycle_retirement_drill_down: DrillDownPage::LifecycleRetirement
+                .link(DashboardHref::Root),
             health_score: health.score,
             health_tier: health.tier,
             health_score_formatted: health.score_formatted,
@@ -2006,6 +2155,12 @@ impl ReportViewModel {
     #[must_use]
     pub fn alert_free_excluded_formatted(&self) -> String {
         self.alert_free_exclusion.formatted()
+    }
+
+    /// Whether the Alert-Free Status card should render with a bright red background.
+    #[must_use]
+    pub fn alert_free_is_bright_red(&self) -> bool {
+        self.alert_free_rate != Some(100.0)
     }
 }
 
@@ -2763,7 +2918,7 @@ pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str>
 ///
 /// Returns `(archived, stale_active_repos, stale_rate, stale_tier,
 /// stale_rate_formatted, stale_width_class)`.
-fn compute_archival_coverage(
+pub(crate) fn compute_archival_coverage(
     evidence: &Evidence,
     tiers: &CoverageTiers,
 ) -> (u32, u32, Option<f64>, CoverageTier, String, &'static str) {
@@ -2774,7 +2929,10 @@ fn compute_archival_coverage(
     let stale_active = evidence
         .repositories
         .iter()
-        .filter(|r| is_repo_stale(r.repository.updated_at.as_deref(), &metadata.run_timestamp))
+        .filter(|r| {
+            !r.repository.archived
+                && is_repo_stale(r.repository.updated_at.as_deref(), &metadata.run_timestamp)
+        })
         .count();
     let stale_active_repos = u32::try_from(stale_active).unwrap_or(u32::MAX);
     let stale_denominator = archived.saturating_add(stale_active_repos);
@@ -4438,6 +4596,130 @@ mod tests {
                 RedFlagId::BranchProtectionPermissionSuspected,
                 RedFlagId::AdminEnforcementNotEquivalent,
             ]
+        );
+    }
+
+    #[test]
+    fn lifecycle_retirement_view_model_complete_evidence() {
+        let mut repo_archived = test_fixtures::all_passing_evidence("repo-archived");
+        repo_archived.repository.archived = true;
+
+        let mut repo_stale = test_fixtures::all_passing_evidence("repo-stale");
+        repo_stale.repository.archived = false;
+        repo_stale.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2020-01-01T00:00:00Z");
+
+        let mut repo_fresh = test_fixtures::all_passing_evidence("repo-fresh");
+        repo_fresh.repository.archived = false;
+        repo_fresh.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-01T12:00:00Z");
+
+        let repositories = vec![repo_archived, repo_stale, repo_fresh];
+        let metrics = crate::aggregate::metrics::aggregate_metrics(&repositories);
+        let mut stats = test_fixtures::make_collection_statistics(3, 1, 0, 0);
+        stats.archived_repos = 1;
+        let evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            stats,
+            metrics,
+            test_fixtures::make_observability(),
+            repositories,
+        );
+
+        let vm = LifecycleRetirementViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        assert_eq!(vm.organization(), "TestOrg");
+        assert_eq!(vm.control_name(), LIFECYCLE_RETIREMENT_LABEL);
+        assert_eq!(
+            vm.population_description(),
+            "stale-lifecycle repositories (archived repositories and active repositories not updated in 2+ years)"
+        );
+        assert_eq!(
+            vm.page_file_name(),
+            DrillDownPage::LifecycleRetirement.file_name()
+        );
+        assert_eq!(vm.numerator(), 1);
+        assert_eq!(vm.denominator(), 2);
+        assert_eq!(vm.coverage_formatted(), "50.0% (1/2)");
+        assert_eq!(vm.uninventoried_archived(), 0);
+        assert_eq!(vm.eligible().len(), 2);
+
+        let archived_row = vm
+            .eligible()
+            .iter()
+            .find(|r| r.repo_name() == "repo-archived")
+            .expect("archived repo should be in eligible");
+        assert!(archived_row.archived());
+        assert_eq!(archived_row.outcome(), ControlOutcome::Met);
+
+        let stale_row = vm
+            .eligible()
+            .iter()
+            .find(|r| r.repo_name() == "repo-stale")
+            .expect("stale active repo should be in eligible");
+        assert!(!stale_row.archived());
+        assert_eq!(stale_row.outcome(), ControlOutcome::Unmet);
+
+        assert!(
+            vm.eligible().iter().all(|r| r.repo_name() != "repo-fresh"),
+            "fresh active repo must be excluded from eligible"
+        );
+    }
+
+    #[test]
+    fn lifecycle_retirement_view_model_partial_evidence() {
+        let mut repo_archived = test_fixtures::all_passing_evidence("repo-archived");
+        repo_archived.repository.archived = true;
+
+        let repositories = vec![repo_archived];
+        let metrics = crate::aggregate::metrics::aggregate_metrics(&repositories);
+        let mut stats = test_fixtures::make_collection_statistics(1, 0, 0, 0);
+        stats.archived_repos = 3;
+        let evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            stats,
+            metrics,
+            test_fixtures::make_observability(),
+            repositories,
+        );
+
+        let vm = LifecycleRetirementViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        assert_eq!(vm.numerator(), 3);
+        assert_eq!(vm.denominator(), 3);
+        assert_eq!(vm.coverage_formatted(), "100.0% (3/3)");
+        assert_eq!(vm.uninventoried_archived(), 2);
+        assert_eq!(vm.eligible().len(), 1);
+        assert_eq!(
+            vm.population_description(),
+            "stale-lifecycle repositories (archived repositories counted from organization statistics and active repositories not updated in 2+ years)"
+        );
+    }
+
+    #[test]
+    fn lifecycle_retirement_view_model_zero_denominator() {
+        let repositories = Vec::new();
+        let metrics = crate::aggregate::metrics::aggregate_metrics(&repositories);
+        let mut stats = test_fixtures::make_collection_statistics(0, 0, 0, 0);
+        stats.archived_repos = 0;
+        let evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            stats,
+            metrics,
+            test_fixtures::make_observability(),
+            repositories,
+        );
+
+        let vm = LifecycleRetirementViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        assert_eq!(vm.numerator(), 0);
+        assert_eq!(vm.denominator(), 0);
+        assert_eq!(vm.coverage_formatted(), "N/A (0/0)");
+        assert_eq!(vm.uninventoried_archived(), 0);
+        assert!(vm.eligible().is_empty());
+        assert_eq!(
+            vm.population_description(),
+            "stale-lifecycle repositories (archived repositories and active repositories not updated in 2+ years)"
         );
     }
 }

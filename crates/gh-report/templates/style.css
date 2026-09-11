@@ -325,6 +325,21 @@ code {
    border-left: 4px solid var(--tier-na-border);
 }
 
+.card-bright-red {
+   background: #ff0000;
+   border-color: #ff0000;
+}
+
+.card-bright-red .card-label,
+.card-bright-red .card-value,
+.card-bright-red .card-detail {
+   color: #000000;
+}
+
+a.card.card-bright-red:hover {
+   border-color: #000000;
+}
+
 /* ── Rank Cards (podium) ────────────────────────────────────────── */
 
 .rank-gold {

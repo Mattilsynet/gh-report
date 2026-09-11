@@ -1,0 +1,56 @@
+{%- import "partials/head.html" as head -%}
+{%- import "partials/tooltip.html" as tooltip -%}
+<!DOCTYPE html>
+<html lang="en">
+{% call head::head(nav.base, title, true, warm_start) %}{% endcall %}
+<body>
+    {% include "partials/nav.html" %}
+
+    <h1>{{ vm.control_name() }}</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="{{ nav.dashboard_href }}">Dashboard</a></li>
+        <li>{{ vm.control_name() }}</li>
+    </ul>
+
+    <p class="meta">The {{ vm.numerator() }} of {{ vm.denominator() }} repositories
+        ({{ vm.coverage_formatted() }}) behind the {{ vm.control_name() }} card for
+        <code>{{ vm.organization() }}</code>. The population considered is
+        {{ vm.population_description() }}.</p>
+
+    {%- if vm.uninventoried_archived() > 0 %}
+    <p class="meta"><strong>Note:</strong> {{ vm.uninventoried_archived() }} archived repositories are counted from organization-level statistics without individual repository records in this report.</p>
+    {%- endif %}
+
+    <section class="card">
+        <h2>Stale-lifecycle repositories{% if !vm.eligible().is_empty() %} ({{ vm.eligible().len() }} detailed){% endif %}</h2>
+        {% if vm.eligible().is_empty() %}
+        <p class="meta">No individual repository records available for stale-lifecycle repositories in this report.</p>
+        {% else %}
+        <div class="table-wrapper">
+            <table class="data-table" data-sortable>
+                <thead>
+                    <tr>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Archived", "Whether the repository is archived on GitHub.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Verdict", "Met: archived (retired); Not met: active stale (not updated in 2+ years).") %}{% endcall %}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in vm.eligible() %}
+                    <tr data-denominator-row data-repo="{{ row.repo_name() }}">
+                        <td>{% if row.repo_url().is_empty() %}{{ row.repo_name() }}{% else %}<a href="{{ row.repo_url() }}"
+                                target="_blank" rel="noopener noreferrer">{{ row.repo_name() }}</a>{% endif %}</td>
+                        <td>{{ row.visibility() }}</td>
+                        <td>{% if row.archived() %}Yes{% else %}No{% endif %}</td>
+                        <td class="{{ row.outcome_css_class() }}">{{ row.outcome_label() }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </section>
+</body>
+</html>

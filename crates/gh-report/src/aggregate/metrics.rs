@@ -718,8 +718,7 @@ fn count_codeowners_statuses(active: &[&RepositoryEvidence]) -> CodeownersCounts
 /// evaluator change accidentally violates the invariant in production.
 ///
 /// When the gate passes but `has_open_alerts` is `None` (unknown), the repo
-/// is counted as "without open alerts" — unknown alert status defaults to
-/// the negative case.
+/// is counted as unobservable rather than clean.
 fn count_secret_alert_observability(active: &[&RepositoryEvidence]) -> SecretAlertCounts {
     let mut counts = SecretAlertCounts::default();
     for repo in active {
@@ -727,9 +726,11 @@ fn count_secret_alert_observability(active: &[&RepositoryEvidence]) -> SecretAle
         if ss.alerts_observable && ss.status == SecretScanningStatus::Enabled {
             if ss.has_open_alerts == Some(true) {
                 counts.repos_with_open_alerts = counts.repos_with_open_alerts.saturating_add(1);
-            } else {
+            } else if ss.has_open_alerts == Some(false) {
                 counts.repos_without_open_alerts =
                     counts.repos_without_open_alerts.saturating_add(1);
+            } else {
+                counts.unobservable = counts.unobservable.saturating_add(1);
             }
         } else {
             counts.unobservable = counts.unobservable.saturating_add(1);
@@ -754,6 +755,7 @@ fn count_alert_observable_enabled(active: &[&RepositoryEvidence]) -> u32 {
             .filter(|r| {
                 r.checks.secret_scanning.status == SecretScanningStatus::Enabled
                     && r.checks.secret_scanning.alerts_observable
+                    && r.checks.secret_scanning.has_open_alerts.is_some()
             })
             .count(),
     )
@@ -1087,13 +1089,14 @@ pub(crate) fn enrich_owner_metrics_with_lifecycle(
                 r.checks.secret_scanning.status
                     == crate::domain::checks::SecretScanningStatus::Enabled
                     && r.checks.secret_scanning.alerts_observable
+                    && r.checks.secret_scanning.has_open_alerts.is_some()
             })
             .collect();
         let observable_count = count_as_u32(observable.len());
         let alert_free_count = count_as_u32(
             observable
                 .iter()
-                .filter(|r| r.checks.secret_scanning.has_open_alerts != Some(true))
+                .filter(|r| r.checks.secret_scanning.has_open_alerts == Some(false))
                 .count(),
         );
         let unobservable_count = total.saturating_sub(observable_count);
@@ -2402,7 +2405,7 @@ mod tests {
     }
 
     #[test]
-    fn has_open_alerts_none_with_observable_counted_as_without() {
+    fn has_open_alerts_none_with_observable_counted_as_unobservable() {
         let repos = vec![make_repository_evidence(
             "repo-1",
             Visibility::Private,
@@ -2423,8 +2426,9 @@ mod tests {
         )];
         let metrics = aggregate_metrics(&repos);
         assert_eq!(metrics.secret_alert_counts.repos_with_open_alerts, 0);
-        assert_eq!(metrics.secret_alert_counts.repos_without_open_alerts, 1);
-        assert_eq!(metrics.secret_alert_counts.unobservable, 0);
+        assert_eq!(metrics.secret_alert_counts.repos_without_open_alerts, 0);
+        assert_eq!(metrics.secret_alert_counts.unobservable, 1);
+        assert_eq!(metrics.open_secret_alert_prevalence.denominator, 0);
     }
 
     #[test]
@@ -3959,7 +3963,7 @@ mod tests {
                 "clean-2",
                 Some("2026-04-01T12:00:00+00:00"),
                 true,
-                None,
+                Some(false),
                 true,
                 &["@org/team-a"],
             ),
@@ -3971,6 +3975,39 @@ mod tests {
         assert_eq!(alert_free.numerator, 2);
         assert_eq!(alert_free.denominator, 2);
         assert_eq!(alert_free.rate, Some(100.0));
+    }
+
+    #[test]
+    fn enrich_lifecycle_alert_free_unknown_alerts_is_unobservable() {
+        let repos = vec![
+            make_repo_with_updated_at(
+                "clean-1",
+                Some("2026-04-01T12:00:00+00:00"),
+                true,
+                Some(false),
+                true,
+                &["@org/team-a"],
+            ),
+            make_repo_with_updated_at(
+                "unknown-2",
+                Some("2026-04-01T12:00:00+00:00"),
+                true,
+                None,
+                true,
+                &["@org/team-a"],
+            ),
+        ];
+        let mut owners = build_owner_metrics(&repos);
+        enrich_owner_metrics_with_lifecycle(&mut owners, &repos, &make_timestamp());
+
+        let alert_free = owners[0].per_control_coverage.get("alert_free").unwrap();
+        assert_eq!(alert_free.numerator, 1);
+        assert_eq!(alert_free.denominator, 1);
+        assert_eq!(alert_free.rate, Some(100.0));
+        assert_eq!(
+            alert_free.extra.get("unobservable"),
+            Some(&serde_json::json!(1))
+        );
     }
 
     #[test]
