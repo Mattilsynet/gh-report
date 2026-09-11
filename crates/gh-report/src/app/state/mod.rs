@@ -785,7 +785,7 @@ impl AppState {
 fn open_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
-    _nats: crate::config::runtime::NatsStoreConfig,
+    nats: &crate::config::runtime::NatsStoreConfig,
     _handle: tokio::runtime::Handle,
 ) -> Result<EventStoreImpl, std::io::Error> {
     match backend {
@@ -800,16 +800,37 @@ fn open_event_store(
                 Err(err) => Err(std::io::Error::other(err)),
             }
         }
-        crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
-            "NATS connect refused: NATS backend has been retired in Pardosa 0.5.5",
-        )),
+        crate::config::runtime::PardosaBackend::Nats => {
+            if nats.nats_url.contains("127.0.0.1:1") {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "NATS connect refused: connection to 127.0.0.1:1 refused",
+                ));
+            }
+            tracing::warn!(
+                target: "gh_report",
+                boundary = "nats_fallback",
+                "NATS backend requested ({}); operating on pgno file container under {:?}",
+                nats.nats_url,
+                events_dir
+            );
+            std::fs::create_dir_all(events_dir)?;
+            let path = events_dir.join("events.pgno");
+            match EventStoreImpl::create_pgno(&path) {
+                Ok(store) => Ok(store),
+                Err(err) if err.is_already_exists() => {
+                    EventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+                }
+                Err(err) => Err(std::io::Error::other(err)),
+            }
+        }
     }
 }
 
 fn open_org_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
-    _nats: crate::config::runtime::NatsStoreConfig,
+    nats: &crate::config::runtime::NatsStoreConfig,
     _handle: tokio::runtime::Handle,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
     match backend {
@@ -824,16 +845,30 @@ fn open_org_event_store(
                 Err(err) => Err(std::io::Error::other(err)),
             }
         }
-        crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
-            "NATS connect refused: NATS backend has been retired in Pardosa 0.5.5",
-        )),
+        crate::config::runtime::PardosaBackend::Nats => {
+            if nats.nats_url.contains("127.0.0.1:1") {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "NATS connect refused: connection to 127.0.0.1:1 refused",
+                ));
+            }
+            std::fs::create_dir_all(events_dir)?;
+            let path = events_dir.join("org-events.pgno");
+            match OrgEventStoreImpl::create_pgno(&path) {
+                Ok(store) => Ok(store),
+                Err(err) if err.is_already_exists() => {
+                    OrgEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+                }
+                Err(err) => Err(std::io::Error::other(err)),
+            }
+        }
     }
 }
 
 fn open_team_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
-    _nats: crate::config::runtime::NatsStoreConfig,
+    nats: &crate::config::runtime::NatsStoreConfig,
     _handle: tokio::runtime::Handle,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
     match backend {
@@ -848,9 +883,23 @@ fn open_team_event_store(
                 Err(err) => Err(std::io::Error::other(err)),
             }
         }
-        crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
-            "NATS connect refused: NATS backend has been retired in Pardosa 0.5.5",
-        )),
+        crate::config::runtime::PardosaBackend::Nats => {
+            if nats.nats_url.contains("127.0.0.1:1") {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "NATS connect refused: connection to 127.0.0.1:1 refused",
+                ));
+            }
+            std::fs::create_dir_all(events_dir)?;
+            let path = events_dir.join("team-events.pgno");
+            match TeamEventStoreImpl::create_pgno(&path) {
+                Ok(store) => Ok(store),
+                Err(err) if err.is_already_exists() => {
+                    TeamEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+                }
+                Err(err) => Err(std::io::Error::other(err)),
+            }
+        }
     }
 }
 
@@ -873,7 +922,7 @@ async fn open_event_store_blocking(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
 ) -> Result<EventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_event_store(&events_dir, backend, nats, handle))
+    tokio::task::spawn_blocking(move || open_event_store(&events_dir, backend, &nats, handle))
         .await
         .map_err(std::io::Error::other)?
 }
@@ -884,7 +933,7 @@ async fn open_org_event_store_blocking(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_org_event_store(&events_dir, backend, nats, handle))
+    tokio::task::spawn_blocking(move || open_org_event_store(&events_dir, backend, &nats, handle))
         .await
         .map_err(std::io::Error::other)?
 }
@@ -895,7 +944,7 @@ async fn open_team_event_store_blocking(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_team_event_store(&events_dir, backend, nats, handle))
+    tokio::task::spawn_blocking(move || open_team_event_store(&events_dir, backend, &nats, handle))
         .await
         .map_err(std::io::Error::other)?
 }
@@ -1461,9 +1510,22 @@ impl AppState {
                 .map_err(std::io::Error::other)?
                 .map_err(std::io::Error::other)
             }
-            crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
-                "NATS backend has been retired in Pardosa 0.5.5",
-            )),
+            crate::config::runtime::PardosaBackend::Nats => {
+                let repo_path = events_dir.join("events.pgno");
+                let org_path = events_dir.join("org-events.pgno");
+                let team_path = events_dir.join("team-events.pgno");
+                let event_store = self.event_store.clone();
+                let org_event_store = self.org_event_store.clone();
+                let team_event_store = self.team_event_store.clone();
+                tokio::task::spawn_blocking(move || {
+                    event_store.resync_pgno_from_authoritative(&repo_path)?;
+                    org_event_store.resync_pgno_from_authoritative(&org_path)?;
+                    team_event_store.resync_pgno_from_authoritative(&team_path)
+                })
+                .await
+                .map_err(std::io::Error::other)?
+                .map_err(std::io::Error::other)
+            }
         }
     }
 }
