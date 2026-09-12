@@ -97,9 +97,10 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - name: Deploy to Cloud Run by digest
+      - name: Deploy to Cloud Run by digest (no traffic)
         run: |
           gcloud run services update ghreport \
             --region europe-north1 \
             --project ghreport-d302 \
+            --no-traffic \
             --image "europe-north1-docker.pkg.dev/artifacts-352708/${{ vars.ARTIFACT_REPO_ID }}/${{ github.event.repository.name }}@${{ needs.build.outputs.digest }}"

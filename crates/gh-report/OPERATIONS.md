@@ -505,7 +505,7 @@ Set `--force-refresh` (or `GH_REPORT_FORCE_REFRESH=true`) to bypass baseline reu
 | Constant | Current value | Stamped on | Validated against on load? |
 |----------|---------------|-----------|----------------------------|
 | `INVENTORY_SCHEMA_VERSION` | `1.0` | `InventoryPayload` (per-run inventory snapshot) | No — informational metadata for downstream consumers; never read back by the daemon. |
-| `EVIDENCE_SCHEMA_VERSION` | `20.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
+| `EVIDENCE_SCHEMA_VERSION` | `21.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
 
 Both constants live in `crates/gh-report/src/config/mod.rs`.
 
@@ -538,6 +538,7 @@ Version history is maintained forward-only from this point. Prior versions exist
 | `EVIDENCE_SCHEMA_VERSION = 18.0` | 2026-07-17 | Schema-major cutover to a fresh JetStream stream. No evidence field change; the bump provisions new `-v18` streams (stream name, subject, durable consumer carry the `EVIDENCE_SCHEMA_MAJOR` token) and leaves the pre-`v18` streams in place untouched. Isolates the team-roster projection/fold logic from mixed-history pre-`v18` events that no longer adhere to the current logic. |
 | `EVIDENCE_SCHEMA_VERSION = 19.0` | 2026-09-02 | Schema-major cutover to a fresh JetStream stream. No evidence field change; the bump provisions new `-v19` streams (stream name, subject, durable consumer carry the `EVIDENCE_SCHEMA_MAJOR` token) and leaves the `-v18` streams in place untouched and available for offline migration. Driven by commit `55bfa89`, which added `TeamMemberRoleEvent::Unknown` and moved `TeamStateCaptured`'s pardosa schema hash, making the persisted `-v18-team` stream schema-incompatible with the new binary and failing its startup probe. Cut-forward, not a purge: nothing is deleted or rewritten. |
 | `EVIDENCE_SCHEMA_VERSION = 20.0` | 2026-09-11 | Schema-major cutover to fresh stream generation for Pardosa 0.5.5 migration. Discards legacy prototype in-tree dragline history; the bump provisions new `-v20` streams (stream name, subject, durable consumer carry the `EVIDENCE_SCHEMA_MAJOR` token) and leaves pre-`v20` streams untouched and isolated. Purges 10 legacy in-tree crates and enables group-commit dragline storage. |
+| `EVIDENCE_SCHEMA_VERSION = 21.0` | 2026-09-12 | Schema-major cutover to fresh stream generation for verified Pardosa 0.5.5 substrate deployment. Provisions fresh `-v21` streams (data, meta, org, team, checkpoints) with clean reseed from GitHub API, leaving `-v20` streams archived and untouched. |
 | `INVENTORY_SCHEMA_VERSION = 1.0` | (current) | Initial published version. |
 
 When bumping, append a row with the new version, the date, and a one-line note describing what shape change drove the bump. The version of `EVIDENCE_SCHEMA_VERSION` is also surfaced in the report metadata so the projected baseline's version is observable via `gh-report --dump-baseline --org <org>`.
