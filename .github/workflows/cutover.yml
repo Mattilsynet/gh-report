@@ -39,7 +39,9 @@ jobs:
           echo "=== Cloud Run Revisions ==="
           gcloud run revisions list --region europe-north1 --project ghreport-d302 --service ghreport
           echo "=== Service Status & Traffic ==="
-          gcloud run services describe ghreport --region europe-north1 --project ghreport-d302 --format="yaml(status.traffic,status.conditions)"
+          gcloud run services describe ghreport --region europe-north1 --project ghreport-d302 --format="yaml(status.traffic,status.conditions,status.url)"
+          echo "=== Revision Status ==="
+          gcloud run revisions describe "${{ inputs.revision }}" --region europe-north1 --project ghreport-d302 --format="yaml(status.conditions,status.logUrl)"
 
       - name: Shift Traffic
         if: "${{ inputs.percent != '0' }}"
