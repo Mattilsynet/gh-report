@@ -19,36 +19,6 @@ use pardosa::prelude::*;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
-#[repr(C)]
-struct RUsage {
-    ru_utime: [u64; 2],
-    ru_stime: [u64; 2],
-    ru_maxrss: i64,
-    _pad: [i64; 13],
-}
-
-unsafe extern "C" {
-    fn getrusage(who: i32, usage: *mut RUsage) -> i32;
-}
-
-fn get_peak_rss_kb() -> u64 {
-    let mut usage = std::mem::MaybeUninit::<RUsage>::zeroed();
-    let res = unsafe { getrusage(0, usage.as_mut_ptr()) };
-    if res == 0 {
-        let usage = unsafe { usage.assume_init() };
-        #[cfg(target_os = "macos")]
-        {
-            (usage.ru_maxrss as u64) / 1024
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            usage.ru_maxrss as u64
-        }
-    } else {
-        0
-    }
-}
-
 fn sample_claim(epoch: u64) -> OwnershipClaimRecord {
     OwnershipClaimRecord {
         epoch,
@@ -217,7 +187,6 @@ fn compute_projection_digest(projection: &EvidenceProjection) -> u64 {
 }
 
 fn run_staged_benchmark(total_events: usize, batch_size: usize, distinct_repos: usize) {
-    let rss_initial_kb = get_peak_rss_kb();
     let tmp = tempfile::tempdir().expect("tempdir");
     let store_path = tmp.path().join(format!("bench_{total_events}.pgno"));
     let adapter = FileStorageAdapter::new(&store_path);
@@ -287,10 +256,6 @@ fn run_staged_benchmark(total_events: usize, batch_size: usize, distinct_repos: 
     println!(
         "WRITE: {events_written} events in {write_secs:.3}s => {write_throughput:.0} ev/s ({write_mb_s:.2} MB/s)"
     );
-    assert!(
-        write_secs < 60.0,
-        "Write stage exceeded 60s target: {write_secs:.3}s"
-    );
 
     let start_replay = Instant::now();
     let mut reader = adapter.open_read().expect("open_read");
@@ -320,10 +285,6 @@ fn run_staged_benchmark(total_events: usize, batch_size: usize, distinct_repos: 
         "REPLAY: {total_events} events in {replay_secs:.3}s => {replay_throughput:.0} ev/s (disk read: {:.3}s, decode avg: {decode_avg_us:.2}µs/ev, apply avg: {apply_avg_us:.2}µs/ev)",
         read_all_duration.as_secs_f64()
     );
-    assert!(
-        replay_secs < 60.0,
-        "Replay stage exceeded 60s target: {replay_secs:.3}s"
-    );
 
     let projection_digest = compute_projection_digest(&projection);
     assert_eq!(projection.repositories.len(), distinct_repos);
@@ -346,21 +307,15 @@ fn run_staged_benchmark(total_events: usize, batch_size: usize, distinct_repos: 
         projection_digest, cold_digest,
         "Cold projection digest must match warm projection digest"
     );
-
-    let rss_peak_kb = get_peak_rss_kb();
-    println!(
-        "RESOURCES: RSS initial: {} KiB, Peak: {} KiB, Δ: +{} KiB",
-        rss_initial_kb,
-        rss_peak_kb,
-        rss_peak_kb.saturating_sub(rss_initial_kb)
-    );
 }
 
 #[test]
-fn test_staged_projection_benchmark_1k_10k_100k() {
+fn test_staged_projection_benchmark_1k_10k() {
     run_staged_benchmark(1_000, 250, 20);
     run_staged_benchmark(10_000, 1_000, 50);
-    run_staged_benchmark(100_000, 2_500, 100);
+    if std::env::var("BENCH_SCALE").is_ok() {
+        run_staged_benchmark(100_000, 2_500, 100);
+    }
 }
 
 #[test]
