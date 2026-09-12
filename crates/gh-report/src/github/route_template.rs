@@ -28,6 +28,7 @@ pub(crate) enum Route {
     InstallationAccessTokens,
     OrgRepos,
     OrgMembers,
+    OrgTeams,
     TeamMembers,
     OrgSecretScanningAlerts,
     Repo,
@@ -41,7 +42,7 @@ pub(crate) enum Route {
 
 impl Route {
     /// Number of distinct routes; the width of any per-route aggregation.
-    pub(crate) const COUNT: usize = 14;
+    pub(crate) const COUNT: usize = 15;
 
     /// Every route, in discriminant order.
     pub(crate) const ALL: [Self; Self::COUNT] = [
@@ -50,6 +51,7 @@ impl Route {
         Self::InstallationAccessTokens,
         Self::OrgRepos,
         Self::OrgMembers,
+        Self::OrgTeams,
         Self::TeamMembers,
         Self::OrgSecretScanningAlerts,
         Self::Repo,
@@ -69,6 +71,7 @@ impl Route {
             Self::InstallationAccessTokens => "/app/installations/{installation_id}/access_tokens",
             Self::OrgRepos => "/orgs/{org}/repos",
             Self::OrgMembers => "/orgs/{org}/members",
+            Self::OrgTeams => "/orgs/{org}/teams",
             Self::TeamMembers => "/orgs/{org}/teams/{team_slug}/members",
             Self::OrgSecretScanningAlerts => "/orgs/{org}/secret-scanning/alerts",
             Self::Repo => "/repos/{owner}/{repo}",
@@ -128,6 +131,7 @@ fn route_of(path: &str) -> Route {
         ["app", "installations", _, "access_tokens"] => Route::InstallationAccessTokens,
         ["orgs", _, "repos"] => Route::OrgRepos,
         ["orgs", _, "members"] => Route::OrgMembers,
+        ["orgs", _, "teams"] => Route::OrgTeams,
         ["orgs", _, "teams", _, "members"] => Route::TeamMembers,
         ["orgs", _, "secret-scanning", "alerts"] => Route::OrgSecretScanningAlerts,
         ["repos", _, _] => Route::Repo,

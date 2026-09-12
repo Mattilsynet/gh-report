@@ -25,6 +25,23 @@ use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterS
 use crate::github::client::{ApiOutcome, GitHubClient};
 use crate::github::dto::{GhOrgMember, GhTeamMember};
 
+/// Fetch all team slugs for the organization from `/orgs/{org}/teams`.
+pub async fn fetch_org_team_slugs(client: &GitHubClient) -> Vec<String> {
+    let path = format!("/orgs/{}/teams?per_page=100", client.org_name);
+    let outcome = client
+        .request(&path, true, 1, config::DEFAULT_REQUEST_TIMEOUT_SECS)
+        .await;
+    let mut slugs = Vec::new();
+    if let Some(items) = outcome.data().and_then(serde_json::Value::as_array) {
+        for item in items {
+            if let Some(slug) = item.get("slug").and_then(serde_json::Value::as_str) {
+                slugs.push(slug.to_string());
+            }
+        }
+    }
+    slugs
+}
+
 /// Fetch rosters for every `(canonical_owner, team_slug)` pair.
 ///
 /// One [`TeamRoster`] per input pair, in the same order. Each team's fetch

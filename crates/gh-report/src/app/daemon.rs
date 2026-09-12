@@ -854,31 +854,8 @@ fn spawn_team_refresh_loop(
             info!("team-refresh loop cancelled while awaiting GitHub client — exiting");
             return;
         };
-        info!("team-refresh startup loop initialized; awaiting repositories in projection");
-        loop {
-            if *cancel.borrow() {
-                info!("team-refresh loop cancelled while awaiting repositories — exiting");
-                return;
-            }
-            let repos = state.projection_snapshot();
-            if !repos.is_empty() {
-                info!(
-                    repo_count = repos.len(),
-                    "repositories detected in projection; running initial team-refresh tick"
-                );
-                run_one_team_refresh_tick(&state, &client, &events_dir, backend, nats.as_ref())
-                    .await;
-                break;
-            }
-            tokio::select! {
-                biased;
-                _ = cancel.changed() => {
-                    info!("team-refresh loop cancelled while awaiting repositories — exiting");
-                    return;
-                }
-                () = tokio::time::sleep(Duration::from_secs(5)) => {}
-            }
-        }
+        info!("team-refresh startup tick running (does not wait a full interval)");
+        run_one_team_refresh_tick(&state, &client, &events_dir, backend, nats.as_ref()).await;
 
         loop {
             match next_collection_tick(

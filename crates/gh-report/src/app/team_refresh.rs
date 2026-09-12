@@ -71,7 +71,17 @@ pub async fn run_team_refresh_tick(
 ) -> Result<(), TickFailure> {
     let org = client.org_name.clone();
     let evidence_repos = state.projection_snapshot();
-    let team_pairs = team_owner_slugs(&evidence_repos);
+    let mut team_pairs = team_owner_slugs(&evidence_repos);
+
+    for slug in team_membership::fetch_org_team_slugs(client).await {
+        let canonical = format!("@{org}/{slug}");
+        if !team_pairs
+            .iter()
+            .any(|(_, s)| s.eq_ignore_ascii_case(&slug))
+        {
+            team_pairs.push((canonical, slug));
+        }
+    }
 
     let current_keys: BTreeSet<String> = team_pairs
         .iter()
