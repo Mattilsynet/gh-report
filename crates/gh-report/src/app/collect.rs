@@ -1465,21 +1465,38 @@ async fn resolve_team_rosters(
     evidence_repos: &[RepositoryEvidence],
 ) -> (Vec<crate::domain::metrics::TeamRoster>, bool) {
     if config.team_roster_read_from_projection {
-        let from_projection = team_rosters_from_projection(state);
+        let mut from_projection = team_rosters_from_projection(state);
         let team_slugs = crate::domain::metrics::team_owner_slugs(evidence_repos);
-        if !from_projection.is_empty() || team_slugs.is_empty() {
+        let existing_owners: std::collections::BTreeSet<String> = from_projection
+            .iter()
+            .map(|r| r.canonical_owner.to_lowercase())
+            .collect();
+        let missing_slugs: Vec<(String, String)> = team_slugs
+            .into_iter()
+            .filter(|(owner, _)| !existing_owners.contains(&owner.to_lowercase()))
+            .collect();
+        if missing_slugs.is_empty() {
             (from_projection, true)
         } else {
             tracing::info!(
                 target: "gh_report",
-                boundary = "team_roster_cold_start",
-                expected_teams = team_slugs.len(),
-                "projection contains 0 team rosters; performing live fallback fetch for report render"
+                boundary = "team_roster_missing_fetch",
+                missing_count = missing_slugs.len(),
+                existing_count = from_projection.len(),
+                "fetching unprojected team rosters live"
             );
-            (
-                team_membership::collect_team_rosters(client, &team_slugs).await,
-                false,
-            )
+            let fetched = team_membership::collect_team_rosters(client, &missing_slugs).await;
+            let fetched_at = jiff::Timestamp::now().to_string();
+            for roster in &fetched {
+                let _ = state.record_team(
+                    &client.org_name,
+                    roster,
+                    &fetched_at,
+                    crate::event::OrgMembershipFetchStatus::Fetched,
+                );
+            }
+            from_projection.extend(fetched);
+            (from_projection, false)
         }
     } else {
         let team_slugs = crate::domain::metrics::team_owner_slugs(evidence_repos);
