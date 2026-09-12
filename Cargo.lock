@@ -2952,7 +2952,6 @@ dependencies = [
 [[package]]
 name = "pardosa"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=1c5523ac4a6d15663dfe2d8d3178adaa2d3130a8#1c5523ac4a6d15663dfe2d8d3178adaa2d3130a8"
 dependencies = [
  "blake3",
  "crc32c",
@@ -2977,7 +2976,6 @@ dependencies = [
 [[package]]
 name = "pardosa-derive"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=1c5523ac4a6d15663dfe2d8d3178adaa2d3130a8#1c5523ac4a6d15663dfe2d8d3178adaa2d3130a8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2987,14 +2985,12 @@ dependencies = [
 [[package]]
 name = "pardosa-nats"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=1c5523ac4a6d15663dfe2d8d3178adaa2d3130a8#1c5523ac4a6d15663dfe2d8d3178adaa2d3130a8"
 dependencies = [
  "async-nats",
  "blake3",
  "bytes",
  "crc32c",
  "pardosa",
- "tempfile",
  "tokio",
 ]
 
