@@ -4,13 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       revision:
-        description: "Cloud Run revision name to receive 100% traffic (e.g. ghreport-00102-xxx)"
+        description: "Cloud Run revision name (e.g. ghreport-00102-2ln)"
         required: true
         type: string
+        default: "ghreport-00102-2ln"
+      percent:
+        description: "Traffic percentage to assign to this revision (0 to 100)"
+        required: true
+        type: string
+        default: "100"
 
 jobs:
   cutover:
-    name: Cutover Traffic
+    name: Shift Traffic
     runs-on: ubuntu-latest
 
     permissions:
@@ -28,9 +34,31 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - name: Shift 100% Traffic to Revision
+      - name: Inspect Current Status
         run: |
-          gcloud run services update-traffic ghreport \
-            --region europe-north1 \
-            --project ghreport-d302 \
-            --to-revisions "${{ inputs.revision }}=100"
+          echo "=== Cloud Run Revisions ==="
+          gcloud run revisions list --region europe-north1 --project ghreport-d302 --service ghreport
+          echo "=== Service Status & Traffic ==="
+          gcloud run services describe ghreport --region europe-north1 --project ghreport-d302 --format="yaml(status.traffic,status.conditions)"
+
+      - name: Shift Traffic
+        if: "${{ inputs.percent != '0' }}"
+        run: |
+          echo "Shifting ${{ inputs.percent }}% traffic to ${{ inputs.revision }}..."
+          if [ "${{ inputs.percent }}" = "100" ]; then
+            gcloud run services update-traffic ghreport \
+              --region europe-north1 \
+              --project ghreport-d302 \
+              --to-revisions "${{ inputs.revision }}=100"
+          else
+            gcloud run services update-traffic ghreport \
+              --region europe-north1 \
+              --project ghreport-d302 \
+              --to-revisions "${{ inputs.revision }}=${{ inputs.percent }},ghreport-00101-bzs=$((100 - ${{ inputs.percent }}))"
+          fi
+
+      - name: Verify Post-Update Traffic
+        run: |
+          echo "=== Updated Traffic ==="
+          gcloud run services describe ghreport --region europe-north1 --project ghreport-d302 --format="yaml(status.traffic)"
+
