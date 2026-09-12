@@ -2990,6 +2990,7 @@ dependencies = [
  "blake3",
  "bytes",
  "crc32c",
+ "futures-util",
  "pardosa",
  "tokio",
 ]
