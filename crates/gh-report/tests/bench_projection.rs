@@ -245,7 +245,10 @@ fn run_staged_benchmark(total_events: usize, batch_size: usize, distinct_repos: 
             let verdict = session
                 .append_envelope_verdict(&env)
                 .expect("append envelope");
-            assert!(matches!(verdict, pardosa::store::WriteLandingVerdict::Landed(_)));
+            assert!(matches!(
+                verdict,
+                pardosa::store::WriteLandingVerdict::Landed(_)
+            ));
             events_written += 1;
         }
     }

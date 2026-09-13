@@ -57,7 +57,7 @@ fn to_es_opt<const MAX: usize>(
     value.map(|v| to_es(field, v)).transpose()
 }
 
-fn to_event_vec<T, U, const MAX: usize>(
+fn to_event_vec<T, U: PardosaType, const MAX: usize>(
     field: &'static str,
     values: impl IntoIterator<Item = T>,
     convert: impl FnMut(T) -> Conv<U>,

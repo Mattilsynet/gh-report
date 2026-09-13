@@ -52,7 +52,19 @@ macro_rules! impl_pardosa_enum {
     ($ty:ident { $($variant:ident = $val:expr),* $(,)? }) => {
         impl PardosaType for $ty {
             fn descriptor_node() -> DescriptorNode {
-                DescriptorNode::U8
+                DescriptorNode::Enum {
+                    name: stringify!($ty).to_string(),
+                    discriminant_width: 1,
+                    variants: vec![
+                        $(
+                            VariantDescriptor {
+                                discriminant: $val,
+                                name: stringify!($variant).to_string(),
+                                payload: None,
+                            },
+                        )*
+                    ],
+                }
             }
             fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
                 buf.push(*self as u8);
@@ -73,12 +85,19 @@ macro_rules! impl_pardosa_enum {
 }
 
 macro_rules! impl_pardosa_struct {
-    ($ty:ident { $($field:ident),* $(,)? }) => {
+    ($ty:ident { $($field:ident : $fty:ty),* $(,)? }) => {
         impl PardosaType for $ty {
             fn descriptor_node() -> DescriptorNode {
                 DescriptorNode::Struct {
                     name: stringify!($ty).to_string(),
-                    fields: Vec::new(),
+                    fields: vec![
+                        $(
+                            FieldDescriptor {
+                                name: stringify!($field).to_string(),
+                                node: <$fty as PardosaType>::descriptor_node(),
+                            },
+                        )*
+                    ],
                 }
             }
             fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
@@ -88,7 +107,7 @@ macro_rules! impl_pardosa_struct {
             fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
                 let mut cursor = 0;
                 $(
-                    let ($field, c) = PardosaType::decode_type(&buf[cursor..])?;
+                    let ($field, c) = <$fty as PardosaType>::decode_type(&buf[cursor..])?;
                     cursor += c;
                 )*
                 Ok((Self { $($field),* }, cursor))
@@ -115,7 +134,44 @@ impl PardosaType for SweepTimeoutEvent {
         DescriptorNode::Enum {
             name: "SweepTimeoutEvent".to_string(),
             discriminant_width: 1,
-            variants: Vec::new(),
+            variants: vec![
+                VariantDescriptor {
+                    discriminant: 0,
+                    name: "TargetOpened".to_string(),
+                    payload: Some(DescriptorNode::Struct {
+                        name: "SweepTimeoutEvent_TargetOpened".to_string(),
+                        fields: vec![FieldDescriptor {
+                            name: "event_id".to_string(),
+                            node: <Uuid as PardosaType>::descriptor_node(),
+                        }],
+                    }),
+                },
+                VariantDescriptor {
+                    discriminant: 1,
+                    name: "TimeoutFired".to_string(),
+                    payload: Some(DescriptorNode::Struct {
+                        name: "SweepTimeoutEvent_TimeoutFired".to_string(),
+                        fields: vec![
+                            FieldDescriptor {
+                                name: "event_id".to_string(),
+                                node: <Uuid as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "run_id".to_string(),
+                                node: <EventString<MAX_RUN_ID> as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "error".to_string(),
+                                node: <EventString<MAX_SWEEP_TIMEOUT_ERROR> as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "elapsed_ms".to_string(),
+                                node: <u64 as PardosaType>::descriptor_node(),
+                            },
+                        ],
+                    }),
+                },
+            ],
         }
     }
     fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
@@ -309,9 +365,9 @@ pub struct RepositoryEvidence {
     pub last_commit: Option<LastCommitInfo>,
 }
 impl_pardosa_struct!(RepositoryEvidence {
-    repository,
-    checks,
-    last_commit
+    repository: Repository,
+    checks: RepositoryChecks,
+    last_commit: Option<LastCommitInfo>,
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,9 +377,9 @@ pub struct LastCommitInfo {
     pub commit_date: Option<Timestamp>,
 }
 impl_pardosa_struct!(LastCommitInfo {
-    committer_login,
-    committer_name,
-    commit_date
+    committer_login: Option<EventString<MAX_LOGIN>>,
+    committer_name: Option<EventString<MAX_PERSON_NAME>>,
+    commit_date: Option<Timestamp>,
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,23 +403,23 @@ pub struct Repository {
     pub license_spdx: Option<EventString<MAX_LICENSE>>,
 }
 impl_pardosa_struct!(Repository {
-    id,
-    node_id,
-    name,
-    visibility,
-    language,
-    default_branch,
-    archived,
-    inventory_key,
-    updated_at,
-    has_issues,
-    pushed_at,
-    created_at,
-    description,
-    fork,
-    html_url,
-    topics,
-    license_spdx
+    id: NonEmptyEventString<MAX_GITHUB_ID>,
+    node_id: Option<EventString<MAX_NODE_ID>>,
+    name: NonEmptyEventString<MAX_REPO_NAME>,
+    visibility: Visibility,
+    language: Option<EventString<MAX_LANGUAGE>>,
+    default_branch: NonEmptyEventString<MAX_BRANCH_NAME>,
+    archived: bool,
+    inventory_key: NonEmptyEventString<MAX_DOMAIN_KEY>,
+    updated_at: Option<Timestamp>,
+    has_issues: bool,
+    pushed_at: Option<Timestamp>,
+    created_at: Option<Timestamp>,
+    description: Option<EventString<MAX_DESCRIPTION>>,
+    fork: bool,
+    html_url: Option<EventString<MAX_URL>>,
+    topics: EventVec<EventString<MAX_TOPIC>, MAX_TOPICS>,
+    license_spdx: Option<EventString<MAX_LICENSE>>,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -388,11 +444,11 @@ pub struct RepositoryChecks {
     pub codeowners: CodeownersResult,
 }
 impl_pardosa_struct!(RepositoryChecks {
-    security_policy,
-    secret_scanning,
-    dependabot_security_updates,
-    branch_protection,
-    codeowners
+    security_policy: SecurityPolicyResult,
+    secret_scanning: SecretScanningResult,
+    dependabot_security_updates: DependabotResult,
+    branch_protection: BranchProtectionResult,
+    codeowners: CodeownersResult,
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,10 +459,10 @@ pub struct SecurityPolicyResult {
     pub timestamp: Timestamp,
 }
 impl_pardosa_struct!(SecurityPolicyResult {
-    status,
-    evidence,
-    path,
-    timestamp
+    status: SecurityPolicyStatus,
+    evidence: SecurityPolicyEvidence,
+    path: Option<EventString<MAX_PATH>>,
+    timestamp: Timestamp,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -454,11 +510,11 @@ pub struct SecretScanningResult {
     pub timestamp: Timestamp,
 }
 impl_pardosa_struct!(SecretScanningResult {
-    status,
-    has_open_alerts,
-    alerts_observable,
-    reason,
-    timestamp
+    status: SecretScanningStatus,
+    has_open_alerts: Option<bool>,
+    alerts_observable: bool,
+    reason: Option<EventString<MAX_REASON>>,
+    timestamp: Timestamp,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -483,9 +539,9 @@ pub struct DependabotResult {
     pub timestamp: Timestamp,
 }
 impl_pardosa_struct!(DependabotResult {
-    status,
-    reason,
-    timestamp
+    status: DependabotStatus,
+    reason: Option<EventString<MAX_REASON>>,
+    timestamp: Timestamp,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -510,9 +566,9 @@ pub struct BranchProtectionResult {
     pub timestamp: Timestamp,
 }
 impl_pardosa_struct!(BranchProtectionResult {
-    status,
-    details,
-    timestamp
+    status: BranchProtectionStatus,
+    details: BranchProtectionDetails,
+    timestamp: Timestamp,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -545,17 +601,17 @@ pub struct BranchProtectionDetails {
     pub deletion_blocked: Option<bool>,
 }
 impl_pardosa_struct!(BranchProtectionDetails {
-    default_branch,
-    has_pr,
-    required_reviewers,
-    has_status_checks,
-    admin_equivalent,
-    has_broad_bypass,
-    reason,
-    reason_kind,
-    http_status,
-    force_push_blocked,
-    deletion_blocked
+    default_branch: NonEmptyEventString<MAX_BRANCH_NAME>,
+    has_pr: Option<bool>,
+    required_reviewers: Option<u32>,
+    has_status_checks: Option<bool>,
+    admin_equivalent: Option<bool>,
+    has_broad_bypass: Option<bool>,
+    reason: Option<EventString<MAX_REASON>>,
+    reason_kind: Option<CollectionFailureReason>,
+    http_status: Option<u16>,
+    force_push_blocked: Option<bool>,
+    deletion_blocked: Option<bool>,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -586,11 +642,11 @@ pub struct CodeownersResult {
     pub truncation: Option<CodeownersTruncationReason>,
 }
 impl_pardosa_struct!(CodeownersResult {
-    status,
-    path,
-    timestamp,
-    parsed,
-    truncation
+    status: CodeownersStatus,
+    path: Option<EventString<MAX_PATH>>,
+    timestamp: Timestamp,
+    parsed: Option<ParsedCodeowners>,
+    truncation: Option<CodeownersTruncationReason>,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -632,9 +688,9 @@ pub struct ParsedCodeowners {
     pub skipped_lines: u32,
 }
 impl_pardosa_struct!(ParsedCodeowners {
-    entries,
-    unique_owners,
-    skipped_lines
+    entries: EventVec<CodeownersEntry, MAX_CODEOWNERS_ENTRIES>,
+    unique_owners: EventVec<EventString<MAX_CODEOWNERS_OWNER>, MAX_CODEOWNERS_OWNERS>,
+    skipped_lines: u32,
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -642,7 +698,10 @@ pub struct CodeownersEntry {
     pub pattern: EventString<MAX_CODEOWNERS_PATTERN>,
     pub owners: EventVec<EventString<MAX_CODEOWNERS_OWNER>, MAX_CODEOWNERS_OWNERS>,
 }
-impl_pardosa_struct!(CodeownersEntry { pattern, owners });
+impl_pardosa_struct!(CodeownersEntry {
+    pattern: EventString<MAX_CODEOWNERS_PATTERN>,
+    owners: EventVec<EventString<MAX_CODEOWNERS_OWNER>, MAX_CODEOWNERS_OWNERS>,
+});
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrgStateCaptured {
@@ -651,9 +710,9 @@ pub struct OrgStateCaptured {
     pub alert_summary: OrgAlertSummary,
 }
 impl_pardosa_struct!(OrgStateCaptured {
-    archived_repos,
-    assessment_metadata,
-    alert_summary
+    archived_repos: u32,
+    assessment_metadata: AssessmentMetadata,
+    alert_summary: OrgAlertSummary,
 });
 
 impl PardosaSchema for OrgStateCaptured {
@@ -688,18 +747,18 @@ pub struct AssessmentMetadata {
     pub warm_start: bool,
 }
 impl_pardosa_struct!(AssessmentMetadata {
-    date,
-    organization,
-    schema_version,
-    run_timestamp,
-    run_id,
-    token_tier,
-    token_scopes,
-    auth_mode,
-    rate_limit_warnings,
-    unavailable_capabilities,
-    inventory_fetched_at,
-    warm_start
+    date: EventString<MAX_ASSESSMENT_DATE>,
+    organization: EventString<MAX_LOGIN>,
+    schema_version: EventString<MAX_SCHEMA_VERSION>,
+    run_timestamp: EventString<MAX_TIMESTAMP_TEXT>,
+    run_id: EventString<MAX_RUN_ID>,
+    token_tier: TokenTier,
+    token_scopes: EventString<MAX_TOKEN_SCOPES>,
+    auth_mode: AuthMode,
+    rate_limit_warnings: u32,
+    unavailable_capabilities: EventVec<Capability, MAX_UNAVAILABLE_CAPABILITIES>,
+    inventory_fetched_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
+    warm_start: bool,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -752,13 +811,13 @@ pub struct OrgAlertSummary {
     pub newest_open_secret_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
 }
 impl_pardosa_struct!(OrgAlertSummary {
-    collection_status,
-    collection_reason,
-    per_repo,
-    open_secret_alert_age_buckets,
-    total_open_secret_alerts,
-    oldest_open_secret_alert_created_at,
-    newest_open_secret_alert_created_at
+    collection_status: CollectionStatus,
+    collection_reason: Option<EventString<MAX_REASON>>,
+    per_repo: EventVec<RepoAlertSummaryEntry, MAX_ORG_ALERT_REPOS>,
+    open_secret_alert_age_buckets: EventVec<StringU64Entry, MAX_ALERT_BUCKETS>,
+    total_open_secret_alerts: u64,
+    oldest_open_secret_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
+    newest_open_secret_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -784,8 +843,8 @@ pub struct RepoAlertSummaryEntry {
     pub summary: RepoAlertSummary,
 }
 impl_pardosa_struct!(RepoAlertSummaryEntry {
-    repository_id,
-    summary
+    repository_id: EventString<MAX_GITHUB_ID>,
+    summary: RepoAlertSummary,
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -795,9 +854,9 @@ pub struct RepoAlertSummary {
     pub newest_open_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
 }
 impl_pardosa_struct!(RepoAlertSummary {
-    open_alert_count,
-    oldest_open_alert_created_at,
-    newest_open_alert_created_at
+    open_alert_count: u64,
+    oldest_open_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
+    newest_open_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -805,7 +864,10 @@ pub struct StringU64Entry {
     pub key: EventString<MAX_ALERT_BUCKET>,
     pub value: u64,
 }
-impl_pardosa_struct!(StringU64Entry { key, value });
+impl_pardosa_struct!(StringU64Entry {
+    key: EventString<MAX_ALERT_BUCKET>,
+    value: u64,
+});
 
 impl OrgStateCaptured {
     #[must_use]
@@ -826,12 +888,12 @@ pub struct TeamStateCaptured {
     pub status: TeamRosterStatusEvent,
 }
 impl_pardosa_struct!(TeamStateCaptured {
-    org,
-    team_slug,
-    members,
-    orphan_attribution_inputs,
-    fetched_at,
-    status
+    org: NonEmptyEventString<MAX_LOGIN>,
+    team_slug: NonEmptyEventString<MAX_LOGIN>,
+    members: EventVec<TeamMemberEvent, MAX_TEAM_MEMBERS>,
+    orphan_attribution_inputs: OrphanAttributionInputs,
+    fetched_at: EventString<MAX_TIMESTAMP_TEXT>,
+    status: TeamRosterStatusEvent,
 });
 
 impl PardosaSchema for TeamStateCaptured {
@@ -859,9 +921,9 @@ pub struct TeamMemberEvent {
     pub in_org: Option<bool>,
 }
 impl_pardosa_struct!(TeamMemberEvent {
-    login,
-    role,
-    in_org
+    login: NonEmptyEventString<MAX_LOGIN>,
+    role: TeamMemberRoleEvent,
+    in_org: Option<bool>,
 });
 
 /// Durable mirror of [`crate::domain::metrics::TeamMemberRole`].
@@ -900,7 +962,7 @@ pub struct OrphanAttributionInputs {
     pub org_membership_fetch_status: OrgMembershipFetchStatus,
 }
 impl_pardosa_struct!(OrphanAttributionInputs {
-    org_membership_fetch_status
+    org_membership_fetch_status: OrgMembershipFetchStatus,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -982,7 +1044,64 @@ impl PardosaType for DomainEvent {
         DescriptorNode::Enum {
             name: "DomainEvent".to_string(),
             discriminant_width: 1,
-            variants: Vec::new(),
+            variants: vec![
+                VariantDescriptor {
+                    discriminant: 0,
+                    name: "RepositoryStateCaptured".to_string(),
+                    payload: Some(DescriptorNode::Struct {
+                        name: "DomainEvent_RepositoryStateCaptured".to_string(),
+                        fields: vec![
+                            FieldDescriptor {
+                                name: "domain_key".to_string(),
+                                node: <NonEmptyEventString<MAX_DOMAIN_KEY> as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "repo_name".to_string(),
+                                node: <NonEmptyEventString<MAX_REPO_NAME> as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "timestamp".to_string(),
+                                node: <Timestamp as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "evidence".to_string(),
+                                node: <Option<RepositoryEvidence> as PardosaType>::descriptor_node(),
+                            },
+                        ],
+                    }),
+                },
+                VariantDescriptor {
+                    discriminant: 1,
+                    name: "RepositoryDeleted".to_string(),
+                    payload: Some(DescriptorNode::Struct {
+                        name: "DomainEvent_RepositoryDeleted".to_string(),
+                        fields: vec![
+                            FieldDescriptor {
+                                name: "domain_key".to_string(),
+                                node: <NonEmptyEventString<MAX_DOMAIN_KEY> as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "repo_name".to_string(),
+                                node: <NonEmptyEventString<MAX_REPO_NAME> as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "detected_at".to_string(),
+                                node: <Timestamp as PardosaType>::descriptor_node(),
+                            },
+                        ],
+                    }),
+                },
+                VariantDescriptor {
+                    discriminant: 2,
+                    name: "OrgStateCaptured".to_string(),
+                    payload: Some(<OrgStateCaptured as PardosaType>::descriptor_node()),
+                },
+                VariantDescriptor {
+                    discriminant: 3,
+                    name: "TeamStateCaptured".to_string(),
+                    payload: Some(<TeamStateCaptured as PardosaType>::descriptor_node()),
+                },
+            ],
         }
     }
     fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
@@ -1595,5 +1714,169 @@ mod tests {
         let too_long = "x".repeat(MAX_TOPIC + 1);
         let err = EventString::<MAX_TOPIC>::new(too_long).expect_err("over-MAX rejects");
         assert!(matches!(err, DecodeError::LengthExceeded { .. }));
+    }
+
+    const LEGACY_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
+        "3b1d43cb4b22f0e89ebb6e59928c1bdf398cf3d7d904d8f0d767dc682a44e86f";
+    const LEGACY_ORG_STATE_SCHEMA_IDENTITY: &str =
+        "09ef6a4050c43a6f5d835cfcd7facc1035bf663f2346a1d86037b6da2b8d3153";
+    const LEGACY_TEAM_STATE_SCHEMA_IDENTITY: &str =
+        "d98958e86e928d94bd3cda3bb81d4e9e2b23d48f867b3383552caff6a3dc1300";
+    const LEGACY_SWEEP_TIMEOUT_SCHEMA_IDENTITY: &str =
+        "cc4812aa267f39c6d430fc32d7dacf8e6af78595e178569bf79ea14364f846d5";
+
+    const TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
+        "a2b206db0aab56cd29c449a0b1da1156470da2758617db4bba9fdb4af2a287b3";
+    const TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY: &str =
+        "f8137e21373fd0bf085923aad35b241813ed85c56ef4e7ea45d586fee37bc384";
+    const TRUTHFUL_TEAM_STATE_SCHEMA_IDENTITY: &str =
+        "7b304fbf67dd4f8f45a08e47c9ce961edb48bf5721905204ec8770872ca84a67";
+    const TRUTHFUL_SWEEP_TIMEOUT_SCHEMA_IDENTITY: &str =
+        "55b9b99b6408ad5696d2e0ce5cc85c0f28ffd93c1f7ab230d524ae4d329ff44e";
+
+    const CANONICAL_REPO_CAPTURED_BYTES: [u8; 465] = [
+        0, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
+        45, 49, 40, 0, 0, 0, 0, 0, 0, 0, 1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49,
+        1, 6, 0, 0, 0, 110, 111, 100, 101, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111, 45, 49, 0, 1, 4,
+        0, 0, 0, 82, 117, 115, 116, 4, 0, 0, 0, 109, 97, 105, 110, 0, 9, 0, 0, 0, 105, 100, 45,
+        114, 101, 112, 111, 45, 49, 1, 10, 0, 0, 0, 0, 0, 0, 0, 1, 1, 11, 0, 0, 0, 0, 0, 0, 0, 1,
+        12, 0, 0, 0, 0, 0, 0, 0, 1, 22, 0, 0, 0, 114, 101, 112, 111, 115, 105, 116, 111, 114, 121,
+        32, 100, 101, 115, 99, 114, 105, 112, 116, 105, 111, 110, 0, 1, 30, 0, 0, 0, 104, 116, 116,
+        112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 97, 99, 109, 101,
+        47, 114, 101, 112, 111, 45, 49, 2, 0, 0, 0, 8, 0, 0, 0, 115, 101, 99, 117, 114, 105, 116,
+        121, 4, 0, 0, 0, 114, 117, 115, 116, 1, 3, 0, 0, 0, 77, 73, 84, 0, 0, 1, 11, 0, 0, 0, 83,
+        69, 67, 85, 82, 73, 84, 89, 46, 109, 100, 20, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 7, 0, 0,
+        0, 101, 110, 97, 98, 108, 101, 100, 21, 0, 0, 0, 0, 0, 0, 0, 0, 1, 7, 0, 0, 0, 101, 110,
+        97, 98, 108, 101, 100, 22, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 109, 97, 105, 110, 1, 1, 1,
+        2, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 23, 0, 0, 0, 0, 0, 0, 0, 0, 1, 18, 0, 0,
+        0, 46, 103, 105, 116, 104, 117, 98, 47, 67, 79, 68, 69, 79, 87, 78, 69, 82, 83, 24, 0, 0,
+        0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 5, 0, 0, 0, 47, 115, 114, 99, 47, 1, 0, 0, 0, 14, 0, 0, 0,
+        64, 97, 99, 109, 101, 47, 115, 101, 99, 117, 114, 105, 116, 121, 1, 0, 0, 0, 14, 0, 0, 0,
+        64, 97, 99, 109, 101, 47, 115, 101, 99, 117, 114, 105, 116, 121, 0, 0, 0, 0, 1, 1, 1, 1, 7,
+        0, 0, 0, 111, 99, 116, 111, 99, 97, 116, 1, 12, 0, 0, 0, 77, 111, 110, 97, 32, 79, 99, 116,
+        111, 99, 97, 116, 1, 30, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    const CANONICAL_REPO_DELETED_BYTES: [u8; 32] = [
+        1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
+        45, 49, 50, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    const CANONICAL_ORG_CAPTURED_BYTES: [u8; 328] = [
+        2, 0, 0, 0, 10, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 4, 0, 0, 0, 97, 99, 109,
+        101, 3, 0, 0, 0, 49, 46, 48, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 84, 49,
+        50, 58, 48, 48, 58, 48, 48, 90, 7, 0, 0, 0, 114, 117, 110, 45, 49, 50, 51, 0, 29, 0, 0, 0,
+        114, 101, 112, 111, 44, 114, 101, 97, 100, 58, 111, 114, 103, 44, 115, 101, 99, 117, 114,
+        105, 116, 121, 95, 101, 118, 101, 110, 116, 115, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 20, 0, 0,
+        0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 84, 49, 50, 58, 48, 49, 58, 48, 48, 90, 1, 0, 1,
+        9, 0, 0, 0, 99, 111, 108, 108, 101, 99, 116, 101, 100, 1, 0, 0, 0, 6, 0, 0, 0, 114, 101,
+        112, 111, 45, 49, 7, 0, 0, 0, 0, 0, 0, 0, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45,
+        49, 51, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54,
+        45, 49, 52, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 2, 0, 0, 0, 8, 0, 0, 0, 48, 95, 55, 95,
+        100, 97, 121, 115, 3, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 56, 95, 51, 48, 95, 100, 97, 121,
+        115, 4, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45,
+        48, 54, 45, 49, 51, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 1, 20, 0, 0, 0, 50, 48, 50, 54,
+        45, 48, 54, 45, 49, 52, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90,
+    ];
+    const CANONICAL_TEAM_CAPTURED_BYTES: [u8; 71] = [
+        4, 0, 0, 0, 97, 99, 109, 101, 8, 0, 0, 0, 112, 108, 97, 116, 102, 111, 114, 109, 2, 0, 0,
+        0, 5, 0, 0, 0, 97, 108, 105, 99, 101, 0, 1, 1, 3, 0, 0, 0, 98, 111, 98, 1, 0, 0, 20, 0, 0,
+        0, 50, 48, 50, 54, 45, 48, 55, 45, 49, 54, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0,
+    ];
+    const CANONICAL_TIMEOUT_OPENED_BYTES: [u8; 17] =
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 100];
+    const CANONICAL_TIMEOUT_FIRED_BYTES: [u8; 45] = [
+        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 200, 5, 0, 0, 0, 114, 117, 110, 45, 49, 7,
+        0, 0, 0, 116, 105, 109, 101, 111, 117, 116, 136, 19, 0, 0, 0, 0, 0, 0,
+    ];
+
+    fn assert_admitted_and_identity<T: PardosaSchema>(
+        expected_truthful_hex: &str,
+        expected_legacy_hex: &str,
+    ) {
+        let identity_hex = T::schema_identity().to_hex();
+        assert_eq!(identity_hex, expected_truthful_hex);
+        assert_ne!(identity_hex, expected_legacy_hex);
+
+        let desc = SchemaDescriptor::new(T::schema_version(), T::schema_descriptor());
+        let admitted = AdmittedDescriptor::try_from_descriptor(desc);
+        assert!(admitted.is_ok(), "schema descriptor must be admitted");
+        assert_eq!(admitted.unwrap().identity().to_hex(), expected_truthful_hex);
+    }
+
+    #[test]
+    fn test_schema_legacy_baseline_and_wire_bytes() {
+        let repo_captured = DomainEvent::RepositoryStateCaptured {
+            domain_key: nes("id-repo-1"),
+            repo_name: nes("repo-1"),
+            timestamp: ts(40),
+            evidence: Some(full_evidence()),
+        };
+        let repo_deleted = DomainEvent::RepositoryDeleted {
+            domain_key: nes("id-repo-1"),
+            repo_name: nes("repo-1"),
+            detected_at: ts(50),
+        };
+        let org_captured = OrgStateCaptured::try_from(domain_org_snapshot()).expect("org snapshot");
+        let team_captured = team_state_captured();
+        let timeout_opened = SweepTimeoutEvent::TargetOpened {
+            event_id: uuid::Uuid::from_u128(100),
+        };
+        let timeout_fired = SweepTimeoutEvent::TimeoutFired {
+            event_id: uuid::Uuid::from_u128(200),
+            run_id: es("run-1"),
+            error: es("timeout"),
+            elapsed_ms: 5000,
+        };
+
+        let repo_captured_bytes = to_vec(&repo_captured);
+        let repo_deleted_bytes = to_vec(&repo_deleted);
+        let org_captured_bytes = to_vec(&org_captured);
+        let team_captured_bytes = to_vec(&team_captured);
+        let timeout_opened_bytes = to_vec(&timeout_opened);
+        let timeout_fired_bytes = to_vec(&timeout_fired);
+
+        assert_eq!(repo_captured_bytes, CANONICAL_REPO_CAPTURED_BYTES);
+        assert_eq!(repo_deleted_bytes, CANONICAL_REPO_DELETED_BYTES);
+        assert_eq!(org_captured_bytes, CANONICAL_ORG_CAPTURED_BYTES);
+        assert_eq!(team_captured_bytes, CANONICAL_TEAM_CAPTURED_BYTES);
+        assert_eq!(timeout_opened_bytes, CANONICAL_TIMEOUT_OPENED_BYTES);
+        assert_eq!(timeout_fired_bytes, CANONICAL_TIMEOUT_FIRED_BYTES);
+
+        let decoded_repo: DomainEvent = from_bytes(&repo_captured_bytes).expect("decode repo");
+        assert_eq!(decoded_repo, repo_captured);
+
+        let decoded_deleted: DomainEvent = from_bytes(&repo_deleted_bytes).expect("decode deleted");
+        assert_eq!(decoded_deleted, repo_deleted);
+
+        let decoded_org: OrgStateCaptured = from_bytes(&org_captured_bytes).expect("decode org");
+        assert_eq!(decoded_org, org_captured);
+
+        let decoded_team: TeamStateCaptured =
+            from_bytes(&team_captured_bytes).expect("decode team");
+        assert_eq!(decoded_team, team_captured);
+
+        let decoded_opened: SweepTimeoutEvent =
+            from_bytes(&timeout_opened_bytes).expect("decode opened");
+        assert_eq!(decoded_opened, timeout_opened);
+
+        let decoded_fired: SweepTimeoutEvent =
+            from_bytes(&timeout_fired_bytes).expect("decode fired");
+        assert_eq!(decoded_fired, timeout_fired);
+
+        assert_admitted_and_identity::<DomainEvent>(
+            TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY,
+            LEGACY_DOMAIN_EVENT_SCHEMA_IDENTITY,
+        );
+        assert_admitted_and_identity::<OrgStateCaptured>(
+            TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY,
+            LEGACY_ORG_STATE_SCHEMA_IDENTITY,
+        );
+        assert_admitted_and_identity::<TeamStateCaptured>(
+            TRUTHFUL_TEAM_STATE_SCHEMA_IDENTITY,
+            LEGACY_TEAM_STATE_SCHEMA_IDENTITY,
+        );
+        assert_admitted_and_identity::<SweepTimeoutEvent>(
+            TRUTHFUL_SWEEP_TIMEOUT_SCHEMA_IDENTITY,
+            LEGACY_SWEEP_TIMEOUT_SCHEMA_IDENTITY,
+        );
     }
 }

@@ -861,15 +861,6 @@ fn connect_nats_sync(
     })
 }
 
-fn nats_subjects_for_stem(stem: &str) -> (String, String) {
-    let base = if let Some(rest) = stem.strip_prefix("gh-report-") {
-        format!("gh-report.{}", rest.replace('-', "."))
-    } else {
-        stem.replace('-', ".")
-    };
-    (format!("{base}.meta"), format!("{base}.data"))
-}
-
 fn open_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
@@ -891,16 +882,14 @@ fn open_event_store(
         crate::config::runtime::PardosaBackend::Nats => {
             let client = connect_nats_sync(handle, nats)?;
             let stem = &nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                meta_subject = %adapter.meta_subject(),
+                data_subject = %adapter.data_subject(),
                 "initializing NatsStorageAdapter for unified event store"
             );
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem)
-                .with_subjects(meta_subj, data_subj);
             match EventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
@@ -976,16 +965,14 @@ fn open_org_event_store(
             let client = connect_nats_sync(handle, nats)?;
             let org_nats = nats.org_events();
             let stem = &org_nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                meta_subject = %adapter.meta_subject(),
+                data_subject = %adapter.data_subject(),
                 "initializing NatsStorageAdapter for org event store"
             );
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem)
-                .with_subjects(meta_subj, data_subj);
             match OrgEventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
@@ -1041,16 +1028,14 @@ fn open_team_event_store(
             let client = connect_nats_sync(handle, nats)?;
             let team_nats = nats.team_events();
             let stem = &team_nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                meta_subject = %adapter.meta_subject(),
+                data_subject = %adapter.data_subject(),
                 "initializing NatsStorageAdapter for team event store"
             );
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem)
-                .with_subjects(meta_subj, data_subj);
             match TeamEventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
