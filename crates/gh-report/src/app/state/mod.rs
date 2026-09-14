@@ -2582,6 +2582,88 @@ mod tests {
     }
 
     #[test]
+    fn nats_app_state_partial_initialization_failure_on_team_drops_safely_with_root_owner() {
+        use pardosa::prelude::*;
+        let Some(server) = crate::store::tests::TestNatsServer::spawn() else {
+            return;
+        };
+        let url = server.url.clone();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let events_dir = tmp.path().join("events");
+
+        let nats_runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("root test runtime"),
+        );
+
+        let nats_config = NatsStoreConfig::for_org("test-partial-init-team", &url).unwrap();
+        let team_nats = nats_config.team_events();
+
+        {
+            let url = url.clone();
+            let nats_runtime = Arc::clone(&nats_runtime);
+            let team_stream_name = team_nats.stream_name.clone();
+            let client = nats_runtime
+                .block_on(async_nats::connect(&url))
+                .expect("connect");
+            let team_adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                team_stream_name,
+                Arc::clone(&nats_runtime),
+            );
+            let claim = OwnershipClaimRecord {
+                epoch: 1,
+                machine_id: [0u8; 16],
+                boot_id: [0u8; 16],
+                process_id: u64::from(std::process::id()),
+                process_start_time_ns: 0,
+                claim_time_ns: 0,
+                operator_label: "mismatched-partial-team".to_string(),
+            };
+            let mut session = team_adapter.create(&claim).expect("create team store");
+            let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+            session
+                .set_schema_descriptor(&mismatched_desc)
+                .expect("set mismatched descriptor");
+            session.sync().expect("sync");
+        }
+
+        let app_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("app test runtime");
+
+        let root_nats_guard = Arc::clone(&nats_runtime);
+
+        app_runtime.block_on(async move {
+            assert_eq!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            );
+            let result = AppState::with_stores_and_runtime(
+                &events_dir,
+                PardosaBackend::Nats,
+                nats_config,
+                Some(root_nats_guard),
+            )
+            .await;
+
+            let Err(err) = result else {
+                panic!("partial initialization with mismatched team stream must fail");
+            };
+            assert!(
+                err.to_string()
+                    .contains("schema descriptor identity mismatch")
+            );
+        });
+
+        drop(app_runtime);
+        drop(nats_runtime);
+    }
+
+    #[test]
     #[cfg(not(target_os = "linux"))]
     fn read_rss_kb_is_none_off_linux() {
         assert_eq!(read_rss_kb(), None);
