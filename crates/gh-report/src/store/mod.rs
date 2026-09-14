@@ -75,10 +75,57 @@ fn default_claim(epoch: u64, label: &str) -> OwnershipClaimRecord {
     }
 }
 
+pub(crate) struct NatsAdapterHandle(Option<Box<NatsStorageAdapter>>);
+
+impl NatsAdapterHandle {
+    pub(crate) fn new(adapter: NatsStorageAdapter) -> Self {
+        Self(Some(Box::new(adapter)))
+    }
+}
+
+impl Clone for NatsAdapterHandle {
+    fn clone(&self) -> Self {
+        Self(self.0.as_ref().map(|a| Box::new((**a).clone())))
+    }
+}
+
+impl std::ops::Deref for NatsAdapterHandle {
+    type Target = NatsStorageAdapter;
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_deref()
+            .expect("adapter present during store lifetime")
+    }
+}
+
+impl std::ops::DerefMut for NatsAdapterHandle {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+            .as_deref_mut()
+            .expect("adapter present during store lifetime")
+    }
+}
+
+impl Drop for NatsAdapterHandle {
+    fn drop(&mut self) {
+        if let Some(adapter) = self.0.take() {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                let _ = std::thread::Builder::new()
+                    .name("nats-adapter-drop".to_string())
+                    .spawn(move || {
+                        drop(adapter);
+                    });
+            } else {
+                drop(adapter);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 enum StorageBackend {
     File(PathBuf),
-    Nats(Box<NatsStorageAdapter>),
+    Nats(NatsAdapterHandle),
 }
 
 struct StoreInner<E> {
@@ -141,7 +188,7 @@ impl<E: PardosaSchema> StoreInner<E> {
         session.set_schema_descriptor(&desc)?;
         session.sync()?;
         Ok(Self {
-            backend: StorageBackend::Nats(Box::new(adapter)),
+            backend: StorageBackend::Nats(NatsAdapterHandle::new(adapter)),
             cached: Mutex::new(Vec::new()),
         })
     }
@@ -156,7 +203,7 @@ impl<E: PardosaSchema> StoreInner<E> {
             cached.push((env.header.detached, env.header.fiber_id, event));
         }
         Ok(Self {
-            backend: StorageBackend::Nats(Box::new(adapter)),
+            backend: StorageBackend::Nats(NatsAdapterHandle::new(adapter)),
             cached: Mutex::new(cached),
         })
     }
@@ -860,6 +907,30 @@ mod tests {
         Timestamp::new(nanos).expect("valid timestamp")
     }
 
+    fn resolve_pinned_nats_server() -> Result<std::path::PathBuf, String> {
+        let pinned = "2.14.5";
+        let candidate_path = std::path::PathBuf::from("tools/bin/nats-server");
+        let bin_path = if candidate_path.is_file() {
+            candidate_path
+        } else {
+            std::path::PathBuf::from("nats-server")
+        };
+        let output = std::process::Command::new(&bin_path)
+            .arg("-v")
+            .output()
+            .map_err(|e| format!("nats-server absent from PATH: {e}"))?;
+        let version_str = String::from_utf8_lossy(&output.stdout);
+        let version_err = String::from_utf8_lossy(&output.stderr);
+        let full = format!("{version_str} {version_err}");
+        if !full.contains(pinned) {
+            return Err(format!(
+                "version mismatch (expected {pinned}, got {})",
+                full.trim()
+            ));
+        }
+        Ok(bin_path)
+    }
+
     struct TestNatsServer {
         url: String,
         child: std::process::Child,
@@ -867,13 +938,25 @@ mod tests {
     }
 
     impl TestNatsServer {
-        fn spawn() -> Self {
+        fn spawn() -> Option<Self> {
+            let bin_path = match resolve_pinned_nats_server() {
+                Ok(path) => path,
+                Err(reason) => {
+                    eprintln!(
+                        "SKIP nats_store_admission_roundtrip_and_rejection: live nats-server unavailable: {reason}"
+                    );
+                    return None;
+                }
+            };
+
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
             let port = listener.local_addr().expect("local addr").port();
             drop(listener);
 
             let tempdir = tempfile::TempDir::new().expect("tempdir");
-            let child = std::process::Command::new("nats-server")
+            let child = std::process::Command::new(bin_path)
+                .arg("-a")
+                .arg("127.0.0.1")
                 .arg("-p")
                 .arg(port.to_string())
                 .arg("-js")
@@ -888,11 +971,11 @@ mod tests {
             let start = std::time::Instant::now();
             while start.elapsed() < std::time::Duration::from_secs(5) {
                 if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
-                    return Self {
+                    return Some(Self {
                         url,
                         child,
                         _tempdir: tempdir,
-                    };
+                    });
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -911,8 +994,10 @@ mod tests {
     }
 
     #[test]
-    fn nats_store_admission_roundtrip_and_rejection() {
-        let server = TestNatsServer::spawn();
+    fn nats_store_admission_roundtrip_persists_across_reopen() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
 
         let rt = std::sync::Arc::new(
             tokio::runtime::Builder::new_multi_thread()
@@ -941,9 +1026,13 @@ mod tests {
                 },
             )
             .expect("record event in nats");
+        drop(store);
 
-        let adapter_reopen =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid, rt.clone());
+        let adapter_reopen = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_valid.clone(),
+            rt.clone(),
+        );
         let reopened = NativeStore::open_nats(adapter_reopen).expect("reopen valid nats store");
         assert_eq!(reopened.events().expect("events").len(), 1);
         reopened
@@ -956,7 +1045,55 @@ mod tests {
                 },
             )
             .expect("append second event after reopen");
-        assert_eq!(reopened.events().expect("events").len(), 2);
+        drop(reopened);
+
+        let adapter_second_reopen =
+            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid, rt.clone());
+        let second_reopened =
+            NativeStore::open_nats(adapter_second_reopen).expect("second reopen valid nats store");
+        let events = second_reopened.events().expect("events");
+        assert_eq!(events.len(), 2);
+        match &events[0].1 {
+            DomainEvent::RepositoryDeleted {
+                domain_key,
+                repo_name,
+                detected_at,
+            } => {
+                assert_eq!(domain_key.as_str(), "repo-nats-1");
+                assert_eq!(repo_name.as_str(), "repo-nats-1");
+                assert_eq!(detected_at.as_nanos(), 20);
+            }
+            _ => panic!("unexpected event 0 variant"),
+        }
+        match &events[1].1 {
+            DomainEvent::RepositoryDeleted {
+                domain_key,
+                repo_name,
+                detected_at,
+            } => {
+                assert_eq!(domain_key.as_str(), "repo-nats-2");
+                assert_eq!(repo_name.as_str(), "repo-nats-2");
+                assert_eq!(detected_at.as_nanos(), 30);
+            }
+            _ => panic!("unexpected event 1 variant"),
+        }
+    }
+
+    #[test]
+    fn nats_store_open_rejects_unadmitted_or_mismatched_descriptor() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
+
+        let rt = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let client = rt
+            .block_on(async_nats::connect(&server.url))
+            .expect("connect to live nats");
 
         let stem_mismatched = format!("test_nats_mismatched_{}", uuid::Uuid::now_v7());
         let adapter_mismatched_raw = NatsStorageAdapter::from_client_with_runtime(
@@ -1011,5 +1148,19 @@ mod tests {
             StoreError::Infrastructure(ref msg)
                 if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
         ));
+    }
+
+    #[tokio::test]
+    async fn nats_adapter_handle_drops_safely_inside_tokio_worker_context() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
+        let client = async_nats::connect(&server.url)
+            .await
+            .expect("connect to live nats");
+        let adapter = NatsStorageAdapter::from_client(client, "test_handle_drop");
+        let handle = NatsAdapterHandle::new(adapter);
+        drop(handle);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
