@@ -121,25 +121,30 @@ fn process_alert(
         return;
     };
 
-    let alert_scope_key = repository
-        .get("id")
-        .and_then(|v| v.as_u64().map(|n| n.to_string()))
-        .or_else(|| {
-            repository
-                .get("node_id")
-                .and_then(serde_json::Value::as_str)
-                .map(String::from)
-        });
+    let num_id = repository.get("id").and_then(|v| {
+        v.as_u64()
+            .map(|n| n.to_string())
+            .or_else(|| v.as_str().map(String::from))
+    });
+    let node_id = repository
+        .get("node_id")
+        .and_then(serde_json::Value::as_str);
 
-    let Some(key) = alert_scope_key else {
-        trace!("skipping alert with no identifiable repository key");
+    let matched_repo = num_id
+        .as_ref()
+        .and_then(|id| known_scope.get(id))
+        .or_else(|| node_id.and_then(|nid| known_scope.get(nid)));
+
+    let Some(repo) = matched_repo else {
+        trace!(
+            num_id = ?num_id,
+            node_id = ?node_id,
+            "skipping alert for repository outside inventory scope"
+        );
         return;
     };
-    if !known_scope.contains_key(&key) {
-        trace!(scope_key = %key, "skipping alert for repository outside inventory scope");
-        return;
-    }
 
+    let key = scope_key(repo);
     let repo_summary = summary.per_repo.entry(key).or_default();
     repo_summary.open_alert_count += 1;
     summary.total_open_secret_alerts += 1;
@@ -200,6 +205,9 @@ pub async fn collect_org_alerts(
     let mut known_scope: HashMap<String, &Arc<Repository>> = HashMap::new();
     for repo in repositories {
         known_scope.insert(scope_key(repo), repo);
+        if let Some(ref node_id) = repo.node_id {
+            known_scope.insert(node_id.clone(), repo);
+        }
     }
 
     let result = client
@@ -821,5 +829,166 @@ mod tests {
             summary.total_open_secret_alerts, 0,
             "a degraded summary must not report partial alert counts"
         );
+    }
+
+    fn sample_repo(id: &str, node_id: Option<&str>, name: &str) -> Arc<Repository> {
+        Arc::new(Repository {
+            id: id.to_string(),
+            node_id: node_id.map(String::from),
+            name: name.to_string(),
+            visibility: crate::domain::repository::Visibility::Public,
+            language: None,
+            default_branch: "main".to_string(),
+            archived: false,
+            has_issues: true,
+            inventory_key: id.to_string(),
+            updated_at: None,
+            pushed_at: None,
+            created_at: None,
+            description: None,
+            fork: false,
+            is_empty: false,
+            html_url: None,
+            topics: vec![],
+            license_spdx: None,
+        })
+    }
+
+    #[test]
+    fn process_alert_matches_node_id_when_numeric_id_absent_in_inventory() {
+        let repo = sample_repo("legacy-key", Some("R_kgDO_node_123"), "test-repo");
+
+        let mut known_scope = HashMap::new();
+        known_scope.insert(scope_key(&repo), &repo);
+        if let Some(ref node_id) = repo.node_id {
+            known_scope.insert(node_id.clone(), &repo);
+        }
+
+        let alert = serde_json::json!({
+            "repository": {
+                "id": 99999,
+                "node_id": "R_kgDO_node_123"
+            },
+            "created_at": "2026-06-15T14:30:45Z"
+        });
+
+        let mut summary = OrgAlertSummary {
+            collection_status: CollectionStatus::Success,
+            collection_reason: None,
+            per_repo: HashMap::new(),
+            open_secret_alert_age_buckets: empty_age_buckets(),
+            total_open_secret_alerts: 0,
+            oldest_open_secret_alert_created_at: None,
+            newest_open_secret_alert_created_at: None,
+        };
+
+        let now = Timestamp::now();
+        process_alert(&alert, &known_scope, &mut summary, now);
+
+        assert_eq!(summary.total_open_secret_alerts, 1);
+        let repo_summary = summary.per_repo.get(&scope_key(&repo));
+        assert!(repo_summary.is_some());
+        assert_eq!(repo_summary.unwrap().open_alert_count, 1);
+    }
+
+    fn test_client(base_url: &str) -> GitHubClient {
+        let credential = crate::github::auth::GitHubCredential {
+            mode: crate::domain::auth::AuthMode::Pat,
+            token: secrecy::SecretString::from("test-token"),
+            expires_at: None,
+        };
+        let budget = Arc::new(crate::github::budget::BudgetGate::new(
+            config::API_BUDGET_LIMIT,
+            std::time::Duration::from_secs(config::API_BUDGET_WAIT_SECS),
+        ));
+        let rate_limit = Arc::new(crate::github::rate_limit::new_default());
+        GitHubClient::new(credential, base_url, "test-org", None, budget, rate_limit)
+            .expect("test client construction should succeed")
+    }
+
+    #[tokio::test]
+    async fn collect_org_alerts_correlates_by_node_id_with_legacy_inventory_id() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let client = test_client(&server.uri());
+
+        let alerts_payload = serde_json::json!([
+            {
+                "repository": {
+                    "id": 99999,
+                    "node_id": "R_kgDO_node_123"
+                },
+                "created_at": "2026-06-15T14:30:45Z"
+            },
+            {
+                "repository": {
+                    "id": 54321,
+                    "node_id": "R_kgDO_other_node"
+                },
+                "created_at": "2026-06-15T14:30:45Z"
+            },
+            {
+                "repository": {
+                    "id": "77777",
+                    "node_id": "R_kgDO_string_node"
+                },
+                "created_at": "2026-06-15T14:30:45Z"
+            },
+            {
+                "repository": {
+                    "id": 33333,
+                    "node_id": "R_kgDO_dual_match"
+                },
+                "created_at": "2026-06-15T14:30:45Z"
+            },
+            {
+                "repository": {
+                    "id": 88888,
+                    "node_id": "R_kgDO_unmatched"
+                },
+                "created_at": "2026-06-15T14:30:45Z"
+            }
+        ]);
+
+        Mock::given(path("/orgs/test-org/secret-scanning/alerts"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(alerts_payload))
+            .mount(&server)
+            .await;
+
+        let repo_legacy = sample_repo("legacy-key", Some("R_kgDO_node_123"), "legacy-repo");
+        let repo_numeric = sample_repo("54321", Some("R_kgDO_numeric_node"), "numeric-repo");
+        let repo_string = sample_repo("77777", Some("R_kgDO_some_node"), "string-repo");
+        let repo_dual = sample_repo("33333", Some("R_kgDO_dual_match"), "dual-repo");
+
+        let repos = [repo_legacy, repo_numeric, repo_string, repo_dual];
+        let summary = collect_org_alerts(&client, &repos, "2026-06-15T15:00:00Z").await;
+
+        assert_eq!(summary.collection_status, CollectionStatus::Success);
+        assert_eq!(summary.total_open_secret_alerts, 4);
+        assert_eq!(summary.per_repo.len(), 4);
+        assert_eq!(
+            summary.per_repo.get("33333").map(|s| s.open_alert_count),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .per_repo
+                .get("legacy-key")
+                .map(|s| s.open_alert_count),
+            Some(1)
+        );
+        assert_eq!(
+            summary.per_repo.get("54321").map(|s| s.open_alert_count),
+            Some(1)
+        );
+        assert_eq!(
+            summary.per_repo.get("77777").map(|s| s.open_alert_count),
+            Some(1)
+        );
+        assert!(!summary.per_repo.contains_key("R_kgDO_node_123"));
+        assert!(!summary.per_repo.contains_key("99999"));
+        assert!(!summary.per_repo.contains_key("88888"));
     }
 }

@@ -262,12 +262,17 @@ conversion_pair!(sr::Repository => Repository {
         default_branch: to_nes::<MAX_BRANCH_NAME>("repository.default_branch", &r.default_branch)?,
         archived: r.archived,
         inventory_key: to_nes::<MAX_DOMAIN_KEY>("repository.inventory_key", &r.inventory_key)?,
-        updated_at: ts_opt("repository.updated_at", r.updated_at.as_deref())?,
+        updated_at: r
+            .updated_at
+            .as_deref()
+            .map(|s| to_nes::<MAX_TIMESTAMP_TEXT>("repository.updated_at", s))
+            .transpose()?,
         has_issues: r.has_issues,
         pushed_at: ts_opt("repository.pushed_at", r.pushed_at.as_deref())?,
         created_at: ts_opt("repository.created_at", r.created_at.as_deref())?,
         description: to_es_opt::<MAX_DESCRIPTION>("repository.description", r.description)?,
         fork: r.fork,
+        is_empty: r.is_empty,
         html_url: to_es_opt::<MAX_URL>("repository.html_url", r.html_url)?,
         topics: to_event_vec("repository.topics", r.topics, |topic| {
             to_es::<MAX_TOPIC>("repository.topics", topic)
@@ -283,13 +288,16 @@ conversion_pair!(sr::Repository => Repository {
         default_branch: r.default_branch.as_str().to_string(),
         archived: r.archived,
         inventory_key: r.inventory_key.as_str().to_string(),
-        updated_at: ts_to_string_opt(r.updated_at).and_then(sr::UpdatedAt::new),
+        updated_at: r
+            .updated_at
+            .as_ref()
+            .and_then(|s| sr::UpdatedAt::new(s.as_str())),
         has_issues: r.has_issues,
         pushed_at: ts_to_string_opt(r.pushed_at),
         created_at: ts_to_string_opt(r.created_at),
         description: r.description.map(|v| v.as_str().to_string()),
         fork: r.fork,
-        is_empty: false,
+        is_empty: r.is_empty,
         html_url: r.html_url.map(|v| v.as_str().to_string()),
         topics: r.topics.iter().map(|t| t.as_str().to_string()).collect(),
         license_spdx: r.license_spdx.map(|v| v.as_str().to_string()),
@@ -744,5 +752,92 @@ impl From<TeamStateCaptured> for sm::TeamRoster {
             members,
             fetched_at,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::repository as sr;
+
+    fn sample_repository() -> sr::Repository {
+        sr::Repository {
+            id: "123".to_string(),
+            node_id: Some("node-123".to_string()),
+            name: "repo-1".to_string(),
+            visibility: sr::Visibility::Public,
+            language: Some("Rust".to_string()),
+            default_branch: "main".to_string(),
+            archived: false,
+            inventory_key: "org/repo-1".to_string(),
+            updated_at: None,
+            has_issues: true,
+            pushed_at: None,
+            created_at: None,
+            description: None,
+            fork: false,
+            is_empty: false,
+            html_url: None,
+            topics: vec![],
+            license_spdx: None,
+        }
+    }
+
+    #[test]
+    fn updated_at_opaque_string_round_trip() {
+        let mut repo = sample_repository();
+        repo.updated_at = sr::UpdatedAt::new("not-a-timestamp");
+        let event_repo = Repository::try_from(repo.clone()).expect("conversion to event");
+        let round_tripped = sr::Repository::from(event_repo);
+        assert_eq!(round_tripped.updated_at.as_deref(), Some("not-a-timestamp"));
+    }
+
+    #[test]
+    fn updated_at_offset_spelling_preserved() {
+        let mut repo = sample_repository();
+        repo.updated_at = sr::UpdatedAt::new("2026-04-01T14:00:00+02:00");
+        let event_repo = Repository::try_from(repo.clone()).expect("conversion to event");
+        let round_tripped = sr::Repository::from(event_repo);
+        assert_eq!(
+            round_tripped.updated_at.as_deref(),
+            Some("2026-04-01T14:00:00+02:00")
+        );
+    }
+
+    #[test]
+    fn is_empty_flag_preserved() {
+        let mut repo = sample_repository();
+        repo.is_empty = true;
+        let event_repo = Repository::try_from(repo.clone()).expect("conversion to event");
+        let round_tripped = sr::Repository::from(event_repo);
+        assert!(round_tripped.is_empty);
+
+        let mut repo_false = sample_repository();
+        repo_false.is_empty = false;
+        let event_repo_false =
+            Repository::try_from(repo_false.clone()).expect("conversion to event");
+        let round_tripped_false = sr::Repository::from(event_repo_false);
+        assert!(!round_tripped_false.is_empty);
+    }
+
+    #[test]
+    fn updated_at_whitespace_preserved() {
+        let mut repo = sample_repository();
+        repo.updated_at = sr::UpdatedAt::new(" ");
+        let event_repo = Repository::try_from(repo.clone()).expect("conversion to event");
+        let round_tripped = sr::Repository::from(event_repo);
+        assert_eq!(round_tripped.updated_at.as_deref(), Some(" "));
+    }
+
+    #[test]
+    fn updated_at_empty_string_rejected() {
+        let err = to_nes::<MAX_TIMESTAMP_TEXT>("repository.updated_at", "")
+            .expect_err("empty must be rejected");
+        assert!(matches!(
+            err,
+            EventConversionError::Empty {
+                field: "repository.updated_at"
+            }
+        ));
     }
 }

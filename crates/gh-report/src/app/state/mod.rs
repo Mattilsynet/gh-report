@@ -886,8 +886,8 @@ fn open_event_store(
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %adapter.meta_subject(),
-                data_subject = %adapter.data_subject(),
+                meta_subject = %format_args!("{stem}_meta"),
+                data_subject = %format_args!("{stem}_data"),
                 "initializing NatsStorageAdapter for unified event store"
             );
             match EventStoreImpl::create_nats(adapter.clone()) {
@@ -969,8 +969,8 @@ fn open_org_event_store(
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %adapter.meta_subject(),
-                data_subject = %adapter.data_subject(),
+                meta_subject = %format_args!("{stem}_meta"),
+                data_subject = %format_args!("{stem}_data"),
                 "initializing NatsStorageAdapter for org event store"
             );
             match OrgEventStoreImpl::create_nats(adapter.clone()) {
@@ -1032,8 +1032,8 @@ fn open_team_event_store(
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %adapter.meta_subject(),
-                data_subject = %adapter.data_subject(),
+                meta_subject = %format_args!("{stem}_meta"),
+                data_subject = %format_args!("{stem}_data"),
                 "initializing NatsStorageAdapter for team event store"
             );
             match TeamEventStoreImpl::create_nats(adapter.clone()) {

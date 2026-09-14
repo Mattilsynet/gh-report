@@ -383,6 +383,10 @@ impl_pardosa_struct!(LastCommitInfo {
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent GitHub repository attribute (archived, has_issues, fork, is_empty)"
+)]
 pub struct Repository {
     pub id: NonEmptyEventString<MAX_GITHUB_ID>,
     pub node_id: Option<EventString<MAX_NODE_ID>>,
@@ -392,12 +396,13 @@ pub struct Repository {
     pub default_branch: NonEmptyEventString<MAX_BRANCH_NAME>,
     pub archived: bool,
     pub inventory_key: NonEmptyEventString<MAX_DOMAIN_KEY>,
-    pub updated_at: Option<Timestamp>,
+    pub updated_at: Option<NonEmptyEventString<MAX_TIMESTAMP_TEXT>>,
     pub has_issues: bool,
     pub pushed_at: Option<Timestamp>,
     pub created_at: Option<Timestamp>,
     pub description: Option<EventString<MAX_DESCRIPTION>>,
     pub fork: bool,
+    pub is_empty: bool,
     pub html_url: Option<EventString<MAX_URL>>,
     pub topics: EventVec<EventString<MAX_TOPIC>, MAX_TOPICS>,
     pub license_spdx: Option<EventString<MAX_LICENSE>>,
@@ -411,12 +416,13 @@ impl_pardosa_struct!(Repository {
     default_branch: NonEmptyEventString<MAX_BRANCH_NAME>,
     archived: bool,
     inventory_key: NonEmptyEventString<MAX_DOMAIN_KEY>,
-    updated_at: Option<Timestamp>,
+    updated_at: Option<NonEmptyEventString<MAX_TIMESTAMP_TEXT>>,
     has_issues: bool,
     pushed_at: Option<Timestamp>,
     created_at: Option<Timestamp>,
     description: Option<EventString<MAX_DESCRIPTION>>,
     fork: bool,
+    is_empty: bool,
     html_url: Option<EventString<MAX_URL>>,
     topics: EventVec<EventString<MAX_TOPIC>, MAX_TOPICS>,
     license_spdx: Option<EventString<MAX_LICENSE>>,
@@ -1287,12 +1293,13 @@ mod tests {
             default_branch: nes("main"),
             archived: false,
             inventory_key: nes("id-repo-1"),
-            updated_at: Some(ts(10)),
+            updated_at: Some(nes("10")),
             has_issues: true,
             pushed_at: Some(ts(11)),
             created_at: Some(ts(12)),
             description: Some(es("repository description")),
             fork: false,
+            is_empty: false,
             html_url: Some(es("https://github.com/acme/repo-1")),
             topics: ev(vec![es("security"), es("rust")]),
             license_spdx: Some(es("MIT")),
@@ -1716,6 +1723,23 @@ mod tests {
         assert!(matches!(err, DecodeError::LengthExceeded { .. }));
     }
 
+    #[test]
+    fn updated_at_native_empty_rejected() {
+        let err = NonEmptyEventString::<MAX_TIMESTAMP_TEXT>::new("")
+            .expect_err("empty native string must be rejected");
+        assert!(matches!(err, DecodeError::EmptyNonEmptyString));
+    }
+
+    #[test]
+    fn schema_structural_completeness_rejects_malformed_descriptor() {
+        let malformed = SchemaDescriptor::new(1, DescriptorNode::EventString { max_bytes: 0 });
+        assert!(malformed.validate_structural_completeness().is_err());
+
+        let malformed_nes =
+            SchemaDescriptor::new(1, DescriptorNode::NonEmptyEventString { max_bytes: 0 });
+        assert!(malformed_nes.validate_structural_completeness().is_err());
+    }
+
     const LEGACY_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
         "3b1d43cb4b22f0e89ebb6e59928c1bdf398cf3d7d904d8f0d767dc682a44e86f";
     const LEGACY_ORG_STATE_SCHEMA_IDENTITY: &str =
@@ -1726,7 +1750,7 @@ mod tests {
         "cc4812aa267f39c6d430fc32d7dacf8e6af78595e178569bf79ea14364f846d5";
 
     const TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
-        "a2b206db0aab56cd29c449a0b1da1156470da2758617db4bba9fdb4af2a287b3";
+        "436df142b24b49432d60b4b2cdc77015c9d8d7c86ffa4892ec128eb39e92a8a1";
     const TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY: &str =
         "f8137e21373fd0bf085923aad35b241813ed85c56ef4e7ea45d586fee37bc384";
     const TRUTHFUL_TEAM_STATE_SCHEMA_IDENTITY: &str =
@@ -1734,14 +1758,14 @@ mod tests {
     const TRUTHFUL_SWEEP_TIMEOUT_SCHEMA_IDENTITY: &str =
         "55b9b99b6408ad5696d2e0ce5cc85c0f28ffd93c1f7ab230d524ae4d329ff44e";
 
-    const CANONICAL_REPO_CAPTURED_BYTES: [u8; 465] = [
+    const CANONICAL_REPO_CAPTURED_BYTES: [u8; 464] = [
         0, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
         45, 49, 40, 0, 0, 0, 0, 0, 0, 0, 1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49,
         1, 6, 0, 0, 0, 110, 111, 100, 101, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111, 45, 49, 0, 1, 4,
         0, 0, 0, 82, 117, 115, 116, 4, 0, 0, 0, 109, 97, 105, 110, 0, 9, 0, 0, 0, 105, 100, 45,
-        114, 101, 112, 111, 45, 49, 1, 10, 0, 0, 0, 0, 0, 0, 0, 1, 1, 11, 0, 0, 0, 0, 0, 0, 0, 1,
-        12, 0, 0, 0, 0, 0, 0, 0, 1, 22, 0, 0, 0, 114, 101, 112, 111, 115, 105, 116, 111, 114, 121,
-        32, 100, 101, 115, 99, 114, 105, 112, 116, 105, 111, 110, 0, 1, 30, 0, 0, 0, 104, 116, 116,
+        114, 101, 112, 111, 45, 49, 1, 2, 0, 0, 0, 49, 48, 1, 1, 11, 0, 0, 0, 0, 0, 0, 0, 1, 12, 0,
+        0, 0, 0, 0, 0, 0, 1, 22, 0, 0, 0, 114, 101, 112, 111, 115, 105, 116, 111, 114, 121, 32,
+        100, 101, 115, 99, 114, 105, 112, 116, 105, 111, 110, 0, 0, 1, 30, 0, 0, 0, 104, 116, 116,
         112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 97, 99, 109, 101,
         47, 114, 101, 112, 111, 45, 49, 2, 0, 0, 0, 8, 0, 0, 0, 115, 101, 99, 117, 114, 105, 116,
         121, 4, 0, 0, 0, 114, 117, 115, 116, 1, 3, 0, 0, 0, 77, 73, 84, 0, 0, 1, 11, 0, 0, 0, 83,
@@ -1797,9 +1821,9 @@ mod tests {
         assert_ne!(identity_hex, expected_legacy_hex);
 
         let desc = SchemaDescriptor::new(T::schema_version(), T::schema_descriptor());
-        let admitted = AdmittedDescriptor::try_from_descriptor(desc);
-        assert!(admitted.is_ok(), "schema descriptor must be admitted");
-        assert_eq!(admitted.unwrap().identity().to_hex(), expected_truthful_hex);
+        desc.validate_structural_completeness()
+            .expect("schema descriptor must be structurally complete");
+        assert_eq!(desc.identity().to_hex(), expected_truthful_hex);
     }
 
     #[test]
