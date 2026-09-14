@@ -866,6 +866,13 @@ mod tests {
     ));
 
     #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum NatsVersionError {
+        VersionMismatch { expected: String, actual: String },
+        UnsuccessfulStatus(String),
+        InvalidUtf8(String),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
     pub(crate) enum ProbeOutcome {
         Ready(std::path::PathBuf),
         Unavailable(String),
@@ -876,12 +883,15 @@ mod tests {
         status_success: bool,
         stdout_bytes: &[u8],
         expected_pin: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, NatsVersionError> {
         if !status_success {
-            return Err("probe process exited with non-zero status".to_string());
+            return Err(NatsVersionError::UnsuccessfulStatus(
+                "probe process exited with non-zero status".to_string(),
+            ));
         }
-        let stdout = std::str::from_utf8(stdout_bytes)
-            .map_err(|e| format!("probe output is not valid UTF-8: {e}"))?;
+        let stdout = std::str::from_utf8(stdout_bytes).map_err(|e| {
+            NatsVersionError::InvalidUtf8(format!("probe output is not valid UTF-8: {e}"))
+        })?;
         let trimmed = stdout.trim();
         let version = trimmed
             .strip_prefix("nats-server: v")
@@ -891,9 +901,10 @@ mod tests {
         if version == expected_pin {
             Ok(version.to_string())
         } else {
-            Err(format!(
-                "version mismatch (expected {expected_pin}, got {version})"
-            ))
+            Err(NatsVersionError::VersionMismatch {
+                expected: expected_pin.to_string(),
+                actual: version.to_string(),
+            })
         }
     }
 
@@ -906,8 +917,15 @@ mod tests {
             Ok(output) => {
                 match parse_nats_version(output.status.success(), &output.stdout, expected_pin) {
                     Ok(_) => ProbeOutcome::Ready(bin_path),
-                    Err(msg) if msg.contains("version mismatch") => ProbeOutcome::Unavailable(msg),
-                    Err(fatal_msg) => ProbeOutcome::Fatal(fatal_msg),
+                    Err(NatsVersionError::VersionMismatch { expected, actual }) => {
+                        ProbeOutcome::Unavailable(format!(
+                            "version mismatch (expected {expected}, got {actual})"
+                        ))
+                    }
+                    Err(
+                        NatsVersionError::UnsuccessfulStatus(msg)
+                        | NatsVersionError::InvalidUtf8(msg),
+                    ) => ProbeOutcome::Fatal(msg),
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -941,12 +959,13 @@ mod tests {
         }
     }
 
-    fn cleanup_child_process(mut child: std::process::Child) {
+    fn cleanup_child_process(child: &mut std::process::Child) {
         match child.try_wait() {
             Ok(Some(_status)) => {}
             Ok(None) => {
                 if let Err(err) = child.kill() {
                     eprintln!("warn: failed to kill test nats-server: {err}");
+                    return;
                 }
                 if let Err(err) = child.wait() {
                     eprintln!("warn: failed to wait on test nats-server: {err}");
@@ -954,8 +973,17 @@ mod tests {
             }
             Err(err) => {
                 eprintln!("warn: failed to query status of test nats-server: {err}");
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Err(kill_err) = child.kill() {
+                    eprintln!(
+                        "warn: failed to kill test nats-server after query error: {kill_err}"
+                    );
+                    return;
+                }
+                if let Err(wait_err) = child.wait() {
+                    eprintln!(
+                        "warn: failed to wait on test nats-server after query error: {wait_err}"
+                    );
+                }
             }
         }
     }
@@ -983,7 +1011,7 @@ mod tests {
             drop(listener);
 
             let tempdir = tempfile::TempDir::new().expect("tempdir");
-            let child = std::process::Command::new(bin_path)
+            let mut child = std::process::Command::new(bin_path)
                 .arg("-a")
                 .arg("127.0.0.1")
                 .arg("-p")
@@ -1008,29 +1036,14 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            cleanup_child_process(child);
+            cleanup_child_process(&mut child);
             panic!("nats-server readiness timeout on 127.0.0.1:{port}");
         }
     }
 
     impl Drop for TestNatsServer {
         fn drop(&mut self) {
-            match self.child.try_wait() {
-                Ok(Some(_status)) => {}
-                Ok(None) => {
-                    if let Err(err) = self.child.kill() {
-                        eprintln!("warn: failed to kill test nats-server in Drop: {err}");
-                    }
-                    if let Err(err) = self.child.wait() {
-                        eprintln!("warn: failed to wait on test nats-server in Drop: {err}");
-                    }
-                }
-                Err(err) => {
-                    eprintln!("warn: failed to query status of test nats-server in Drop: {err}");
-                    let _ = self.child.kill();
-                    let _ = self.child.wait();
-                }
-            }
+            cleanup_child_process(&mut self.child);
         }
     }
 
@@ -1232,7 +1245,7 @@ mod tests {
             return;
         };
         let url = server.url.clone();
-        let (res, root_guard) = tokio::task::spawn_blocking(move || {
+        let (adapter, root_guard) = tokio::task::spawn_blocking(move || {
             let rt = std::sync::Arc::new(
                 tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -1245,15 +1258,14 @@ mod tests {
                 .expect("connect to test nats");
             let stem = format!("test_early_error_{}", uuid::Uuid::now_v7());
             let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, rt);
-            let res = NativeStore::open_nats(adapter);
-            (res, root_guard)
+            (adapter, root_guard)
         })
         .await
         .expect("spawn_blocking construct adapter");
 
         assert!(tokio::runtime::Handle::try_current().is_ok());
+        let res = NativeStore::open_nats(adapter);
         assert!(res.is_err());
-        drop(res);
 
         tokio::task::spawn_blocking(move || {
             drop(root_guard);
@@ -1281,20 +1293,83 @@ mod tests {
     #[test]
     fn parse_nats_version_rejects_version_mismatches() {
         let err = parse_nats_version(true, b"nats-server: v2.14.6\n", "2.14.5").unwrap_err();
-        assert!(err.contains("version mismatch (expected 2.14.5, got 2.14.6)"));
+        assert_eq!(
+            err,
+            NatsVersionError::VersionMismatch {
+                expected: "2.14.5".to_string(),
+                actual: "2.14.6".to_string(),
+            }
+        );
 
         let err_near = parse_nats_version(true, b"nats-server: v2.14.50\n", "2.14.5").unwrap_err();
-        assert!(err_near.contains("version mismatch (expected 2.14.5, got 2.14.50)"));
+        assert_eq!(
+            err_near,
+            NatsVersionError::VersionMismatch {
+                expected: "2.14.5".to_string(),
+                actual: "2.14.50".to_string(),
+            }
+        );
     }
 
     #[test]
     fn parse_nats_version_rejects_nonzero_status_or_invalid_utf8() {
         let err_status =
             parse_nats_version(false, b"nats-server: v2.14.5\n", "2.14.5").unwrap_err();
-        assert_eq!(err_status, "probe process exited with non-zero status");
+        assert_eq!(
+            err_status,
+            NatsVersionError::UnsuccessfulStatus(
+                "probe process exited with non-zero status".to_string()
+            )
+        );
 
         let err_utf8 = parse_nats_version(true, b"\xFF\xFE\xFD", "2.14.5").unwrap_err();
-        assert!(err_utf8.contains("probe output is not valid UTF-8"));
+        assert!(matches!(err_utf8, NatsVersionError::InvalidUtf8(_)));
+    }
+
+    #[cfg(unix)]
+    fn make_test_output(status_code: i32, stdout: &[u8]) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(status_code << 8),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_probe_result_covers_concrete_output_variants() {
+        let dummy = std::path::PathBuf::from("nats-server");
+
+        let out_exact = make_test_output(0, b"nats-server: v2.14.5\n");
+        assert_eq!(
+            classify_probe_result(Ok(out_exact), "2.14.5", dummy.clone()),
+            ProbeOutcome::Ready(dummy.clone())
+        );
+
+        let out_mismatch = make_test_output(0, b"nats-server: v2.14.6\n");
+        assert!(matches!(
+            classify_probe_result(Ok(out_mismatch), "2.14.5", dummy.clone()),
+            ProbeOutcome::Unavailable(msg) if msg.contains("expected 2.14.5, got 2.14.6")
+        ));
+
+        let out_near = make_test_output(0, b"nats-server: v2.14.50\n");
+        assert!(matches!(
+            classify_probe_result(Ok(out_near), "2.14.5", dummy.clone()),
+            ProbeOutcome::Unavailable(msg) if msg.contains("expected 2.14.5, got 2.14.50")
+        ));
+
+        let out_fail_status = make_test_output(1, b"nats-server: v2.14.5\n");
+        assert!(matches!(
+            classify_probe_result(Ok(out_fail_status), "2.14.5", dummy.clone()),
+            ProbeOutcome::Fatal(msg) if msg.contains("non-zero status")
+        ));
+
+        let out_invalid_utf8 = make_test_output(0, b"\xFF\xFE\xFD");
+        assert!(matches!(
+            classify_probe_result(Ok(out_invalid_utf8), "2.14.5", dummy.clone()),
+            ProbeOutcome::Fatal(msg) if msg.contains("valid UTF-8")
+        ));
     }
 
     #[test]

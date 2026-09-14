@@ -881,16 +881,19 @@ fn open_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
+            let Some(rt) = nats_runtime else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "NATS event store requires a root-supervised Tokio runtime",
+                ));
+            };
             let client = connect_nats_sync(handle, nats)?;
             let stem = &nats.stream_name;
-            let adapter = match nats_runtime {
-                Some(rt) => pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
-                    client,
-                    stem,
-                    Arc::clone(rt),
-                ),
-                None => pardosa_nats::NatsStorageAdapter::from_client(client, stem),
-            };
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                stem,
+                Arc::clone(rt),
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -971,17 +974,20 @@ fn open_org_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
+            let Some(rt) = nats_runtime else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "NATS org event store requires a root-supervised Tokio runtime",
+                ));
+            };
             let client = connect_nats_sync(handle, nats)?;
             let org_nats = nats.org_events();
             let stem = &org_nats.stream_name;
-            let adapter = match nats_runtime {
-                Some(rt) => pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
-                    client,
-                    stem,
-                    Arc::clone(rt),
-                ),
-                None => pardosa_nats::NatsStorageAdapter::from_client(client, stem),
-            };
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                stem,
+                Arc::clone(rt),
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -1042,17 +1048,20 @@ fn open_team_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
+            let Some(rt) = nats_runtime else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "NATS team event store requires a root-supervised Tokio runtime",
+                ));
+            };
             let client = connect_nats_sync(handle, nats)?;
             let team_nats = nats.team_events();
             let stem = &team_nats.stream_name;
-            let adapter = match nats_runtime {
-                Some(rt) => pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
-                    client,
-                    stem,
-                    Arc::clone(rt),
-                ),
-                None => pardosa_nats::NatsStorageAdapter::from_client(client, stem),
-            };
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                stem,
+                Arc::clone(rt),
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -1612,6 +1621,12 @@ impl AppState {
         backend: crate::config::runtime::PardosaBackend,
         nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<Arc<Self>, std::io::Error> {
+        if backend == crate::config::runtime::PardosaBackend::Nats {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NATS event store requires a root-supervised Tokio runtime; use with_stores_and_runtime with Some(Arc<Runtime>)",
+            ));
+        }
         Self::with_stores_and_runtime(events_dir, backend, nats, None).await
     }
 
@@ -1623,13 +1638,21 @@ impl AppState {
     ///
     /// # Errors
     ///
-    /// Returns [`std::io::Error`] when opening or creating event stores fails.
+    /// Returns [`std::io::Error`] when opening or creating event stores fails, or
+    /// when `backend` is [`PardosaBackend::Nats`](crate::config::runtime::PardosaBackend::Nats)
+    /// without providing `nats_runtime`.
     pub async fn with_stores_and_runtime(
         events_dir: &Path,
         backend: crate::config::runtime::PardosaBackend,
         nats: crate::config::runtime::NatsStoreConfig,
         nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
     ) -> Result<Arc<Self>, std::io::Error> {
+        if backend == crate::config::runtime::PardosaBackend::Nats && nats_runtime.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NATS event store requires a root-supervised Tokio runtime; nats_runtime cannot be None",
+            ));
+        }
         let handle = tokio::runtime::Handle::current();
         let events_dir = events_dir.to_path_buf();
         let event_store = open_event_store_blocking(
@@ -2409,7 +2432,24 @@ mod tests {
         let events_dir = tmp.path().join("events");
         let nats = NatsStoreConfig::for_org("org", "nats://127.0.0.1:1").unwrap();
 
-        let result = AppState::with_stores(&events_dir, PardosaBackend::Nats, nats).await;
+        let Err(unmanaged_err) =
+            AppState::with_stores(&events_dir, PardosaBackend::Nats, nats.clone()).await
+        else {
+            panic!("with_stores without supervised runtime must fail closed");
+        };
+        assert_eq!(unmanaged_err.kind(), std::io::ErrorKind::InvalidInput);
+
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let root_guard = Arc::clone(&rt);
+
+        let result =
+            AppState::with_stores_and_runtime(&events_dir, PardosaBackend::Nats, nats, Some(rt))
+                .await;
 
         let error = match result {
             Ok(_) => panic!("dead-port Nats open must fail"),
@@ -2423,6 +2463,10 @@ mod tests {
             error.contains("connect") || error.contains("Connection") || error.contains("refused"),
             "dead-port Nats open should reach connect and surface it as io::Error, got: {error}"
         );
+
+        tokio::task::spawn_blocking(move || drop(root_guard))
+            .await
+            .expect("clean root runtime drop");
     }
 
     #[test]

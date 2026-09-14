@@ -242,19 +242,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
-    let nats_runtime = std::sync::Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("ghr-nats-rt")
-            .build()?,
-    );
+    let nats_runtime = match cli.pardosa_backend {
+        PardosaBackendArg::Nats => Some(std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("ghr-nats-rt")
+                .build()?,
+        )),
+        PardosaBackendArg::Pgno => None,
+    };
 
     let app_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("ghr-app-rt")
         .build()?;
 
-    let root_nats_guard = std::sync::Arc::clone(&nats_runtime);
+    let root_nats_guard = nats_runtime.as_ref().map(std::sync::Arc::clone);
 
     let result = app_runtime.block_on(async move {
         if cli.dump_baseline {
@@ -267,12 +270,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 runtime::PardosaBackend::from(cli.pardosa_backend),
                 runtime::NatsStoreConfig::for_org(org, cli.nats_url.clone())?
                     .with_credentials_path(cli.nats_creds.clone()),
-                Some(std::sync::Arc::clone(&root_nats_guard)),
+                root_nats_guard.clone(),
             )
             .await?;
             if let Err(e) = app_state.snapshot_fast_path_init() {
-                eprintln!("error: projection init failed: {e}");
-                std::process::exit(1);
+                return Err(format!("projection init failed: {e}").into());
             }
             match app_state.dump_baseline_json() {
                 Ok(json) => {
@@ -280,8 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Ok(());
                 }
                 Err(e) => {
-                    eprintln!("error: serialise baseline: {e}");
-                    std::process::exit(1);
+                    return Err(format!("serialise baseline: {e}").into());
                 }
             }
         }
@@ -326,7 +327,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.nats_creds = cli.nats_creds;
         config.force_refresh = cli.force_refresh;
         config.team_roster_read_from_projection = !cli.team_roster_live_fetch;
-        config.nats_runtime = Some(std::sync::Arc::clone(&root_nats_guard));
+        config.nats_runtime = root_nats_guard;
         let nats_creds_path = config
             .nats_creds
             .as_ref()
