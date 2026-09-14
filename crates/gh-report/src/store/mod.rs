@@ -625,7 +625,7 @@ impl NativeTeamStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::event::team_domain_key;
 
@@ -988,14 +988,14 @@ mod tests {
         }
     }
 
-    struct TestNatsServer {
-        url: String,
+    pub(crate) struct TestNatsServer {
+        pub(crate) url: String,
         child: std::process::Child,
         _tempdir: tempfile::TempDir,
     }
 
     impl TestNatsServer {
-        fn spawn() -> Option<Self> {
+        pub(crate) fn spawn() -> Option<Self> {
             let bin_path = match resolve_pinned_nats_server() {
                 Ok(path) => path,
                 Err(reason) => {
@@ -1204,82 +1204,82 @@ mod tests {
         ));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn nats_store_drops_safely_when_root_owner_outlives_async_context() {
-        assert_eq!(
-            tokio::runtime::Handle::current().runtime_flavor(),
-            tokio::runtime::RuntimeFlavor::MultiThread
-        );
+    #[test]
+    fn nats_store_drops_safely_when_root_owner_outlives_application_runtime() {
         let Some(server) = TestNatsServer::spawn() else {
             return;
         };
         let url = server.url.clone();
-        let (store, root_guard) = tokio::task::spawn_blocking(move || {
-            let rt = std::sync::Arc::new(
-                tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .expect("root test runtime"),
+
+        let nats_runtime = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("root nats runtime"),
+        );
+        let root_nats_guard = std::sync::Arc::clone(&nats_runtime);
+
+        let client = nats_runtime
+            .block_on(async_nats::connect(&url))
+            .expect("connect");
+        let stem = format!("test_root_owner_{}", uuid::Uuid::now_v7());
+        let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, root_nats_guard);
+
+        let app_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("app runtime");
+
+        app_runtime.block_on(async move {
+            assert_eq!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
             );
-            let root_guard = std::sync::Arc::clone(&rt);
-            let client = rt
-                .block_on(async_nats::connect(&url))
-                .expect("connect to test nats");
-            let stem = format!("test_root_owner_{}", uuid::Uuid::now_v7());
-            let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, rt);
             let store = NativeStore::create_nats(adapter).expect("create test nats store");
-            (store, root_guard)
-        })
-        .await
-        .expect("spawn_blocking construct store");
+            drop(store);
+        });
 
-        assert!(tokio::runtime::Handle::try_current().is_ok());
-        drop(store);
-
-        tokio::task::spawn_blocking(move || {
-            drop(root_guard);
-        })
-        .await
-        .expect("root drop on blocking thread completes cleanly");
+        drop(app_runtime);
+        drop(nats_runtime);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn nats_store_early_error_drops_safely_when_root_owner_outlives_async_context() {
-        assert_eq!(
-            tokio::runtime::Handle::current().runtime_flavor(),
-            tokio::runtime::RuntimeFlavor::MultiThread
-        );
+    #[test]
+    fn nats_store_early_error_drops_safely_when_root_owner_outlives_application_runtime() {
         let Some(server) = TestNatsServer::spawn() else {
             return;
         };
         let url = server.url.clone();
-        let (adapter, root_guard) = tokio::task::spawn_blocking(move || {
-            let rt = std::sync::Arc::new(
-                tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .expect("root test runtime"),
+
+        let nats_runtime = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("root nats runtime"),
+        );
+        let root_nats_guard = std::sync::Arc::clone(&nats_runtime);
+
+        let client = nats_runtime
+            .block_on(async_nats::connect(&url))
+            .expect("connect");
+        let stem = format!("test_early_error_{}", uuid::Uuid::now_v7());
+        let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, root_nats_guard);
+
+        let app_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("app runtime");
+
+        app_runtime.block_on(async move {
+            assert_eq!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
             );
-            let root_guard = std::sync::Arc::clone(&rt);
-            let client = rt
-                .block_on(async_nats::connect(&url))
-                .expect("connect to test nats");
-            let stem = format!("test_early_error_{}", uuid::Uuid::now_v7());
-            let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, rt);
-            (adapter, root_guard)
-        })
-        .await
-        .expect("spawn_blocking construct adapter");
+            let res = NativeStore::open_nats(adapter);
+            assert!(res.is_err());
+        });
 
-        assert!(tokio::runtime::Handle::try_current().is_ok());
-        let res = NativeStore::open_nats(adapter);
-        assert!(res.is_err());
-
-        tokio::task::spawn_blocking(move || {
-            drop(root_guard);
-        })
-        .await
-        .expect("root drop on blocking thread completes cleanly");
+        drop(app_runtime);
+        drop(nats_runtime);
     }
 
     #[test]
