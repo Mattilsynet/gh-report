@@ -58,6 +58,8 @@ pub struct RuntimeConfig {
     /// two-hour timer (SEC-0004:R2; CHE-0055:R10 injected-time precedent).
     pub sweep_timeout: config::SweepTimeout,
     /// Root-supervised Tokio runtime for NATS `JetStream` storage adapters.
+    /// The caller maintains the obligation to keep an outer handle alive
+    /// synchronously until all background tasks have drained.
     pub nats_runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 }
 

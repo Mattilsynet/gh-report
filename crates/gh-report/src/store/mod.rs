@@ -1204,8 +1204,12 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn nats_store_drops_safely_when_root_owner_outlives_async_context() {
+        assert_eq!(
+            tokio::runtime::Handle::current().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::MultiThread
+        );
         let Some(server) = TestNatsServer::spawn() else {
             return;
         };
@@ -1239,8 +1243,12 @@ mod tests {
         .expect("root drop on blocking thread completes cleanly");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn nats_store_early_error_drops_safely_when_root_owner_outlives_async_context() {
+        assert_eq!(
+            tokio::runtime::Handle::current().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::MultiThread
+        );
         let Some(server) = TestNatsServer::spawn() else {
             return;
         };

@@ -1612,10 +1612,9 @@ impl AppState {
     ///
     /// Returns [`std::io::Error`] when the selected pardosa backend
     /// cannot be opened or created. For `Pgno`, this includes creating
-    /// `<events_dir>` or opening/creating `events.pgno`; for `Nats`, M1
-    /// returns an explicit startup error until the runtime handle wiring
-    /// is supplied by a follow-up.
-    ///
+    /// `<events_dir>` or opening/creating `events.pgno`; for `Nats`,
+    /// callers must use [`Self::with_stores_and_runtime`] providing a
+    /// root-supervised runtime.
     pub async fn with_stores(
         events_dir: &Path,
         backend: crate::config::runtime::PardosaBackend,
@@ -1632,9 +1631,10 @@ impl AppState {
 
     /// Create a new `AppState` wired with both stores and an optional root-supervised runtime.
     ///
-    /// When `nats_runtime` is provided, all NATS `JetStream` storage adapters share
-    /// that root-owned runtime, ensuring adapter drops inside asynchronous workers
-    /// never drop the last runtime reference.
+    /// When `backend` is [`PardosaBackend::Nats`](crate::config::runtime::PardosaBackend::Nats),
+    /// `nats_runtime` must be `Some`. The caller retains the obligation to maintain an outer
+    /// synchronous handle to this `Arc<Runtime>` that outlives this `AppState`, all worker
+    /// tasks, and all store adapters until shutdown is complete.
     ///
     /// # Errors
     ///
@@ -2438,6 +2438,26 @@ mod tests {
             panic!("with_stores without supervised runtime must fail closed");
         };
         assert_eq!(unmanaged_err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            unmanaged_err.to_string(),
+            "NATS event store requires a root-supervised Tokio runtime; use with_stores_and_runtime with Some(Arc<Runtime>)"
+        );
+
+        let Err(overload_none_err) = AppState::with_stores_and_runtime(
+            &events_dir,
+            PardosaBackend::Nats,
+            nats.clone(),
+            None,
+        )
+        .await
+        else {
+            panic!("with_stores_and_runtime with None runtime must fail closed");
+        };
+        assert_eq!(overload_none_err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            overload_none_err.to_string(),
+            "NATS event store requires a root-supervised Tokio runtime; nats_runtime cannot be None"
+        );
 
         let rt = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
