@@ -867,12 +867,12 @@ mod tests {
     }
 
     impl TestNatsServer {
-        fn spawn() -> Option<Self> {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-            let port = listener.local_addr().ok()?.port();
+        fn spawn() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
+            let port = listener.local_addr().expect("local addr").port();
             drop(listener);
 
-            let tempdir = tempfile::TempDir::new().ok()?;
+            let tempdir = tempfile::TempDir::new().expect("tempdir");
             let child = std::process::Command::new("nats-server")
                 .arg("-p")
                 .arg(port.to_string())
@@ -882,24 +882,24 @@ mod tests {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
-                .ok()?;
+                .expect("spawn nats-server");
 
             let url = format!("nats://127.0.0.1:{port}");
             let start = std::time::Instant::now();
             while start.elapsed() < std::time::Duration::from_secs(5) {
                 if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
-                    return Some(Self {
+                    return Self {
                         url,
                         child,
                         _tempdir: tempdir,
-                    });
+                    };
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             let mut dead_child = child;
             let _ = dead_child.kill();
             let _ = dead_child.wait();
-            None
+            panic!("nats-server readiness timeout on 127.0.0.1:{port}");
         }
     }
 
@@ -912,10 +912,7 @@ mod tests {
 
     #[test]
     fn nats_store_admission_roundtrip_and_rejection() {
-        let Some(server) = TestNatsServer::spawn() else {
-            eprintln!("SKIP nats_store_admission_roundtrip_and_rejection: nats-server unavailable");
-            return;
-        };
+        let server = TestNatsServer::spawn();
 
         let rt = std::sync::Arc::new(
             tokio::runtime::Builder::new_multi_thread()
