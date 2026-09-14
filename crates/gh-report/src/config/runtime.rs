@@ -57,6 +57,8 @@ pub struct RuntimeConfig {
     /// a test can inject a one-second budget instead of awaiting the real
     /// two-hour timer (SEC-0004:R2; CHE-0055:R10 injected-time precedent).
     pub sweep_timeout: config::SweepTimeout,
+    /// Root-supervised Tokio runtime for NATS `JetStream` storage adapters.
+    pub nats_runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 }
 
 /// Pardosa authoritative backend selected once at startup.
@@ -213,6 +215,7 @@ impl RuntimeConfig {
             team_roster_read_from_projection: true,
             rate_regulator: RateRegulatorKind::default(),
             sweep_timeout: config::SweepTimeout::default(),
+            nats_runtime: None,
         })
     }
 

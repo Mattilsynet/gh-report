@@ -155,14 +155,19 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 
     let events_dir = config.store_dir.join("events").join(&config.org_name);
     let nats = config.nats_store_config()?;
-    let app_state = AppState::with_stores(&events_dir, config.pardosa_backend, nats)
-        .await
-        .map_err(|source| {
-            log_error_chain("gh_report_open_event_store_failed", &source);
-            AppError::Persistence(PersistenceError::LoadFailed {
-                reason: format!("open event store at {}: {source}", events_dir.display()),
-            })
-        })?;
+    let app_state = AppState::with_stores_and_runtime(
+        &events_dir,
+        config.pardosa_backend,
+        nats,
+        config.nats_runtime.clone(),
+    )
+    .await
+    .map_err(|source| {
+        log_error_chain("gh_report_open_event_store_failed", &source);
+        AppError::Persistence(PersistenceError::LoadFailed {
+            reason: format!("open event store at {}: {source}", events_dir.display()),
+        })
+    })?;
 
     if let Err(e) = app_state.snapshot_fast_path_init() {
         error!(error = %e, "projection runtime init failed");
@@ -1731,6 +1736,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            nats_runtime: None,
         };
         let force_flag = OneShotFlag::new(true);
         let force_refresh_flag = OneShotFlag::new(true);
@@ -1967,6 +1973,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            nats_runtime: None,
         };
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 

@@ -866,6 +866,7 @@ fn open_event_store(
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
     handle: &tokio::runtime::Handle,
+    nats_runtime: Option<&Arc<tokio::runtime::Runtime>>,
 ) -> Result<EventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -882,7 +883,14 @@ fn open_event_store(
         crate::config::runtime::PardosaBackend::Nats => {
             let client = connect_nats_sync(handle, nats)?;
             let stem = &nats.stream_name;
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
+            let adapter = match nats_runtime {
+                Some(rt) => pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                    client,
+                    stem,
+                    Arc::clone(rt),
+                ),
+                None => pardosa_nats::NatsStorageAdapter::from_client(client, stem),
+            };
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -948,6 +956,7 @@ fn open_org_event_store(
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
     handle: &tokio::runtime::Handle,
+    nats_runtime: Option<&Arc<tokio::runtime::Runtime>>,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -965,7 +974,14 @@ fn open_org_event_store(
             let client = connect_nats_sync(handle, nats)?;
             let org_nats = nats.org_events();
             let stem = &org_nats.stream_name;
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
+            let adapter = match nats_runtime {
+                Some(rt) => pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                    client,
+                    stem,
+                    Arc::clone(rt),
+                ),
+                None => pardosa_nats::NatsStorageAdapter::from_client(client, stem),
+            };
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -1011,6 +1027,7 @@ fn open_team_event_store(
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
     handle: &tokio::runtime::Handle,
+    nats_runtime: Option<&Arc<tokio::runtime::Runtime>>,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -1028,7 +1045,14 @@ fn open_team_event_store(
             let client = connect_nats_sync(handle, nats)?;
             let team_nats = nats.team_events();
             let stem = &team_nats.stream_name;
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem);
+            let adapter = match nats_runtime {
+                Some(rt) => pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                    client,
+                    stem,
+                    Arc::clone(rt),
+                ),
+                None => pardosa_nats::NatsStorageAdapter::from_client(client, stem),
+            };
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -1087,10 +1111,13 @@ async fn open_event_store_blocking(
     backend: crate::config::runtime::PardosaBackend,
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
+    nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
 ) -> Result<EventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_event_store(&events_dir, backend, &nats, &handle))
-        .await
-        .map_err(std::io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        open_event_store(&events_dir, backend, &nats, &handle, nats_runtime.as_ref())
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 async fn open_org_event_store_blocking(
@@ -1098,10 +1125,13 @@ async fn open_org_event_store_blocking(
     backend: crate::config::runtime::PardosaBackend,
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
+    nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_org_event_store(&events_dir, backend, &nats, &handle))
-        .await
-        .map_err(std::io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        open_org_event_store(&events_dir, backend, &nats, &handle, nats_runtime.as_ref())
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 async fn open_team_event_store_blocking(
@@ -1109,10 +1139,13 @@ async fn open_team_event_store_blocking(
     backend: crate::config::runtime::PardosaBackend,
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
+    nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_team_event_store(&events_dir, backend, &nats, &handle))
-        .await
-        .map_err(std::io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        open_team_event_store(&events_dir, backend, &nats, &handle, nats_runtime.as_ref())
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 fn projection_from_stores(
@@ -1579,21 +1612,50 @@ impl AppState {
         backend: crate::config::runtime::PardosaBackend,
         nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<Arc<Self>, std::io::Error> {
+        Self::with_stores_and_runtime(events_dir, backend, nats, None).await
+    }
+
+    /// Create a new `AppState` wired with both stores and an optional root-supervised runtime.
+    ///
+    /// When `nats_runtime` is provided, all NATS `JetStream` storage adapters share
+    /// that root-owned runtime, ensuring adapter drops inside asynchronous workers
+    /// never drop the last runtime reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::io::Error`] when opening or creating event stores fails.
+    pub async fn with_stores_and_runtime(
+        events_dir: &Path,
+        backend: crate::config::runtime::PardosaBackend,
+        nats: crate::config::runtime::NatsStoreConfig,
+        nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
+    ) -> Result<Arc<Self>, std::io::Error> {
         let handle = tokio::runtime::Handle::current();
         let events_dir = events_dir.to_path_buf();
-        let event_store =
-            open_event_store_blocking(events_dir.clone(), backend, nats.clone(), handle.clone())
-                .await?;
+        let event_store = open_event_store_blocking(
+            events_dir.clone(),
+            backend,
+            nats.clone(),
+            handle.clone(),
+            nats_runtime.clone(),
+        )
+        .await?;
         let org_event_store = open_org_event_store_blocking(
             events_dir.clone(),
             backend,
             nats.org_events(),
             handle.clone(),
+            nats_runtime.clone(),
         )
         .await?;
-        let team_event_store =
-            open_team_event_store_blocking(events_dir.clone(), backend, nats.team_events(), handle)
-                .await?;
+        let team_event_store = open_team_event_store_blocking(
+            events_dir.clone(),
+            backend,
+            nats.team_events(),
+            handle,
+            nats_runtime,
+        )
+        .await?;
         let event_store = Arc::new(event_store);
         let org_event_store = Arc::new(org_event_store);
         let team_event_store = Arc::new(team_event_store);

@@ -75,57 +75,10 @@ fn default_claim(epoch: u64, label: &str) -> OwnershipClaimRecord {
     }
 }
 
-pub(crate) struct NatsAdapterHandle(Option<Box<NatsStorageAdapter>>);
-
-impl NatsAdapterHandle {
-    pub(crate) fn new(adapter: NatsStorageAdapter) -> Self {
-        Self(Some(Box::new(adapter)))
-    }
-}
-
-impl Clone for NatsAdapterHandle {
-    fn clone(&self) -> Self {
-        Self(self.0.as_ref().map(|a| Box::new((**a).clone())))
-    }
-}
-
-impl std::ops::Deref for NatsAdapterHandle {
-    type Target = NatsStorageAdapter;
-    fn deref(&self) -> &Self::Target {
-        self.0
-            .as_deref()
-            .expect("adapter present during store lifetime")
-    }
-}
-
-impl std::ops::DerefMut for NatsAdapterHandle {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
-            .as_deref_mut()
-            .expect("adapter present during store lifetime")
-    }
-}
-
-impl Drop for NatsAdapterHandle {
-    fn drop(&mut self) {
-        if let Some(adapter) = self.0.take() {
-            if tokio::runtime::Handle::try_current().is_ok() {
-                let _ = std::thread::Builder::new()
-                    .name("nats-adapter-drop".to_string())
-                    .spawn(move || {
-                        drop(adapter);
-                    });
-            } else {
-                drop(adapter);
-            }
-        }
-    }
-}
-
 #[derive(Clone)]
 enum StorageBackend {
     File(PathBuf),
-    Nats(NatsAdapterHandle),
+    Nats(Box<NatsStorageAdapter>),
 }
 
 struct StoreInner<E> {
@@ -188,7 +141,7 @@ impl<E: PardosaSchema> StoreInner<E> {
         session.set_schema_descriptor(&desc)?;
         session.sync()?;
         Ok(Self {
-            backend: StorageBackend::Nats(NatsAdapterHandle::new(adapter)),
+            backend: StorageBackend::Nats(Box::new(adapter)),
             cached: Mutex::new(Vec::new()),
         })
     }
@@ -203,7 +156,7 @@ impl<E: PardosaSchema> StoreInner<E> {
             cached.push((env.header.detached, env.header.fiber_id, event));
         }
         Ok(Self {
-            backend: StorageBackend::Nats(NatsAdapterHandle::new(adapter)),
+            backend: StorageBackend::Nats(Box::new(adapter)),
             cached: Mutex::new(cached),
         })
     }
@@ -907,8 +860,68 @@ mod tests {
         Timestamp::new(nanos).expect("valid timestamp")
     }
 
+    pub(crate) const PINNED_NATS_VERSION: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tools/.nats-server-version"
+    ));
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum ProbeOutcome {
+        Ready(std::path::PathBuf),
+        Unavailable(String),
+        Fatal(String),
+    }
+
+    pub(crate) fn parse_nats_version(
+        status_success: bool,
+        stdout_bytes: &[u8],
+        expected_pin: &str,
+    ) -> Result<String, String> {
+        if !status_success {
+            return Err("probe process exited with non-zero status".to_string());
+        }
+        let stdout = std::str::from_utf8(stdout_bytes)
+            .map_err(|e| format!("probe output is not valid UTF-8: {e}"))?;
+        let trimmed = stdout.trim();
+        let version = trimmed
+            .strip_prefix("nats-server: v")
+            .or_else(|| trimmed.strip_prefix("nats-server: "))
+            .or_else(|| trimmed.strip_prefix('v'))
+            .unwrap_or(trimmed);
+        if version == expected_pin {
+            Ok(version.to_string())
+        } else {
+            Err(format!(
+                "version mismatch (expected {expected_pin}, got {version})"
+            ))
+        }
+    }
+
+    pub(crate) fn classify_probe_result(
+        result: Result<std::process::Output, std::io::Error>,
+        expected_pin: &str,
+        bin_path: std::path::PathBuf,
+    ) -> ProbeOutcome {
+        match result {
+            Ok(output) => {
+                match parse_nats_version(output.status.success(), &output.stdout, expected_pin) {
+                    Ok(_) => ProbeOutcome::Ready(bin_path),
+                    Err(msg) if msg.contains("version mismatch") => ProbeOutcome::Unavailable(msg),
+                    Err(fatal_msg) => ProbeOutcome::Fatal(fatal_msg),
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                ProbeOutcome::Unavailable(format!("executable absent: {err}"))
+            }
+            Err(err) => ProbeOutcome::Fatal(format!(
+                "failed to execute probe for {}: {err}",
+                bin_path.display()
+            )),
+        }
+    }
+
     fn resolve_pinned_nats_server() -> Result<std::path::PathBuf, String> {
-        let pinned = "2.14.5";
+        let expected_pin = PINNED_NATS_VERSION.trim();
         let candidate_path = std::path::PathBuf::from("../../tools/bin/nats-server");
         let alt_candidate = std::path::PathBuf::from("tools/bin/nats-server");
         let bin_path = if candidate_path.is_file() {
@@ -919,19 +932,32 @@ mod tests {
             std::path::PathBuf::from("nats-server")
         };
         let output = std::process::Command::new(&bin_path)
-            .arg("-v")
-            .output()
-            .map_err(|e| format!("nats-server absent from PATH: {e}"))?;
-        let version_str = String::from_utf8_lossy(&output.stdout);
-        let version_err = String::from_utf8_lossy(&output.stderr);
-        let full = format!("{version_str} {version_err}");
-        if !full.contains(pinned) {
-            return Err(format!(
-                "version mismatch (expected {pinned}, got {})",
-                full.trim()
-            ));
+            .arg("--version")
+            .output();
+        match classify_probe_result(output, expected_pin, bin_path) {
+            ProbeOutcome::Ready(path) => Ok(path),
+            ProbeOutcome::Unavailable(reason) => Err(reason),
+            ProbeOutcome::Fatal(fatal) => panic!("fatal nats-server probe failure: {fatal}"),
         }
-        Ok(bin_path)
+    }
+
+    fn cleanup_child_process(mut child: std::process::Child) {
+        match child.try_wait() {
+            Ok(Some(_status)) => {}
+            Ok(None) => {
+                if let Err(err) = child.kill() {
+                    eprintln!("warn: failed to kill test nats-server: {err}");
+                }
+                if let Err(err) = child.wait() {
+                    eprintln!("warn: failed to wait on test nats-server: {err}");
+                }
+            }
+            Err(err) => {
+                eprintln!("warn: failed to query status of test nats-server: {err}");
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
     }
 
     struct TestNatsServer {
@@ -982,17 +1008,29 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            let mut dead_child = child;
-            let _ = dead_child.kill();
-            let _ = dead_child.wait();
+            cleanup_child_process(child);
             panic!("nats-server readiness timeout on 127.0.0.1:{port}");
         }
     }
 
     impl Drop for TestNatsServer {
         fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            match self.child.try_wait() {
+                Ok(Some(_status)) => {}
+                Ok(None) => {
+                    if let Err(err) = self.child.kill() {
+                        eprintln!("warn: failed to kill test nats-server in Drop: {err}");
+                    }
+                    if let Err(err) = self.child.wait() {
+                        eprintln!("warn: failed to wait on test nats-server in Drop: {err}");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("warn: failed to query status of test nats-server in Drop: {err}");
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                }
+            }
         }
     }
 
@@ -1154,30 +1192,121 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nats_adapter_handle_drops_safely_inside_tokio_worker_context() {
+    async fn nats_store_drops_safely_when_root_owner_outlives_async_context() {
         let Some(server) = TestNatsServer::spawn() else {
             return;
         };
         let url = server.url.clone();
-        let handle = tokio::task::spawn_blocking(move || {
+        let (store, root_guard) = tokio::task::spawn_blocking(move || {
             let rt = std::sync::Arc::new(
                 tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .build()
-                    .expect("adapter runtime"),
+                    .expect("root test runtime"),
             );
+            let root_guard = std::sync::Arc::clone(&rt);
             let client = rt
                 .block_on(async_nats::connect(&url))
-                .expect("connect to live nats");
-            let adapter =
-                NatsStorageAdapter::from_client_with_runtime(client, "test_handle_drop", rt);
-            NatsAdapterHandle::new(adapter)
+                .expect("connect to test nats");
+            let stem = format!("test_root_owner_{}", uuid::Uuid::now_v7());
+            let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, rt);
+            let store = NativeStore::create_nats(adapter).expect("create test nats store");
+            (store, root_guard)
+        })
+        .await
+        .expect("spawn_blocking construct store");
+
+        assert!(tokio::runtime::Handle::try_current().is_ok());
+        drop(store);
+
+        tokio::task::spawn_blocking(move || {
+            drop(root_guard);
+        })
+        .await
+        .expect("root drop on blocking thread completes cleanly");
+    }
+
+    #[tokio::test]
+    async fn nats_store_early_error_drops_safely_when_root_owner_outlives_async_context() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
+        let url = server.url.clone();
+        let (res, root_guard) = tokio::task::spawn_blocking(move || {
+            let rt = std::sync::Arc::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("root test runtime"),
+            );
+            let root_guard = std::sync::Arc::clone(&rt);
+            let client = rt
+                .block_on(async_nats::connect(&url))
+                .expect("connect to test nats");
+            let stem = format!("test_early_error_{}", uuid::Uuid::now_v7());
+            let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, rt);
+            let res = NativeStore::open_nats(adapter);
+            (res, root_guard)
         })
         .await
         .expect("spawn_blocking construct adapter");
 
         assert!(tokio::runtime::Handle::try_current().is_ok());
-        drop(handle);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(res.is_err());
+        drop(res);
+
+        tokio::task::spawn_blocking(move || {
+            drop(root_guard);
+        })
+        .await
+        .expect("root drop on blocking thread completes cleanly");
+    }
+
+    #[test]
+    fn parse_nats_version_extracts_canonical_pin() {
+        assert_eq!(
+            parse_nats_version(true, b"nats-server: v2.14.5\n", "2.14.5").unwrap(),
+            "2.14.5"
+        );
+        assert_eq!(
+            parse_nats_version(true, b"v2.14.5\n", "2.14.5").unwrap(),
+            "2.14.5"
+        );
+        assert_eq!(
+            parse_nats_version(true, b"2.14.5\n", "2.14.5").unwrap(),
+            "2.14.5"
+        );
+    }
+
+    #[test]
+    fn parse_nats_version_rejects_version_mismatches() {
+        let err = parse_nats_version(true, b"nats-server: v2.14.6\n", "2.14.5").unwrap_err();
+        assert!(err.contains("version mismatch (expected 2.14.5, got 2.14.6)"));
+
+        let err_near = parse_nats_version(true, b"nats-server: v2.14.50\n", "2.14.5").unwrap_err();
+        assert!(err_near.contains("version mismatch (expected 2.14.5, got 2.14.50)"));
+    }
+
+    #[test]
+    fn parse_nats_version_rejects_nonzero_status_or_invalid_utf8() {
+        let err_status =
+            parse_nats_version(false, b"nats-server: v2.14.5\n", "2.14.5").unwrap_err();
+        assert_eq!(err_status, "probe process exited with non-zero status");
+
+        let err_utf8 = parse_nats_version(true, b"\xFF\xFE\xFD", "2.14.5").unwrap_err();
+        assert!(err_utf8.contains("probe output is not valid UTF-8"));
+    }
+
+    #[test]
+    fn classify_probe_result_distinguishes_unavailable_from_fatal() {
+        let dummy_path = std::path::PathBuf::from("nats-server");
+
+        let not_found = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
+        let outcome_absent = classify_probe_result(Err(not_found), "2.14.5", dummy_path.clone());
+        assert!(matches!(outcome_absent, ProbeOutcome::Unavailable(_)));
+
+        let perm_denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let outcome_fatal = classify_probe_result(Err(perm_denied), "2.14.5", dummy_path.clone());
+        assert!(matches!(outcome_fatal, ProbeOutcome::Fatal(_)));
     }
 }
