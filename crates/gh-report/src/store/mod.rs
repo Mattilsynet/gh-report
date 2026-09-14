@@ -86,11 +86,32 @@ struct StoreInner<E> {
     cached: Mutex<Vec<(bool, [u8; 16], E)>>,
 }
 
+fn verify_schema_descriptor<E: PardosaSchema>(
+    actual: Option<&SchemaDescriptor>,
+) -> Result<(), StoreError> {
+    let expected = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
+    match actual {
+        Some(actual) if actual.identity() == expected.identity() => Ok(()),
+        Some(actual) => Err(StoreError::Infrastructure(format!(
+            "schema descriptor identity mismatch: expected {}, got {}",
+            expected.identity().to_hex(),
+            actual.identity().to_hex(),
+        ))),
+        None => Err(StoreError::Infrastructure(
+            "missing schema descriptor in store metadata: refusing to open unadmitted store"
+                .to_string(),
+        )),
+    }
+}
+
 impl<E: PardosaSchema> StoreInner<E> {
     fn create_pgno(path: &Path, label: &'static str) -> Result<Self, StoreError> {
         let adapter = FileStorageAdapter::new(path);
         let claim = default_claim(1, label);
-        let _session = adapter.create(&claim)?;
+        let mut session = adapter.create(&claim)?;
+        let desc = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
+        session.set_schema_descriptor(&desc)?;
+        session.sync()?;
         Ok(Self {
             backend: StorageBackend::File(path.to_path_buf()),
             cached: Mutex::new(Vec::new()),
@@ -100,6 +121,7 @@ impl<E: PardosaSchema> StoreInner<E> {
     fn open_pgno(path: &Path, _label: &'static str) -> Result<Self, StoreError> {
         let adapter = FileStorageAdapter::new(path);
         let mut reader = adapter.open_read()?;
+        verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
         let envelopes = reader.read_all_envelopes()?;
         let mut cached = Vec::with_capacity(envelopes.len());
         for env in envelopes {
@@ -114,7 +136,10 @@ impl<E: PardosaSchema> StoreInner<E> {
 
     fn create_nats(adapter: NatsStorageAdapter, label: &'static str) -> Result<Self, StoreError> {
         let claim = default_claim(1, label);
-        let _session = adapter.create(&claim)?;
+        let mut session = adapter.create(&claim)?;
+        let desc = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
+        session.set_schema_descriptor(&desc)?;
+        session.sync()?;
         Ok(Self {
             backend: StorageBackend::Nats(Box::new(adapter)),
             cached: Mutex::new(Vec::new()),
@@ -123,6 +148,7 @@ impl<E: PardosaSchema> StoreInner<E> {
 
     fn open_nats(adapter: NatsStorageAdapter, _label: &'static str) -> Result<Self, StoreError> {
         let mut reader = adapter.open_read()?;
+        verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
         let envelopes = reader.read_all_envelopes()?;
         let mut cached = Vec::with_capacity(envelopes.len());
         for env in envelopes {
@@ -138,6 +164,7 @@ impl<E: PardosaSchema> StoreInner<E> {
     fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
         let adapter = FileStorageAdapter::new(path);
         let mut reader = adapter.open_read()?;
+        verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
         let envelopes = reader.read_all_envelopes()?;
         let mut cached = Vec::with_capacity(envelopes.len());
         for env in envelopes {
@@ -598,7 +625,7 @@ impl NativeTeamStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::event::team_domain_key;
 
@@ -710,5 +737,659 @@ mod tests {
                 .expect("team fold"),
             1
         );
+    }
+
+    #[test]
+    fn open_pgno_rejects_unadmitted_store_without_schema_descriptor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("unadmitted.pgno");
+        let adapter = FileStorageAdapter::new(&path);
+        let claim = default_claim(1, "unadmitted");
+        let session = adapter.create(&claim).expect("create bare store");
+        drop(session);
+
+        let Err(err) = NativeStore::open_pgno(&path) else {
+            panic!("opening unadmitted store must fail closed");
+        };
+        assert!(matches!(
+            err,
+            StoreError::Infrastructure(ref msg)
+                if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
+        ));
+    }
+
+    #[test]
+    fn open_pgno_rejects_mismatched_schema_descriptor_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mismatched.pgno");
+        let adapter = FileStorageAdapter::new(&path);
+        let claim = default_claim(1, "mismatched");
+        let mut session = adapter.create(&claim).expect("create bare store");
+        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+        session
+            .set_schema_descriptor(&mismatched_desc)
+            .expect("set mismatched descriptor");
+        session.sync().expect("sync mismatched descriptor");
+        drop(session);
+
+        let Err(err) = NativeStore::open_pgno(&path) else {
+            panic!("opening mismatched store must fail closed");
+        };
+        assert!(matches!(
+            err,
+            StoreError::Infrastructure(ref msg)
+                if msg.contains("schema descriptor identity mismatch: expected ")
+        ));
+    }
+
+    #[test]
+    fn resync_pgno_rejects_unadmitted_or_mismatched_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let valid_path = dir.path().join("valid.pgno");
+        let unadmitted_path = dir.path().join("unadmitted.pgno");
+        let mismatched_path = dir.path().join("mismatched.pgno");
+
+        let store = NativeStore::create_pgno(&valid_path).expect("create valid store");
+        store
+            .record(
+                "repo-1",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-1"),
+                    repo_name: nes("repo-1"),
+                    detected_at: ts(10),
+                },
+            )
+            .expect("record initial event");
+        assert_eq!(store.events().expect("events").len(), 1);
+
+        let adapter_unadmitted = FileStorageAdapter::new(&unadmitted_path);
+        let claim = default_claim(1, "unadmitted");
+        let session = adapter_unadmitted
+            .create(&claim)
+            .expect("create bare store");
+        drop(session);
+
+        let err_unadmitted = store
+            .resync_pgno_from_authoritative(&unadmitted_path)
+            .expect_err("resync against unadmitted store must fail closed");
+        assert!(matches!(
+            err_unadmitted,
+            StoreError::Infrastructure(ref msg)
+                if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
+        ));
+        assert_eq!(
+            store.events().expect("events").len(),
+            1,
+            "cache must be preserved on unadmitted store error"
+        );
+
+        let adapter_mismatched = FileStorageAdapter::new(&mismatched_path);
+        let claim_mismatched = default_claim(1, "mismatched");
+        let mut session_mismatched = adapter_mismatched
+            .create(&claim_mismatched)
+            .expect("create mismatched store");
+        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+        session_mismatched
+            .set_schema_descriptor(&mismatched_desc)
+            .expect("set mismatched descriptor");
+        session_mismatched
+            .sync()
+            .expect("sync mismatched descriptor");
+        drop(session_mismatched);
+
+        let err_mismatched = store
+            .resync_pgno_from_authoritative(&mismatched_path)
+            .expect_err("resync against mismatched store must fail closed");
+        assert!(matches!(
+            err_mismatched,
+            StoreError::Infrastructure(ref msg)
+                if msg.contains("schema descriptor identity mismatch: expected ")
+        ));
+        assert_eq!(
+            store.events().expect("events").len(),
+            1,
+            "cache must be preserved on mismatched identity error"
+        );
+    }
+
+    fn nes<const MAX: usize>(s: &str) -> NonEmptyEventString<MAX> {
+        NonEmptyEventString::new(s.to_string()).expect("valid non-empty string")
+    }
+
+    fn ts(nanos: u64) -> Timestamp {
+        Timestamp::new(nanos).expect("valid timestamp")
+    }
+
+    pub(crate) const PINNED_NATS_VERSION: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tools/.nats-server-version"
+    ));
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum NatsVersionError {
+        VersionMismatch { expected: String, actual: String },
+        UnsuccessfulStatus(String),
+        InvalidUtf8(String),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum ProbeOutcome {
+        Ready(std::path::PathBuf),
+        Unavailable(String),
+        Fatal(String),
+    }
+
+    pub(crate) fn parse_nats_version(
+        status_success: bool,
+        stdout_bytes: &[u8],
+        expected_pin: &str,
+    ) -> Result<String, NatsVersionError> {
+        if !status_success {
+            return Err(NatsVersionError::UnsuccessfulStatus(
+                "probe process exited with non-zero status".to_string(),
+            ));
+        }
+        let stdout = std::str::from_utf8(stdout_bytes).map_err(|e| {
+            NatsVersionError::InvalidUtf8(format!("probe output is not valid UTF-8: {e}"))
+        })?;
+        let trimmed = stdout.trim();
+        let version = trimmed
+            .strip_prefix("nats-server: v")
+            .or_else(|| trimmed.strip_prefix("nats-server: "))
+            .or_else(|| trimmed.strip_prefix('v'))
+            .unwrap_or(trimmed);
+        if version == expected_pin {
+            Ok(version.to_string())
+        } else {
+            Err(NatsVersionError::VersionMismatch {
+                expected: expected_pin.to_string(),
+                actual: version.to_string(),
+            })
+        }
+    }
+
+    pub(crate) fn classify_probe_result(
+        result: Result<std::process::Output, std::io::Error>,
+        expected_pin: &str,
+        bin_path: std::path::PathBuf,
+    ) -> ProbeOutcome {
+        match result {
+            Ok(output) => {
+                match parse_nats_version(output.status.success(), &output.stdout, expected_pin) {
+                    Ok(_) => ProbeOutcome::Ready(bin_path),
+                    Err(NatsVersionError::VersionMismatch { expected, actual }) => {
+                        ProbeOutcome::Unavailable(format!(
+                            "version mismatch (expected {expected}, got {actual})"
+                        ))
+                    }
+                    Err(
+                        NatsVersionError::UnsuccessfulStatus(msg)
+                        | NatsVersionError::InvalidUtf8(msg),
+                    ) => ProbeOutcome::Fatal(msg),
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                ProbeOutcome::Unavailable(format!("executable absent: {err}"))
+            }
+            Err(err) => ProbeOutcome::Fatal(format!(
+                "failed to execute probe for {}: {err}",
+                bin_path.display()
+            )),
+        }
+    }
+
+    fn resolve_pinned_nats_server() -> Result<std::path::PathBuf, String> {
+        let expected_pin = PINNED_NATS_VERSION.trim();
+        let candidate_path = std::path::PathBuf::from("../../tools/bin/nats-server");
+        let alt_candidate = std::path::PathBuf::from("tools/bin/nats-server");
+        let bin_path = if candidate_path.is_file() {
+            candidate_path
+        } else if alt_candidate.is_file() {
+            alt_candidate
+        } else {
+            std::path::PathBuf::from("nats-server")
+        };
+        let output = std::process::Command::new(&bin_path)
+            .arg("--version")
+            .output();
+        match classify_probe_result(output, expected_pin, bin_path) {
+            ProbeOutcome::Ready(path) => Ok(path),
+            ProbeOutcome::Unavailable(reason) => Err(reason),
+            ProbeOutcome::Fatal(fatal) => panic!("fatal nats-server probe failure: {fatal}"),
+        }
+    }
+
+    fn cleanup_child_process(child: &mut std::process::Child) {
+        match child.try_wait() {
+            Ok(Some(_status)) => {}
+            Ok(None) => {
+                if let Err(err) = child.kill() {
+                    eprintln!("warn: failed to kill test nats-server: {err}");
+                    return;
+                }
+                if let Err(err) = child.wait() {
+                    eprintln!("warn: failed to wait on test nats-server: {err}");
+                }
+            }
+            Err(err) => {
+                eprintln!("warn: failed to query status of test nats-server: {err}");
+                if let Err(kill_err) = child.kill() {
+                    eprintln!(
+                        "warn: failed to kill test nats-server after query error: {kill_err}"
+                    );
+                    return;
+                }
+                if let Err(wait_err) = child.wait() {
+                    eprintln!(
+                        "warn: failed to wait on test nats-server after query error: {wait_err}"
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) struct TestNatsServer {
+        pub(crate) url: String,
+        child: std::process::Child,
+        _tempdir: tempfile::TempDir,
+    }
+
+    impl TestNatsServer {
+        pub(crate) fn spawn() -> Option<Self> {
+            let bin_path = match resolve_pinned_nats_server() {
+                Ok(path) => path,
+                Err(reason) => {
+                    eprintln!(
+                        "SKIP nats_store_admission_roundtrip_and_rejection: live nats-server unavailable: {reason}"
+                    );
+                    return None;
+                }
+            };
+
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
+            let port = listener.local_addr().expect("local addr").port();
+            drop(listener);
+
+            let tempdir = tempfile::TempDir::new().expect("tempdir");
+            let mut child = std::process::Command::new(bin_path)
+                .arg("-a")
+                .arg("127.0.0.1")
+                .arg("-p")
+                .arg(port.to_string())
+                .arg("-js")
+                .arg("-sd")
+                .arg(tempdir.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn nats-server");
+
+            let url = format!("nats://127.0.0.1:{port}");
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(5) {
+                if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+                    return Some(Self {
+                        url,
+                        child,
+                        _tempdir: tempdir,
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            cleanup_child_process(&mut child);
+            panic!("nats-server readiness timeout on 127.0.0.1:{port}");
+        }
+    }
+
+    impl Drop for TestNatsServer {
+        fn drop(&mut self) {
+            cleanup_child_process(&mut self.child);
+        }
+    }
+
+    #[test]
+    fn nats_store_admission_roundtrip_persists_across_reopen() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
+
+        let rt = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let client = rt
+            .block_on(async_nats::connect(&server.url))
+            .expect("connect to live nats");
+
+        let stem_valid = format!("test_nats_valid_{}", uuid::Uuid::now_v7());
+        let adapter_valid = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_valid.clone(),
+            rt.clone(),
+        );
+        let store = NativeStore::create_nats(adapter_valid).expect("create valid nats store");
+        store
+            .record(
+                "repo-nats-1",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-nats-1"),
+                    repo_name: nes("repo-nats-1"),
+                    detected_at: ts(20),
+                },
+            )
+            .expect("record event in nats");
+        drop(store);
+
+        let adapter_reopen = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_valid.clone(),
+            rt.clone(),
+        );
+        let reopened = NativeStore::open_nats(adapter_reopen).expect("reopen valid nats store");
+        assert_eq!(reopened.events().expect("events").len(), 1);
+        reopened
+            .record(
+                "repo-nats-2",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-nats-2"),
+                    repo_name: nes("repo-nats-2"),
+                    detected_at: ts(30),
+                },
+            )
+            .expect("append second event after reopen");
+        drop(reopened);
+
+        let adapter_second_reopen =
+            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid, rt.clone());
+        let second_reopened =
+            NativeStore::open_nats(adapter_second_reopen).expect("second reopen valid nats store");
+        let events = second_reopened.events().expect("events");
+        assert_eq!(events.len(), 2);
+        match &events[0].1 {
+            DomainEvent::RepositoryDeleted {
+                domain_key,
+                repo_name,
+                detected_at,
+            } => {
+                assert_eq!(domain_key.as_str(), "repo-nats-1");
+                assert_eq!(repo_name.as_str(), "repo-nats-1");
+                assert_eq!(detected_at.as_nanos(), 20);
+            }
+            _ => panic!("unexpected event 0 variant"),
+        }
+        match &events[1].1 {
+            DomainEvent::RepositoryDeleted {
+                domain_key,
+                repo_name,
+                detected_at,
+            } => {
+                assert_eq!(domain_key.as_str(), "repo-nats-2");
+                assert_eq!(repo_name.as_str(), "repo-nats-2");
+                assert_eq!(detected_at.as_nanos(), 30);
+            }
+            _ => panic!("unexpected event 1 variant"),
+        }
+    }
+
+    #[test]
+    fn nats_store_open_rejects_unadmitted_or_mismatched_descriptor() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
+
+        let rt = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let client = rt
+            .block_on(async_nats::connect(&server.url))
+            .expect("connect to live nats");
+
+        let stem_mismatched = format!("test_nats_mismatched_{}", uuid::Uuid::now_v7());
+        let adapter_mismatched_raw = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_mismatched.clone(),
+            rt.clone(),
+        );
+        let claim = default_claim(1, "mismatched-nats");
+        let mut session = adapter_mismatched_raw
+            .create(&claim)
+            .expect("create bare nats store");
+        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+        session
+            .set_schema_descriptor(&mismatched_desc)
+            .expect("set mismatched nats descriptor");
+        session.sync().expect("sync mismatched nats descriptor");
+        drop(session);
+
+        let adapter_mismatched = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_mismatched,
+            rt.clone(),
+        );
+        let Err(err_mismatched) = NativeStore::open_nats(adapter_mismatched) else {
+            panic!("open mismatched nats store must fail closed");
+        };
+        assert!(matches!(
+            err_mismatched,
+            StoreError::Infrastructure(ref msg)
+                if msg.contains("schema descriptor identity mismatch: expected ")
+        ));
+
+        let stem_unadmitted = format!("test_nats_unadmitted_{}", uuid::Uuid::now_v7());
+        let adapter_unadmitted_raw = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_unadmitted.clone(),
+            rt.clone(),
+        );
+        let claim_unadmitted = default_claim(1, "unadmitted-nats");
+        let session_unadmitted = adapter_unadmitted_raw
+            .create(&claim_unadmitted)
+            .expect("create unadmitted nats store");
+        drop(session_unadmitted);
+
+        let adapter_unadmitted =
+            NatsStorageAdapter::from_client_with_runtime(client, stem_unadmitted, rt);
+        let Err(err_unadmitted) = NativeStore::open_nats(adapter_unadmitted) else {
+            panic!("open unadmitted nats store must fail closed");
+        };
+        assert!(matches!(
+            err_unadmitted,
+            StoreError::Infrastructure(ref msg)
+                if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
+        ));
+    }
+
+    #[test]
+    fn nats_store_drops_safely_when_root_owner_outlives_application_runtime() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
+        let url = server.url.clone();
+
+        let nats_runtime = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("root nats runtime"),
+        );
+        let root_nats_guard = std::sync::Arc::clone(&nats_runtime);
+
+        let client = nats_runtime
+            .block_on(async_nats::connect(&url))
+            .expect("connect");
+        let stem = format!("test_root_owner_{}", uuid::Uuid::now_v7());
+        let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, root_nats_guard);
+
+        let app_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("app runtime");
+
+        app_runtime.block_on(async move {
+            assert_eq!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            );
+            let store = NativeStore::create_nats(adapter).expect("create test nats store");
+            drop(store);
+        });
+
+        drop(app_runtime);
+        drop(nats_runtime);
+    }
+
+    #[test]
+    fn nats_store_early_error_drops_safely_when_root_owner_outlives_application_runtime() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
+        let url = server.url.clone();
+
+        let nats_runtime = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("root nats runtime"),
+        );
+        let root_nats_guard = std::sync::Arc::clone(&nats_runtime);
+
+        let client = nats_runtime
+            .block_on(async_nats::connect(&url))
+            .expect("connect");
+        let stem = format!("test_early_error_{}", uuid::Uuid::now_v7());
+        let adapter = NatsStorageAdapter::from_client_with_runtime(client, stem, root_nats_guard);
+
+        let app_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("app runtime");
+
+        app_runtime.block_on(async move {
+            assert_eq!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            );
+            let res = NativeStore::open_nats(adapter);
+            assert!(res.is_err());
+        });
+
+        drop(app_runtime);
+        drop(nats_runtime);
+    }
+
+    #[test]
+    fn parse_nats_version_extracts_canonical_pin() {
+        assert_eq!(
+            parse_nats_version(true, b"nats-server: v2.14.5\n", "2.14.5").unwrap(),
+            "2.14.5"
+        );
+        assert_eq!(
+            parse_nats_version(true, b"v2.14.5\n", "2.14.5").unwrap(),
+            "2.14.5"
+        );
+        assert_eq!(
+            parse_nats_version(true, b"2.14.5\n", "2.14.5").unwrap(),
+            "2.14.5"
+        );
+    }
+
+    #[test]
+    fn parse_nats_version_rejects_version_mismatches() {
+        let err = parse_nats_version(true, b"nats-server: v2.14.6\n", "2.14.5").unwrap_err();
+        assert_eq!(
+            err,
+            NatsVersionError::VersionMismatch {
+                expected: "2.14.5".to_string(),
+                actual: "2.14.6".to_string(),
+            }
+        );
+
+        let err_near = parse_nats_version(true, b"nats-server: v2.14.50\n", "2.14.5").unwrap_err();
+        assert_eq!(
+            err_near,
+            NatsVersionError::VersionMismatch {
+                expected: "2.14.5".to_string(),
+                actual: "2.14.50".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_nats_version_rejects_nonzero_status_or_invalid_utf8() {
+        let err_status =
+            parse_nats_version(false, b"nats-server: v2.14.5\n", "2.14.5").unwrap_err();
+        assert_eq!(
+            err_status,
+            NatsVersionError::UnsuccessfulStatus(
+                "probe process exited with non-zero status".to_string()
+            )
+        );
+
+        let err_utf8 = parse_nats_version(true, b"\xFF\xFE\xFD", "2.14.5").unwrap_err();
+        assert!(matches!(err_utf8, NatsVersionError::InvalidUtf8(_)));
+    }
+
+    #[cfg(unix)]
+    fn make_test_output(status_code: i32, stdout: &[u8]) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(status_code << 8),
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_probe_result_covers_concrete_output_variants() {
+        let dummy = std::path::PathBuf::from("nats-server");
+
+        let out_exact = make_test_output(0, b"nats-server: v2.14.5\n");
+        assert_eq!(
+            classify_probe_result(Ok(out_exact), "2.14.5", dummy.clone()),
+            ProbeOutcome::Ready(dummy.clone())
+        );
+
+        let out_mismatch = make_test_output(0, b"nats-server: v2.14.6\n");
+        assert!(matches!(
+            classify_probe_result(Ok(out_mismatch), "2.14.5", dummy.clone()),
+            ProbeOutcome::Unavailable(msg) if msg.contains("expected 2.14.5, got 2.14.6")
+        ));
+
+        let out_near = make_test_output(0, b"nats-server: v2.14.50\n");
+        assert!(matches!(
+            classify_probe_result(Ok(out_near), "2.14.5", dummy.clone()),
+            ProbeOutcome::Unavailable(msg) if msg.contains("expected 2.14.5, got 2.14.50")
+        ));
+
+        let out_fail_status = make_test_output(1, b"nats-server: v2.14.5\n");
+        assert!(matches!(
+            classify_probe_result(Ok(out_fail_status), "2.14.5", dummy.clone()),
+            ProbeOutcome::Fatal(msg) if msg.contains("non-zero status")
+        ));
+
+        let out_invalid_utf8 = make_test_output(0, b"\xFF\xFE\xFD");
+        assert!(matches!(
+            classify_probe_result(Ok(out_invalid_utf8), "2.14.5", dummy.clone()),
+            ProbeOutcome::Fatal(msg) if msg.contains("valid UTF-8")
+        ));
+    }
+
+    #[test]
+    fn classify_probe_result_distinguishes_unavailable_from_fatal() {
+        let dummy_path = std::path::PathBuf::from("nats-server");
+
+        let not_found = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
+        let outcome_absent = classify_probe_result(Err(not_found), "2.14.5", dummy_path.clone());
+        assert!(matches!(outcome_absent, ProbeOutcome::Unavailable(_)));
+
+        let perm_denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let outcome_fatal = classify_probe_result(Err(perm_denied), "2.14.5", dummy_path.clone());
+        assert!(matches!(outcome_fatal, ProbeOutcome::Fatal(_)));
     }
 }

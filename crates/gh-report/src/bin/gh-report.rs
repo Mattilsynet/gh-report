@@ -234,8 +234,7 @@ struct Cli {
     warn_threshold: f64,
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "profiling")]
     let _profiling_guard = profiling::ProfilingGuard::start();
 
@@ -243,88 +242,113 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
-    if cli.dump_baseline {
-        let org = cli.org.as_deref().ok_or(
-            "--org is required when using --dump-baseline (δ.3c-ii: event/projection stores are per-org)",
+    let nats_runtime = match cli.pardosa_backend {
+        PardosaBackendArg::Nats => Some(std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("ghr-nats-rt")
+                .build()?,
+        )),
+        PardosaBackendArg::Pgno => None,
+    };
+
+    let app_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("ghr-app-rt")
+        .build()?;
+
+    let root_nats_guard = nats_runtime.as_ref().map(std::sync::Arc::clone);
+
+    let result = app_runtime.block_on(async move {
+        if cli.dump_baseline {
+            let org = cli.org.as_deref().ok_or(
+                "--org is required when using --dump-baseline (δ.3c-ii: event/projection stores are per-org)",
+            )?;
+            let events_dir = cli.store_dir.join("events").join(org);
+            let app_state = gh_report::app::state::AppState::with_stores_and_runtime(
+                &events_dir,
+                runtime::PardosaBackend::from(cli.pardosa_backend),
+                runtime::NatsStoreConfig::for_org(org, cli.nats_url.clone())?
+                    .with_credentials_path(cli.nats_creds.clone()),
+                root_nats_guard.clone(),
+            )
+            .await?;
+            if let Err(e) = app_state.snapshot_fast_path_init() {
+                return Err(format!("projection init failed: {e}").into());
+            }
+            match app_state.dump_baseline_json() {
+                Ok(json) => {
+                    println!("{json}");
+                    return Ok(());
+                }
+                Err(e) => {
+                    return Err(format!("serialise baseline: {e}").into());
+                }
+            }
+        }
+
+        let org = cli
+            .org
+            .as_deref()
+            .ok_or("--org is required when running the daemon")?;
+
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+        match cli.log_format {
+            LogFormat::Text => {
+                tracing_subscriber::fmt().with_env_filter(env_filter).init();
+            }
+            LogFormat::Json => {
+                use tracing_subscriber::layer::SubscriberExt;
+
+                let cloud_logging = gh_report::infra::cloud_logging::CloudLoggingLayer::new();
+                let subscriber = tracing_subscriber::Registry::default()
+                    .with(env_filter)
+                    .with(cloud_logging);
+                tracing::subscriber::set_global_default(subscriber)
+                    .expect("failed to set global subscriber");
+            }
+        }
+
+        let dashboard_config =
+            dashboard::DashboardConfig::new(cli.pass_threshold, cli.warn_threshold)?;
+        let mut config = runtime::RuntimeConfig::with_force_unlock(
+            org,
+            cli.no_resume,
+            cli.max_workers,
+            cli.store_dir,
+            cli.force_unlock,
+            dashboard_config,
         )?;
-        let events_dir = cli.store_dir.join("events").join(org);
-        let app_state = gh_report::app::state::AppState::with_stores(
-            &events_dir,
-            runtime::PardosaBackend::from(cli.pardosa_backend),
-            runtime::NatsStoreConfig::for_org(org, cli.nats_url.clone())?
-                .with_credentials_path(cli.nats_creds.clone()),
-        )
-        .await?;
-        if let Err(e) = app_state.snapshot_fast_path_init() {
-            eprintln!("error: projection init failed: {e}");
-            std::process::exit(1);
-        }
-        match app_state.dump_baseline_json() {
-            Ok(json) => {
-                println!("{json}");
-                return Ok(());
-            }
-            Err(e) => {
-                eprintln!("error: serialise baseline: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
+        config.pardosa_backend = runtime::PardosaBackend::from(cli.pardosa_backend);
+        config.rate_regulator = runtime::RateRegulatorKind::from(cli.rate_regulator);
+        config.nats_url = cli.nats_url;
+        config.nats_creds = cli.nats_creds;
+        config.force_refresh = cli.force_refresh;
+        config.team_roster_read_from_projection = !cli.team_roster_live_fetch;
+        config.nats_runtime = root_nats_guard;
+        let nats_creds_path = config
+            .nats_creds
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        tracing::info!(
+            org = %config.org_name,
+            backend = ?config.pardosa_backend,
+            nats_url = %config.nats_url,
+            nats_creds_path = %nats_creds_path,
+            "effective startup config"
+        );
+        gh_report::app::daemon::run(config).await?;
 
-    let org = cli
-        .org
-        .as_deref()
-        .ok_or("--org is required when running the daemon")?;
+        Ok(())
+    });
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    drop(app_runtime);
+    drop(nats_runtime);
 
-    match cli.log_format {
-        LogFormat::Text => {
-            tracing_subscriber::fmt().with_env_filter(env_filter).init();
-        }
-        LogFormat::Json => {
-            use tracing_subscriber::layer::SubscriberExt;
-
-            let cloud_logging = gh_report::infra::cloud_logging::CloudLoggingLayer::new();
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(env_filter)
-                .with(cloud_logging);
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("failed to set global subscriber");
-        }
-    }
-
-    let dashboard_config = dashboard::DashboardConfig::new(cli.pass_threshold, cli.warn_threshold)?;
-    let mut config = runtime::RuntimeConfig::with_force_unlock(
-        org,
-        cli.no_resume,
-        cli.max_workers,
-        cli.store_dir,
-        cli.force_unlock,
-        dashboard_config,
-    )?;
-    config.pardosa_backend = runtime::PardosaBackend::from(cli.pardosa_backend);
-    config.rate_regulator = runtime::RateRegulatorKind::from(cli.rate_regulator);
-    config.nats_url = cli.nats_url;
-    config.nats_creds = cli.nats_creds;
-    config.force_refresh = cli.force_refresh;
-    config.team_roster_read_from_projection = !cli.team_roster_live_fetch;
-    let nats_creds_path = config
-        .nats_creds
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    tracing::info!(
-        org = %config.org_name,
-        backend = ?config.pardosa_backend,
-        nats_url = %config.nats_url,
-        nats_creds_path = %nats_creds_path,
-        "effective startup config"
-    );
-    gh_report::app::daemon::run(config).await?;
-
-    Ok(())
+    result
 }
 
 #[cfg(test)]

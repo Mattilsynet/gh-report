@@ -207,6 +207,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            nats_runtime: None,
         };
 
         (config, evidence)
@@ -720,6 +721,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            nats_runtime: None,
         };
 
         assert!(warm_start_from_baseline(&config, &state).await);
@@ -854,6 +856,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            nats_runtime: None,
         };
         let evidence = test_fixtures::make_full_evidence(
             test_fixtures::make_metadata(),

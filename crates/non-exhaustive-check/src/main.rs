@@ -238,8 +238,6 @@ fn is_violation(item_enum: &syn::ItemEnum) -> bool {
 
     let is_error_type = derives.iter().any(|d| d == "Error");
 
-    // Reversed policy (C4.5/C4.6): public error enums MUST NOT be #[non_exhaustive].
-    // Variant sets are complete and closed; adding variants requires a major version.
     is_error_type && has_non_exhaustive
 }
 

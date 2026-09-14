@@ -241,11 +241,16 @@ fn run_staged_benchmark(total_events: usize, batch_size: usize, distinct_repos: 
             batch_envelopes.push(env);
         }
 
-        let verdict = session
-            .append_batch_envelopes_detailed(&batch_envelopes)
-            .expect("append batch");
-        assert!(verdict.is_all_landed());
-        events_written += chunk_len;
+        for env in batch_envelopes {
+            let verdict = session
+                .append_envelope_verdict(&env)
+                .expect("append envelope");
+            assert!(matches!(
+                verdict,
+                pardosa::store::WriteLandingVerdict::Landed(_)
+            ));
+            events_written += 1;
+        }
     }
 
     let write_duration = start_write.elapsed();

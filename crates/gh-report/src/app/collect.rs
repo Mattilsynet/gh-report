@@ -3915,6 +3915,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            nats_runtime: None,
         }
     }
 

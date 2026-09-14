@@ -861,20 +861,12 @@ fn connect_nats_sync(
     })
 }
 
-fn nats_subjects_for_stem(stem: &str) -> (String, String) {
-    let base = if let Some(rest) = stem.strip_prefix("gh-report-") {
-        format!("gh-report.{}", rest.replace('-', "."))
-    } else {
-        stem.replace('-', ".")
-    };
-    (format!("{base}.meta"), format!("{base}.data"))
-}
-
 fn open_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
     handle: &tokio::runtime::Handle,
+    nats_runtime: Option<&Arc<tokio::runtime::Runtime>>,
 ) -> Result<EventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -889,18 +881,26 @@ fn open_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
+            let Some(rt) = nats_runtime else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "NATS event store requires a root-supervised Tokio runtime",
+                ));
+            };
             let client = connect_nats_sync(handle, nats)?;
             let stem = &nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                stem,
+                Arc::clone(rt),
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                meta_subject = %format_args!("{stem}_meta"),
+                data_subject = %format_args!("{stem}_data"),
                 "initializing NatsStorageAdapter for unified event store"
             );
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem)
-                .with_subjects(meta_subj, data_subj);
             match EventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
@@ -959,6 +959,7 @@ fn open_org_event_store(
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
     handle: &tokio::runtime::Handle,
+    nats_runtime: Option<&Arc<tokio::runtime::Runtime>>,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -973,19 +974,26 @@ fn open_org_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
+            let Some(rt) = nats_runtime else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "NATS org event store requires a root-supervised Tokio runtime",
+                ));
+            };
             let client = connect_nats_sync(handle, nats)?;
-            let org_nats = nats.org_events();
-            let stem = &org_nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
+            let stem = &nats.stream_name;
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                stem,
+                Arc::clone(rt),
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                meta_subject = %format_args!("{stem}_meta"),
+                data_subject = %format_args!("{stem}_data"),
                 "initializing NatsStorageAdapter for org event store"
             );
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem)
-                .with_subjects(meta_subj, data_subj);
             match OrgEventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
@@ -1024,6 +1032,7 @@ fn open_team_event_store(
     backend: crate::config::runtime::PardosaBackend,
     nats: &crate::config::runtime::NatsStoreConfig,
     handle: &tokio::runtime::Handle,
+    nats_runtime: Option<&Arc<tokio::runtime::Runtime>>,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -1038,19 +1047,26 @@ fn open_team_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
+            let Some(rt) = nats_runtime else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "NATS team event store requires a root-supervised Tokio runtime",
+                ));
+            };
             let client = connect_nats_sync(handle, nats)?;
-            let team_nats = nats.team_events();
-            let stem = &team_nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
+            let stem = &nats.stream_name;
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                stem,
+                Arc::clone(rt),
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                meta_subject = %format_args!("{stem}_meta"),
+                data_subject = %format_args!("{stem}_data"),
                 "initializing NatsStorageAdapter for team event store"
             );
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client(client, stem)
-                .with_subjects(meta_subj, data_subj);
             match TeamEventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
@@ -1102,10 +1118,13 @@ async fn open_event_store_blocking(
     backend: crate::config::runtime::PardosaBackend,
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
+    nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
 ) -> Result<EventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_event_store(&events_dir, backend, &nats, &handle))
-        .await
-        .map_err(std::io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        open_event_store(&events_dir, backend, &nats, &handle, nats_runtime.as_ref())
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 async fn open_org_event_store_blocking(
@@ -1113,10 +1132,13 @@ async fn open_org_event_store_blocking(
     backend: crate::config::runtime::PardosaBackend,
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
+    nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
 ) -> Result<OrgEventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_org_event_store(&events_dir, backend, &nats, &handle))
-        .await
-        .map_err(std::io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        open_org_event_store(&events_dir, backend, &nats, &handle, nats_runtime.as_ref())
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 async fn open_team_event_store_blocking(
@@ -1124,10 +1146,13 @@ async fn open_team_event_store_blocking(
     backend: crate::config::runtime::PardosaBackend,
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
+    nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
 ) -> Result<TeamEventStoreImpl, std::io::Error> {
-    tokio::task::spawn_blocking(move || open_team_event_store(&events_dir, backend, &nats, &handle))
-        .await
-        .map_err(std::io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        open_team_event_store(&events_dir, backend, &nats, &handle, nats_runtime.as_ref())
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 fn projection_from_stores(
@@ -1585,30 +1610,73 @@ impl AppState {
     ///
     /// Returns [`std::io::Error`] when the selected pardosa backend
     /// cannot be opened or created. For `Pgno`, this includes creating
-    /// `<events_dir>` or opening/creating `events.pgno`; for `Nats`, M1
-    /// returns an explicit startup error until the runtime handle wiring
-    /// is supplied by a follow-up.
-    ///
+    /// `<events_dir>` or opening/creating `events.pgno`; for `Nats`,
+    /// callers must use [`Self::with_stores_and_runtime`] providing a
+    /// root-supervised runtime.
     pub async fn with_stores(
         events_dir: &Path,
         backend: crate::config::runtime::PardosaBackend,
         nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<Arc<Self>, std::io::Error> {
+        if backend == crate::config::runtime::PardosaBackend::Nats {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NATS event store requires a root-supervised Tokio runtime; use with_stores_and_runtime with Some(Arc<Runtime>)",
+            ));
+        }
+        Self::with_stores_and_runtime(events_dir, backend, nats, None).await
+    }
+
+    /// Create a new `AppState` wired with both stores and an optional root-supervised runtime.
+    ///
+    /// When `backend` is [`PardosaBackend::Nats`](crate::config::runtime::PardosaBackend::Nats),
+    /// `nats_runtime` must be `Some`. The caller retains the obligation to maintain an outer
+    /// synchronous handle to this `Arc<Runtime>` that outlives this `AppState`, all worker
+    /// tasks, and all store adapters until shutdown is complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::io::Error`] when opening or creating event stores fails, or
+    /// when `backend` is [`PardosaBackend::Nats`](crate::config::runtime::PardosaBackend::Nats)
+    /// without providing `nats_runtime`.
+    pub async fn with_stores_and_runtime(
+        events_dir: &Path,
+        backend: crate::config::runtime::PardosaBackend,
+        nats: crate::config::runtime::NatsStoreConfig,
+        nats_runtime: Option<Arc<tokio::runtime::Runtime>>,
+    ) -> Result<Arc<Self>, std::io::Error> {
+        if backend == crate::config::runtime::PardosaBackend::Nats && nats_runtime.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NATS event store requires a root-supervised Tokio runtime; nats_runtime cannot be None",
+            ));
+        }
         let handle = tokio::runtime::Handle::current();
         let events_dir = events_dir.to_path_buf();
-        let event_store =
-            open_event_store_blocking(events_dir.clone(), backend, nats.clone(), handle.clone())
-                .await?;
+        let event_store = open_event_store_blocking(
+            events_dir.clone(),
+            backend,
+            nats.clone(),
+            handle.clone(),
+            nats_runtime.clone(),
+        )
+        .await?;
         let org_event_store = open_org_event_store_blocking(
             events_dir.clone(),
             backend,
             nats.org_events(),
             handle.clone(),
+            nats_runtime.clone(),
         )
         .await?;
-        let team_event_store =
-            open_team_event_store_blocking(events_dir.clone(), backend, nats.team_events(), handle)
-                .await?;
+        let team_event_store = open_team_event_store_blocking(
+            events_dir.clone(),
+            backend,
+            nats.team_events(),
+            handle,
+            nats_runtime,
+        )
+        .await?;
         let event_store = Arc::new(event_store);
         let org_event_store = Arc::new(org_event_store);
         let team_event_store = Arc::new(team_event_store);
@@ -2356,26 +2424,243 @@ mod tests {
         assert!(!resurrected_projection.deleted.contains_key(&domain_key));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn nats_open_dead_port_returns_error_without_nested_runtime_panic() {
+    #[test]
+    fn nats_open_dead_port_returns_error_without_nested_runtime_panic() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let events_dir = tmp.path().join("events");
         let nats = NatsStoreConfig::for_org("org", "nats://127.0.0.1:1").unwrap();
 
-        let result = AppState::with_stores(&events_dir, PardosaBackend::Nats, nats).await;
+        let nats_runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let root_guard = Arc::clone(&nats_runtime);
 
-        let error = match result {
-            Ok(_) => panic!("dead-port Nats open must fail"),
-            Err(error) => error.to_string(),
+        let app_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("app runtime");
+
+        app_runtime.block_on(async move {
+            let Err(unmanaged_err) =
+                AppState::with_stores(&events_dir, PardosaBackend::Nats, nats.clone()).await
+            else {
+                panic!("with_stores without supervised runtime must fail closed");
+            };
+            assert_eq!(unmanaged_err.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(
+                unmanaged_err.to_string(),
+                "NATS event store requires a root-supervised Tokio runtime; use with_stores_and_runtime with Some(Arc<Runtime>)"
+            );
+
+            let Err(overload_none_err) = AppState::with_stores_and_runtime(
+                &events_dir,
+                PardosaBackend::Nats,
+                nats.clone(),
+                None,
+            )
+            .await
+            else {
+                panic!("with_stores_and_runtime with None runtime must fail closed");
+            };
+            assert_eq!(overload_none_err.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(
+                overload_none_err.to_string(),
+                "NATS event store requires a root-supervised Tokio runtime; nats_runtime cannot be None"
+            );
+
+            let result = AppState::with_stores_and_runtime(
+                &events_dir,
+                PardosaBackend::Nats,
+                nats,
+                Some(root_guard),
+            )
+            .await;
+
+            let error = match result {
+                Ok(_) => panic!("dead-port Nats open must fail"),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                !error.contains("Cannot start a runtime from within a runtime"),
+                "Nats open must return a typed connect error, not panic with nested-runtime failure: {error}"
+            );
+            assert!(
+                error.contains("connect")
+                    || error.contains("Connection")
+                    || error.contains("refused"),
+                "dead-port Nats open should reach connect and surface it as io::Error, got: {error}"
+            );
+        });
+
+        drop(app_runtime);
+        drop(nats_runtime);
+    }
+
+    #[test]
+    fn nats_app_state_partial_initialization_failure_drops_safely_with_root_owner() {
+        use pardosa::prelude::*;
+        let Some(server) = crate::store::tests::TestNatsServer::spawn() else {
+            return;
         };
-        assert!(
-            !error.contains("Cannot start a runtime from within a runtime"),
-            "Nats open must return a typed connect error, not panic with nested-runtime failure: {error}"
+        let url = server.url.clone();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let events_dir = tmp.path().join("events");
+
+        let nats_runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("root test runtime"),
         );
-        assert!(
-            error.contains("connect") || error.contains("Connection") || error.contains("refused"),
-            "dead-port Nats open should reach connect and surface it as io::Error, got: {error}"
+
+        let nats_config = NatsStoreConfig::for_org("test-partial-init", &url).unwrap();
+        let org_nats = nats_config.org_events();
+
+        {
+            let url = url.clone();
+            let nats_runtime = Arc::clone(&nats_runtime);
+            let org_stream_name = org_nats.stream_name.clone();
+            let client = nats_runtime
+                .block_on(async_nats::connect(&url))
+                .expect("connect");
+            let org_adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                org_stream_name,
+                Arc::clone(&nats_runtime),
+            );
+            let claim = OwnershipClaimRecord {
+                epoch: 1,
+                machine_id: [0u8; 16],
+                boot_id: [0u8; 16],
+                process_id: u64::from(std::process::id()),
+                process_start_time_ns: 0,
+                claim_time_ns: 0,
+                operator_label: "mismatched-partial-org".to_string(),
+            };
+            let mut session = org_adapter.create(&claim).expect("create org store");
+            let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+            session
+                .set_schema_descriptor(&mismatched_desc)
+                .expect("set mismatched descriptor");
+            session.sync().expect("sync");
+        }
+
+        let app_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("app test runtime");
+
+        let root_nats_guard = Arc::clone(&nats_runtime);
+
+        app_runtime.block_on(async move {
+            assert_eq!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            );
+            let result = AppState::with_stores_and_runtime(
+                &events_dir,
+                PardosaBackend::Nats,
+                nats_config,
+                Some(root_nats_guard),
+            )
+            .await;
+
+            let Err(err) = result else {
+                panic!("partial initialization with mismatched org stream must fail");
+            };
+            assert!(
+                err.to_string()
+                    .contains("schema descriptor identity mismatch")
+            );
+        });
+
+        drop(app_runtime);
+        drop(nats_runtime);
+    }
+
+    #[test]
+    fn nats_app_state_partial_initialization_failure_on_team_drops_safely_with_root_owner() {
+        use pardosa::prelude::*;
+        let Some(server) = crate::store::tests::TestNatsServer::spawn() else {
+            return;
+        };
+        let url = server.url.clone();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let events_dir = tmp.path().join("events");
+
+        let nats_runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("root test runtime"),
         );
+
+        let nats_config = NatsStoreConfig::for_org("test-partial-init-team", &url).unwrap();
+        let team_nats = nats_config.team_events();
+
+        {
+            let url = url.clone();
+            let nats_runtime = Arc::clone(&nats_runtime);
+            let team_stream_name = team_nats.stream_name.clone();
+            let client = nats_runtime
+                .block_on(async_nats::connect(&url))
+                .expect("connect");
+            let team_adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+                client,
+                team_stream_name,
+                Arc::clone(&nats_runtime),
+            );
+            let claim = OwnershipClaimRecord {
+                epoch: 1,
+                machine_id: [0u8; 16],
+                boot_id: [0u8; 16],
+                process_id: u64::from(std::process::id()),
+                process_start_time_ns: 0,
+                claim_time_ns: 0,
+                operator_label: "mismatched-partial-team".to_string(),
+            };
+            let mut session = team_adapter.create(&claim).expect("create team store");
+            let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+            session
+                .set_schema_descriptor(&mismatched_desc)
+                .expect("set mismatched descriptor");
+            session.sync().expect("sync");
+        }
+
+        let app_runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("app test runtime");
+
+        let root_nats_guard = Arc::clone(&nats_runtime);
+
+        app_runtime.block_on(async move {
+            assert_eq!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            );
+            let result = AppState::with_stores_and_runtime(
+                &events_dir,
+                PardosaBackend::Nats,
+                nats_config,
+                Some(root_nats_guard),
+            )
+            .await;
+
+            let Err(err) = result else {
+                panic!("partial initialization with mismatched team stream must fail");
+            };
+            assert!(
+                err.to_string()
+                    .contains("schema descriptor identity mismatch")
+            );
+        });
+
+        drop(app_runtime);
+        drop(nats_runtime);
     }
 
     #[test]
