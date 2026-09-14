@@ -629,7 +629,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::event::team_domain_key;
 
-    fn synthetic_domain_event(i: u64) -> DomainEvent {
+    pub(crate) fn synthetic_domain_event(i: u64) -> DomainEvent {
         let domain_key = format!("domain-{i}");
         let repo_name = format!("repo-{i}");
         DomainEvent::RepositoryStateCaptured {
@@ -676,7 +676,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn synthetic_team_state(org: &str, team_slug: &str) -> TeamStateCaptured {
+    pub(crate) fn synthetic_team_state(org: &str, team_slug: &str) -> TeamStateCaptured {
         use crate::event::{
             OrgMembershipFetchStatus, OrphanAttributionInputs, TeamRosterStatusEvent,
         };
@@ -995,13 +995,11 @@ pub(crate) mod tests {
     }
 
     impl TestNatsServer {
-        pub(crate) fn spawn() -> Option<Self> {
+        fn spawn_internal(custom_config: Option<&str>) -> Option<Self> {
             let bin_path = match resolve_pinned_nats_server() {
                 Ok(path) => path,
                 Err(reason) => {
-                    eprintln!(
-                        "SKIP nats_store_admission_roundtrip_and_rejection: live nats-server unavailable: {reason}"
-                    );
+                    eprintln!("SKIP: live nats-server unavailable: {reason}");
                     return None;
                 }
             };
@@ -1011,8 +1009,8 @@ pub(crate) mod tests {
             drop(listener);
 
             let tempdir = tempfile::TempDir::new().expect("tempdir");
-            let mut child = std::process::Command::new(bin_path)
-                .arg("-a")
+            let mut cmd = std::process::Command::new(bin_path);
+            cmd.arg("-a")
                 .arg("127.0.0.1")
                 .arg("-p")
                 .arg(port.to_string())
@@ -1020,9 +1018,15 @@ pub(crate) mod tests {
                 .arg("-sd")
                 .arg(tempdir.path())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .expect("spawn nats-server");
+                .stderr(std::process::Stdio::null());
+
+            if let Some(conf) = custom_config {
+                let config_path = tempdir.path().join("nats.conf");
+                std::fs::write(&config_path, conf).expect("write nats.conf");
+                cmd.arg("-c").arg(&config_path);
+            }
+
+            let mut child = cmd.spawn().expect("spawn nats-server");
 
             let url = format!("nats://127.0.0.1:{port}");
             let start = std::time::Instant::now();
@@ -1038,6 +1042,14 @@ pub(crate) mod tests {
             }
             cleanup_child_process(&mut child);
             panic!("nats-server readiness timeout on 127.0.0.1:{port}");
+        }
+
+        pub(crate) fn spawn() -> Option<Self> {
+            Self::spawn_internal(None)
+        }
+
+        pub(crate) fn spawn_with_auth_config(config_content: &str) -> Option<Self> {
+            Self::spawn_internal(Some(config_content))
         }
     }
 
