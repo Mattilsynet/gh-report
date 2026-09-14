@@ -896,6 +896,9 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
+            let mut dead_child = child;
+            let _ = dead_child.kill();
+            let _ = dead_child.wait();
             None
         }
     }
@@ -925,8 +928,11 @@ mod tests {
             .expect("connect to live nats");
 
         let stem_valid = format!("test_nats_valid_{}", uuid::Uuid::now_v7());
-        let adapter_valid =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid.clone(), rt.clone());
+        let adapter_valid = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_valid.clone(),
+            rt.clone(),
+        );
         let store = NativeStore::create_nats(adapter_valid).expect("create valid nats store");
         store
             .record(
@@ -941,13 +947,26 @@ mod tests {
 
         let adapter_reopen =
             NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid, rt.clone());
-        let reopened =
-            NativeStore::open_nats(adapter_reopen).expect("reopen valid nats store");
+        let reopened = NativeStore::open_nats(adapter_reopen).expect("reopen valid nats store");
         assert_eq!(reopened.events().expect("events").len(), 1);
+        reopened
+            .record(
+                "repo-nats-2",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-nats-2"),
+                    repo_name: nes("repo-nats-2"),
+                    detected_at: ts(30),
+                },
+            )
+            .expect("append second event after reopen");
+        assert_eq!(reopened.events().expect("events").len(), 2);
 
         let stem_mismatched = format!("test_nats_mismatched_{}", uuid::Uuid::now_v7());
-        let adapter_mismatched_raw =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_mismatched.clone(), rt.clone());
+        let adapter_mismatched_raw = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_mismatched.clone(),
+            rt.clone(),
+        );
         let claim = default_claim(1, "mismatched-nats");
         let mut session = adapter_mismatched_raw
             .create(&claim)
@@ -959,8 +978,11 @@ mod tests {
         session.sync().expect("sync mismatched nats descriptor");
         drop(session);
 
-        let adapter_mismatched =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_mismatched, rt.clone());
+        let adapter_mismatched = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_mismatched,
+            rt.clone(),
+        );
         let Err(err_mismatched) = NativeStore::open_nats(adapter_mismatched) else {
             panic!("open mismatched nats store must fail closed");
         };
@@ -971,19 +993,19 @@ mod tests {
         ));
 
         let stem_unadmitted = format!("test_nats_unadmitted_{}", uuid::Uuid::now_v7());
-        let adapter_unadmitted_raw =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_unadmitted.clone(), rt.clone());
+        let adapter_unadmitted_raw = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_unadmitted.clone(),
+            rt.clone(),
+        );
         let claim_unadmitted = default_claim(1, "unadmitted-nats");
         let session_unadmitted = adapter_unadmitted_raw
             .create(&claim_unadmitted)
             .expect("create unadmitted nats store");
         drop(session_unadmitted);
 
-        let adapter_unadmitted = NatsStorageAdapter::from_client_with_runtime(
-            client,
-            stem_unadmitted,
-            rt,
-        );
+        let adapter_unadmitted =
+            NatsStorageAdapter::from_client_with_runtime(client, stem_unadmitted, rt);
         let Err(err_unadmitted) = NativeStore::open_nats(adapter_unadmitted) else {
             panic!("open unadmitted nats store must fail closed");
         };
