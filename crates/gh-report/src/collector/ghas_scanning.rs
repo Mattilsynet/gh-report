@@ -216,8 +216,32 @@ pub async fn collect_org_alerts(
     let now = parse_iso8601(run_timestamp).unwrap_or_else(Timestamp::now);
 
     let mut known_scope: HashMap<String, &Arc<Repository>> = HashMap::new();
+    let mut scope_collision = false;
     for repo in repositories {
-        known_scope.insert(scope_key(repo), repo);
+        let key = scope_key(repo);
+        if let Some(existing) = known_scope.get(&key).filter(|e| e.id != repo.id) {
+            warn!(
+                key = %key,
+                repo1 = %existing.name,
+                repo2 = %repo.name,
+                "duplicate scope key conflict detected across distinct repositories"
+            );
+            scope_collision = true;
+        }
+        known_scope.insert(key, repo);
+        if let Some(existing) = repo
+            .node_id
+            .as_ref()
+            .and_then(|nid| known_scope.get(nid))
+            .filter(|e| e.id != repo.id)
+        {
+            warn!(
+                repo1 = %existing.name,
+                repo2 = %repo.name,
+                "duplicate node_id alias conflict detected across distinct repositories"
+            );
+            scope_collision = true;
+        }
         if let Some(ref node_id) = repo.node_id {
             known_scope.insert(node_id.clone(), repo);
         }
@@ -259,9 +283,18 @@ pub async fn collect_org_alerts(
         "org-level secret scanning alerts fetched"
     );
 
+    let (init_status, init_reason) = if scope_collision {
+        (
+            CollectionStatus::Unavailable,
+            Some("repository_alias_collision".to_string()),
+        )
+    } else {
+        (CollectionStatus::Success, None)
+    };
+
     let mut summary = OrgAlertSummary {
-        collection_status: CollectionStatus::Success,
-        collection_reason: None,
+        collection_status: init_status,
+        collection_reason: init_reason,
         per_repo: HashMap::new(),
         open_secret_alert_age_buckets: empty_age_buckets(),
         total_open_secret_alerts: 0,
@@ -1068,5 +1101,31 @@ mod tests {
         assert!(!summary.per_repo.contains_key("R_kgDO_node_123"));
         assert!(!summary.per_repo.contains_key("99999"));
         assert!(!summary.per_repo.contains_key("88888"));
+    }
+
+    #[tokio::test]
+    async fn collect_org_alerts_degrades_on_duplicate_node_id_alias_collision() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let client = test_client(&server.uri());
+
+        Mock::given(path("/orgs/test-org/secret-scanning/alerts"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let repo_1 = sample_repo("111", Some("R_shared_node"), "repo-1");
+        let repo_2 = sample_repo("222", Some("R_shared_node"), "repo-2");
+
+        let repos = [repo_1, repo_2];
+        let summary = collect_org_alerts(&client, &repos, "2026-06-15T15:00:00Z").await;
+
+        assert_eq!(summary.collection_status, CollectionStatus::Unavailable);
+        assert_eq!(
+            summary.collection_reason.as_deref(),
+            Some("repository_alias_collision")
+        );
     }
 }

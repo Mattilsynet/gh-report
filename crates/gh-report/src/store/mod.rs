@@ -787,19 +787,208 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let valid_path = dir.path().join("valid.pgno");
         let unadmitted_path = dir.path().join("unadmitted.pgno");
+        let mismatched_path = dir.path().join("mismatched.pgno");
 
         let store = NativeStore::create_pgno(&valid_path).expect("create valid store");
+        store
+            .record(
+                "repo-1",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-1"),
+                    repo_name: nes("repo-1"),
+                    detected_at: ts(10),
+                },
+            )
+            .expect("record initial event");
+        assert_eq!(store.events().expect("events").len(), 1);
 
-        let adapter = FileStorageAdapter::new(&unadmitted_path);
+        let adapter_unadmitted = FileStorageAdapter::new(&unadmitted_path);
         let claim = default_claim(1, "unadmitted");
-        let session = adapter.create(&claim).expect("create bare store");
+        let session = adapter_unadmitted
+            .create(&claim)
+            .expect("create bare store");
         drop(session);
 
-        let err = store
+        let err_unadmitted = store
             .resync_pgno_from_authoritative(&unadmitted_path)
             .expect_err("resync against unadmitted store must fail closed");
         assert!(matches!(
-            err,
+            err_unadmitted,
+            StoreError::Infrastructure(ref msg)
+                if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
+        ));
+        assert_eq!(
+            store.events().expect("events").len(),
+            1,
+            "cache must be preserved on unadmitted store error"
+        );
+
+        let adapter_mismatched = FileStorageAdapter::new(&mismatched_path);
+        let claim_mismatched = default_claim(1, "mismatched");
+        let mut session_mismatched = adapter_mismatched
+            .create(&claim_mismatched)
+            .expect("create mismatched store");
+        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+        session_mismatched
+            .set_schema_descriptor(&mismatched_desc)
+            .expect("set mismatched descriptor");
+        session_mismatched
+            .sync()
+            .expect("sync mismatched descriptor");
+        drop(session_mismatched);
+
+        let err_mismatched = store
+            .resync_pgno_from_authoritative(&mismatched_path)
+            .expect_err("resync against mismatched store must fail closed");
+        assert!(matches!(
+            err_mismatched,
+            StoreError::Infrastructure(ref msg)
+                if msg.contains("schema descriptor identity mismatch: expected ")
+        ));
+        assert_eq!(
+            store.events().expect("events").len(),
+            1,
+            "cache must be preserved on mismatched identity error"
+        );
+    }
+
+    fn nes<const MAX: usize>(s: &str) -> NonEmptyEventString<MAX> {
+        NonEmptyEventString::new(s.to_string()).expect("valid non-empty string")
+    }
+
+    fn ts(nanos: u64) -> Timestamp {
+        Timestamp::new(nanos).expect("valid timestamp")
+    }
+
+    struct TestNatsServer {
+        url: String,
+        child: std::process::Child,
+        _tempdir: tempfile::TempDir,
+    }
+
+    impl TestNatsServer {
+        fn spawn() -> Option<Self> {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+            let port = listener.local_addr().ok()?.port();
+            drop(listener);
+
+            let tempdir = tempfile::TempDir::new().ok()?;
+            let child = std::process::Command::new("nats-server")
+                .arg("-p")
+                .arg(port.to_string())
+                .arg("-js")
+                .arg("-sd")
+                .arg(tempdir.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+
+            let url = format!("nats://127.0.0.1:{port}");
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(5) {
+                if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+                    return Some(Self {
+                        url,
+                        child,
+                        _tempdir: tempdir,
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            None
+        }
+    }
+
+    impl Drop for TestNatsServer {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    #[test]
+    fn nats_store_admission_roundtrip_and_rejection() {
+        let Some(server) = TestNatsServer::spawn() else {
+            eprintln!("SKIP nats_store_admission_roundtrip_and_rejection: nats-server unavailable");
+            return;
+        };
+
+        let rt = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let client = rt
+            .block_on(async_nats::connect(&server.url))
+            .expect("connect to live nats");
+
+        let stem_valid = format!("test_nats_valid_{}", uuid::Uuid::now_v7());
+        let adapter_valid =
+            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid.clone(), rt.clone());
+        let store = NativeStore::create_nats(adapter_valid).expect("create valid nats store");
+        store
+            .record(
+                "repo-nats-1",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-nats-1"),
+                    repo_name: nes("repo-nats-1"),
+                    detected_at: ts(20),
+                },
+            )
+            .expect("record event in nats");
+
+        let adapter_reopen =
+            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid, rt.clone());
+        let reopened =
+            NativeStore::open_nats(adapter_reopen).expect("reopen valid nats store");
+        assert_eq!(reopened.events().expect("events").len(), 1);
+
+        let stem_mismatched = format!("test_nats_mismatched_{}", uuid::Uuid::now_v7());
+        let adapter_mismatched_raw =
+            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_mismatched.clone(), rt.clone());
+        let claim = default_claim(1, "mismatched-nats");
+        let mut session = adapter_mismatched_raw
+            .create(&claim)
+            .expect("create bare nats store");
+        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+        session
+            .set_schema_descriptor(&mismatched_desc)
+            .expect("set mismatched nats descriptor");
+        session.sync().expect("sync mismatched nats descriptor");
+        drop(session);
+
+        let adapter_mismatched =
+            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_mismatched, rt.clone());
+        let Err(err_mismatched) = NativeStore::open_nats(adapter_mismatched) else {
+            panic!("open mismatched nats store must fail closed");
+        };
+        assert!(matches!(
+            err_mismatched,
+            StoreError::Infrastructure(ref msg)
+                if msg.contains("schema descriptor identity mismatch: expected ")
+        ));
+
+        let stem_unadmitted = format!("test_nats_unadmitted_{}", uuid::Uuid::now_v7());
+        let adapter_unadmitted_raw =
+            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_unadmitted.clone(), rt.clone());
+        let claim_unadmitted = default_claim(1, "unadmitted-nats");
+        let session_unadmitted = adapter_unadmitted_raw
+            .create(&claim_unadmitted)
+            .expect("create unadmitted nats store");
+        drop(session_unadmitted);
+
+        let adapter_unadmitted = NatsStorageAdapter::from_client_with_runtime(
+            client,
+            stem_unadmitted,
+            rt,
+        );
+        let Err(err_unadmitted) = NativeStore::open_nats(adapter_unadmitted) else {
+            panic!("open unadmitted nats store must fail closed");
+        };
+        assert!(matches!(
+            err_unadmitted,
             StoreError::Infrastructure(ref msg)
                 if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
         ));

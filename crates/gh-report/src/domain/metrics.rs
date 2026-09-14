@@ -80,6 +80,9 @@ impl RateMetric {
     /// Build a rate metric with extra context fields.
     #[must_use]
     pub fn with_extra(mut self, key: &str, value: impl Into<serde_json::Value>) -> Self {
+        if key == "numerator" || key == "denominator" || key == "rate" {
+            return self;
+        }
         self.extra.insert(key.to_string(), value.into());
         self
     }
@@ -709,6 +712,20 @@ mod tests {
         assert_eq!(metric.rate, Some(33.3));
         assert_eq!(metric.extra.get("context"), Some(&serde_json::json!(42)));
         assert!(!metric.extra.contains_key("rate"));
+    }
+
+    #[test]
+    fn rate_metric_with_extra_ignores_reserved_keys() {
+        let metric = RateMetric::new(1, 2)
+            .with_extra("rate", 99.9)
+            .with_extra("numerator", 99)
+            .with_extra("denominator", 99)
+            .with_extra("custom", "ok");
+        assert_eq!(metric.rate, Some(50.0));
+        assert!(!metric.extra.contains_key("rate"));
+        assert!(!metric.extra.contains_key("numerator"));
+        assert!(!metric.extra.contains_key("denominator"));
+        assert_eq!(metric.extra.get("custom"), Some(&serde_json::json!("ok")));
     }
 
     #[test]
