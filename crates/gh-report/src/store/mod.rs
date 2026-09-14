@@ -909,9 +909,12 @@ mod tests {
 
     fn resolve_pinned_nats_server() -> Result<std::path::PathBuf, String> {
         let pinned = "2.14.5";
-        let candidate_path = std::path::PathBuf::from("tools/bin/nats-server");
+        let candidate_path = std::path::PathBuf::from("../../tools/bin/nats-server");
+        let alt_candidate = std::path::PathBuf::from("tools/bin/nats-server");
         let bin_path = if candidate_path.is_file() {
             candidate_path
+        } else if alt_candidate.is_file() {
+            alt_candidate
         } else {
             std::path::PathBuf::from("nats-server")
         };
@@ -1155,11 +1158,25 @@ mod tests {
         let Some(server) = TestNatsServer::spawn() else {
             return;
         };
-        let client = async_nats::connect(&server.url)
-            .await
-            .expect("connect to live nats");
-        let adapter = NatsStorageAdapter::from_client(client, "test_handle_drop");
-        let handle = NatsAdapterHandle::new(adapter);
+        let url = server.url.clone();
+        let handle = tokio::task::spawn_blocking(move || {
+            let rt = std::sync::Arc::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("adapter runtime"),
+            );
+            let client = rt
+                .block_on(async_nats::connect(&url))
+                .expect("connect to live nats");
+            let adapter =
+                NatsStorageAdapter::from_client_with_runtime(client, "test_handle_drop", rt);
+            NatsAdapterHandle::new(adapter)
+        })
+        .await
+        .expect("spawn_blocking construct adapter");
+
+        assert!(tokio::runtime::Handle::try_current().is_ok());
         drop(handle);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
