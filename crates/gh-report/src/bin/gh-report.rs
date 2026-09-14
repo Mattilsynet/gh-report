@@ -234,6 +234,10 @@ struct Cli {
     warn_threshold: f64,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "synchronous root runtime supervision, CLI dispatch, and daemon initialization"
+)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "profiling")]
     let _profiling_guard = profiling::ProfilingGuard::start();
@@ -333,10 +337,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default();
+        let sanitized_nats_url =
+            gh_report::app::state::sanitize_nats_url(&config.nats_url);
         tracing::info!(
             org = %config.org_name,
             backend = ?config.pardosa_backend,
-            nats_url = %config.nats_url,
+            nats_url = %sanitized_nats_url,
             nats_creds_path = %nats_creds_path,
             "effective startup config"
         );

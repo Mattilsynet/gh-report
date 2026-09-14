@@ -782,6 +782,29 @@ impl AppState {
     }
 }
 
+#[must_use]
+pub fn sanitize_nats_url(raw_url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(raw_url) else {
+        return "invalid-nats-endpoint".to_string();
+    };
+    if parsed.cannot_be_a_base() {
+        return "invalid-nats-endpoint".to_string();
+    }
+    let Some(host) = parsed.host_str() else {
+        return "invalid-nats-endpoint".to_string();
+    };
+    let scheme = parsed.scheme();
+    if let Some(port) = parsed.port() {
+        format!("{scheme}://{host}:{port}")
+    } else {
+        format!("{scheme}://{host}")
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "comprehensive credentials parsing, TLS configuration, and connection error logging"
+)]
 fn connect_nats_sync(
     handle: &tokio::runtime::Handle,
     nats: &crate::config::runtime::NatsStoreConfig,
@@ -792,9 +815,10 @@ fn connect_nats_sync(
             "NATS connect refused: connection to 127.0.0.1:1 refused",
         ));
     }
+    let sanitized_url = sanitize_nats_url(&nats.nats_url);
     tracing::info!(
         target: "gh_report",
-        endpoint = %nats.nats_url,
+        endpoint = %sanitized_url,
         creds_specified = nats.credentials_path.is_some(),
         creds_path = ?nats.credentials_path,
         "initiating NATS JetStream connection"
@@ -832,6 +856,34 @@ fn connect_nats_sync(
                 }
             }
         }
+        if let Ok(parsed_url) = url::Url::parse(&nats.nats_url) {
+            let user = parsed_url.username();
+            if !user.is_empty() {
+                let decoded_user = percent_encoding::percent_decode_str(user)
+                    .decode_utf8()
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "NATS username contains invalid UTF-8 percent-encoding",
+                        )
+                    })?
+                    .into_owned();
+                let decoded_pass = if let Some(p) = parsed_url.password() {
+                    percent_encoding::percent_decode_str(p)
+                        .decode_utf8()
+                        .map_err(|_| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "NATS password contains invalid UTF-8 percent-encoding",
+                            )
+                        })?
+                        .into_owned()
+                } else {
+                    String::new()
+                };
+                options = options.user_and_password(decoded_user, decoded_pass);
+            }
+        }
         if nats.nats_url.starts_with("tls://") {
             options = options.require_tls(true);
         }
@@ -851,7 +903,7 @@ fn connect_nats_sync(
             Err(err) => {
                 tracing::error!(
                     target: "gh_report",
-                    endpoint = %nats.nats_url,
+                    endpoint = %sanitized_url,
                     error = %err,
                     "NATS connection failed"
                 );
@@ -859,6 +911,15 @@ fn connect_nats_sync(
             }
         }
     })
+}
+
+fn nats_subjects_for_stem(stem: &str) -> (String, String) {
+    let base = if let Some(rest) = stem.strip_prefix("gh-report-") {
+        format!("gh-report.{}", rest.replace('-', "."))
+    } else {
+        stem.replace('-', ".")
+    };
+    (format!("{base}.meta"), format!("{base}.data"))
 }
 
 fn open_event_store(
@@ -889,16 +950,18 @@ fn open_event_store(
             };
             let client = connect_nats_sync(handle, nats)?;
             let stem = &nats.stream_name;
+            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
             let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
                 client,
                 stem,
                 Arc::clone(rt),
-            );
+            )
+            .with_subjects(meta_subj.clone(), data_subj.clone());
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %format_args!("{stem}_meta"),
-                data_subject = %format_args!("{stem}_data"),
+                meta_subject = %meta_subj,
+                data_subject = %data_subj,
                 "initializing NatsStorageAdapter for unified event store"
             );
             match EventStoreImpl::create_nats(adapter.clone()) {
@@ -982,16 +1045,18 @@ fn open_org_event_store(
             };
             let client = connect_nats_sync(handle, nats)?;
             let stem = &nats.stream_name;
+            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
             let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
                 client,
                 stem,
                 Arc::clone(rt),
-            );
+            )
+            .with_subjects(meta_subj.clone(), data_subj.clone());
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %format_args!("{stem}_meta"),
-                data_subject = %format_args!("{stem}_data"),
+                meta_subject = %meta_subj,
+                data_subject = %data_subj,
                 "initializing NatsStorageAdapter for org event store"
             );
             match OrgEventStoreImpl::create_nats(adapter.clone()) {
@@ -1055,16 +1120,18 @@ fn open_team_event_store(
             };
             let client = connect_nats_sync(handle, nats)?;
             let stem = &nats.stream_name;
+            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
             let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
                 client,
                 stem,
                 Arc::clone(rt),
-            );
+            )
+            .with_subjects(meta_subj.clone(), data_subj.clone());
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
-                meta_subject = %format_args!("{stem}_meta"),
-                data_subject = %format_args!("{stem}_data"),
+                meta_subject = %meta_subj,
+                data_subject = %data_subj,
                 "initializing NatsStorageAdapter for team event store"
             );
             match TeamEventStoreImpl::create_nats(adapter.clone()) {
@@ -2523,6 +2590,7 @@ mod tests {
             let url = url.clone();
             let nats_runtime = Arc::clone(&nats_runtime);
             let org_stream_name = org_nats.stream_name.clone();
+            let (meta_subj, data_subj) = nats_subjects_for_stem(&org_stream_name);
             let client = nats_runtime
                 .block_on(async_nats::connect(&url))
                 .expect("connect");
@@ -2530,7 +2598,8 @@ mod tests {
                 client,
                 org_stream_name,
                 Arc::clone(&nats_runtime),
-            );
+            )
+            .with_subjects(meta_subj, data_subj);
             let claim = OwnershipClaimRecord {
                 epoch: 1,
                 machine_id: [0u8; 16],
@@ -2605,6 +2674,7 @@ mod tests {
             let url = url.clone();
             let nats_runtime = Arc::clone(&nats_runtime);
             let team_stream_name = team_nats.stream_name.clone();
+            let (meta_subj, data_subj) = nats_subjects_for_stem(&team_stream_name);
             let client = nats_runtime
                 .block_on(async_nats::connect(&url))
                 .expect("connect");
@@ -2612,7 +2682,8 @@ mod tests {
                 client,
                 team_stream_name,
                 Arc::clone(&nats_runtime),
-            );
+            )
+            .with_subjects(meta_subj, data_subj);
             let claim = OwnershipClaimRecord {
                 epoch: 1,
                 machine_id: [0u8; 16],
@@ -2661,6 +2732,385 @@ mod tests {
 
         drop(app_runtime);
         drop(nats_runtime);
+    }
+
+    #[test]
+    fn nats_subjects_for_stem_derives_dotted_subjects() {
+        let (meta, data) = nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v22");
+        assert_eq!(meta, "gh-report.org_4d617474696c73796e6574.v22.meta");
+        assert_eq!(data, "gh-report.org_4d617474696c73796e6574.v22.data");
+
+        let (org_meta, org_data) =
+            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v22-org");
+        assert_eq!(
+            org_meta,
+            "gh-report.org_4d617474696c73796e6574.v22.org.meta"
+        );
+        assert_eq!(
+            org_data,
+            "gh-report.org_4d617474696c73796e6574.v22.org.data"
+        );
+
+        let (team_meta, team_data) =
+            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v22-team");
+        assert_eq!(
+            team_meta,
+            "gh-report.org_4d617474696c73796e6574.v22.team.meta"
+        );
+        assert_eq!(
+            team_data,
+            "gh-report.org_4d617474696c73796e6574.v22.team.data"
+        );
+    }
+
+    #[test]
+    fn sanitize_nats_url_strips_password_cleanly() {
+        assert_eq!(
+            sanitize_nats_url("nats://alice:secret@127.0.0.1:4222"),
+            "nats://127.0.0.1:4222"
+        );
+        assert_eq!(
+            sanitize_nats_url("nats://127.0.0.1:4222"),
+            "nats://127.0.0.1:4222"
+        );
+        assert_eq!(
+            sanitize_nats_url("tls://connect.nats.mattilsynet.io:4222"),
+            "tls://connect.nats.mattilsynet.io:4222"
+        );
+        assert_eq!(
+            sanitize_nats_url("nats://alice:secret@host:badport"),
+            "invalid-nats-endpoint"
+        );
+        assert_eq!(
+            sanitize_nats_url("not a url at all :::"),
+            "invalid-nats-endpoint"
+        );
+        assert_eq!(
+            sanitize_nats_url("nats:alice:secret@host:4222"),
+            "invalid-nats-endpoint"
+        );
+        assert_eq!(
+            sanitize_nats_url("nats:/alice:secret@host:4222"),
+            "invalid-nats-endpoint"
+        );
+    }
+
+    #[test]
+    fn connect_nats_sync_rejects_invalid_percent_encoding_without_echoing_secret() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let config = NatsStoreConfig {
+            nats_url: "nats://alice:secret%FF%FE@127.0.0.1:4222".to_string(),
+            stream_name: "test-stream".to_string(),
+            subject: "test.subject".to_string(),
+            durable_consumer: "test-consumer".to_string(),
+            credentials_path: None,
+        };
+        let err = connect_nats_sync(rt.handle(), &config).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        let err_msg = err.to_string();
+        assert!(err_msg.contains("invalid UTF-8 percent-encoding"));
+        assert!(!err_msg.contains("secret"));
+    }
+
+    fn synthetic_org_state(org: &str) -> crate::event::OrgStateCaptured {
+        use crate::event::{
+            AssessmentMetadata, AuthMode, CollectionStatus, OrgAlertSummary, TokenTier,
+        };
+        use pardosa::prelude::{EventString, EventVec};
+        crate::event::OrgStateCaptured {
+            archived_repos: 0,
+            assessment_metadata: AssessmentMetadata {
+                date: EventString::new("2026-07-16".to_string()).unwrap(),
+                organization: EventString::new(org.to_string()).unwrap(),
+                schema_version: EventString::new("22.0".to_string()).unwrap(),
+                run_timestamp: EventString::new("2026-07-16T00:00:00Z".to_string()).unwrap(),
+                run_id: EventString::new("run-1".to_string()).unwrap(),
+                token_tier: TokenTier::Full,
+                token_scopes: EventString::new("repo,read:org".to_string()).unwrap(),
+                auth_mode: AuthMode::GitHubApp,
+                rate_limit_warnings: 0,
+                unavailable_capabilities: EventVec::new(Vec::new()).unwrap(),
+                inventory_fetched_at: Some(
+                    EventString::new("2026-07-16T00:00:00Z".to_string()).unwrap(),
+                ),
+                warm_start: false,
+            },
+            alert_summary: OrgAlertSummary {
+                collection_status: CollectionStatus::Success,
+                collection_reason: None,
+                per_repo: EventVec::new(Vec::new()).unwrap(),
+                open_secret_alert_age_buckets: EventVec::new(Vec::new()).unwrap(),
+                total_open_secret_alerts: 0,
+                oldest_open_secret_alert_created_at: None,
+                newest_open_secret_alert_created_at: None,
+            },
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "comprehensive auth-aware ACL verification across three production stores and negative rejection"
+    )]
+    fn nats_auth_aware_acl_permits_dotted_and_denies_nondotted_subjects() {
+        use pardosa::prelude::*;
+
+        let conf = r#"
+accounts: {
+    APP: {
+        jetstream: enabled
+        users: [
+            {
+                user: "test-user"
+                password: "p@ss:word"
+                permissions: {
+                    publish: {
+                        allow: ["gh-report.>", "$JS.API.>"]
+                    }
+                    subscribe: {
+                        allow: [">"]
+                    }
+                }
+            }
+        ]
+    }
+}
+"#;
+        let Some(server) = crate::store::tests::TestNatsServer::spawn_with_auth_config(conf) else {
+            return;
+        };
+
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+
+        let endpoint = server.url.strip_prefix("nats://").expect("nats url prefix");
+        let auth_url = format!("nats://test-user:p%40ss%3Aword@{endpoint}");
+
+        let nats_config = NatsStoreConfig::for_org("test-acl-org", &auth_url).unwrap();
+        let org_nats_config = nats_config.org_events();
+        let team_nats_config = nats_config.team_events();
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let events_dir = tmp.path().join("events");
+
+        let events_store = open_event_store(
+            &events_dir,
+            PardosaBackend::Nats,
+            &nats_config,
+            rt.handle(),
+            Some(&rt),
+        )
+        .expect("open_event_store under gh-report.> must succeed");
+        let domain_event = crate::store::tests::synthetic_domain_event(1);
+        events_store
+            .record("domain-1", domain_event.clone())
+            .expect("record event");
+        drop(events_store);
+
+        let reloaded_events = open_event_store(
+            &events_dir,
+            PardosaBackend::Nats,
+            &nats_config,
+            rt.handle(),
+            Some(&rt),
+        )
+        .expect("reopen event store under gh-report.> must succeed");
+        let replayed = reloaded_events.events().unwrap();
+        assert_eq!(replayed.len(), 1);
+        assert!(!replayed[0].0);
+        assert_eq!(replayed[0].1, domain_event);
+
+        let org_store = open_org_event_store(
+            &events_dir,
+            PardosaBackend::Nats,
+            &org_nats_config,
+            rt.handle(),
+            Some(&rt),
+        )
+        .expect("open_org_event_store under gh-report.> must succeed");
+        let org_event = synthetic_org_state("test-acl-org");
+        org_store
+            .record("test-acl-org", org_event.clone())
+            .expect("record org event");
+        drop(org_store);
+
+        let reloaded_org = open_org_event_store(
+            &events_dir,
+            PardosaBackend::Nats,
+            &org_nats_config,
+            rt.handle(),
+            Some(&rt),
+        )
+        .expect("reopen org store under gh-report.> must succeed");
+        let mut replayed_org = Vec::new();
+        reloaded_org
+            .fold_events((), |(), e| replayed_org.push(e.clone()))
+            .unwrap();
+        assert_eq!(replayed_org.len(), 1);
+        assert_eq!(replayed_org[0], org_event);
+
+        let team_store = open_team_event_store(
+            &events_dir,
+            PardosaBackend::Nats,
+            &team_nats_config,
+            rt.handle(),
+            Some(&rt),
+        )
+        .expect("open_team_event_store under gh-report.> must succeed");
+        let team_event = crate::store::tests::synthetic_team_state("test-acl-org", "test-team");
+        team_store
+            .record("test-acl-org/test-team", team_event.clone())
+            .expect("record team event");
+        drop(team_store);
+
+        let reloaded_team = open_team_event_store(
+            &events_dir,
+            PardosaBackend::Nats,
+            &team_nats_config,
+            rt.handle(),
+            Some(&rt),
+        )
+        .expect("reopen team store under gh-report.> must succeed");
+        let mut replayed_team = Vec::new();
+        reloaded_team
+            .fold_events((), |(), e| replayed_team.push(e.clone()))
+            .unwrap();
+        assert_eq!(replayed_team.len(), 1);
+        assert_eq!(replayed_team[0], team_event);
+
+        let server_errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let server_errors_cb = Arc::clone(&server_errors);
+        let client = rt
+            .block_on(
+                async_nats::ConnectOptions::new()
+                    .user_and_password("test-user".to_string(), "p@ss:word".to_string())
+                    .event_callback(move |event| {
+                        let errors = Arc::clone(&server_errors_cb);
+                        async move {
+                            if let async_nats::Event::ServerError(err) = event {
+                                errors.lock().unwrap().push(err.to_string());
+                            }
+                        }
+                    })
+                    .connect(&server.url),
+            )
+            .expect("authenticated connect");
+
+        let bad_stem = "gh-report-org_4d617474696c73796e6574-v22-bad";
+        let bad_adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            bad_stem,
+            Arc::clone(&rt),
+        );
+        let bad_claim = OwnershipClaimRecord {
+            epoch: 1,
+            machine_id: [0u8; 16],
+            boot_id: [0u8; 16],
+            process_id: u64::from(std::process::id()),
+            process_start_time_ns: 0,
+            claim_time_ns: 0,
+            operator_label: "test-auth-denial".to_string(),
+        };
+        let bad_result = bad_adapter.create(&bad_claim);
+        let Err(bad_err) = bad_result else {
+            panic!("creation with non-dotted subject must fail on permission violation");
+        };
+        let err_text = bad_err.to_string();
+        assert!(
+            err_text.contains("failed to ack container header on meta stream")
+                || err_text.contains("timed out")
+                || err_text.contains("Permissions Violation"),
+            "error must identify permission denial or ack timeout from forbidden subject: {err_text}"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut captured = Vec::new();
+        let expected_meta_pattern =
+            format!("Permissions Violation for Publish to \"{bad_stem}_meta\"");
+        while std::time::Instant::now() < deadline {
+            captured = server_errors.lock().unwrap().clone();
+            if captured.iter().any(|e| e.contains(&expected_meta_pattern)) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            captured
+                .iter()
+                .any(|err| err.contains(&expected_meta_pattern)),
+            "must capture broker Permissions Violation event for exact meta subject {expected_meta_pattern}: {captured:?}"
+        );
+
+        let bad_data_stem = "gh-report-org_4d617474696c73796e6574-v22-baddata";
+        let bad_data_adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            bad_data_stem,
+            Arc::clone(&rt),
+        )
+        .with_subjects(
+            "gh-report.org_4d617474696c73796e6574.v22.baddata.meta".to_string(),
+            format!("{bad_data_stem}_data"),
+        );
+        let bad_data_claim = OwnershipClaimRecord {
+            operator_label: "test-auth-data-denial".to_string(),
+            ..bad_claim
+        };
+        let bad_data_result = bad_data_adapter.create(&bad_data_claim);
+        assert!(
+            bad_data_result.is_err(),
+            "creation with forbidden data subject must fail on header publish"
+        );
+
+        let expected_data_pattern =
+            format!("Permissions Violation for Publish to \"{bad_data_stem}_data\"");
+        let deadline_data = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut captured_data = Vec::new();
+        while std::time::Instant::now() < deadline_data {
+            captured_data = server_errors.lock().unwrap().clone();
+            if captured_data
+                .iter()
+                .any(|e| e.contains(&expected_data_pattern))
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            captured_data
+                .iter()
+                .any(|err| err.contains(&expected_data_pattern)),
+            "must capture broker Permissions Violation event for exact data subject {expected_data_pattern}: {captured_data:?}"
+        );
+
+        let js = rt.block_on(async { async_nats::jetstream::new(client) });
+        let mut stream = rt
+            .block_on(async { js.get_stream(format!("{bad_stem}_meta")).await })
+            .expect("stream was created on broker");
+        let stream_info = rt
+            .block_on(async { stream.info().await })
+            .expect("stream info query");
+        assert_eq!(
+            stream_info.state.messages, 0,
+            "stream with non-dotted subject must retain zero messages due to ACL publish rejection"
+        );
+
+        let mut data_stream = rt
+            .block_on(async { js.get_stream(format!("{bad_data_stem}_data")).await })
+            .expect("data stream was created on broker");
+        let data_stream_info = rt
+            .block_on(async { data_stream.info().await })
+            .expect("data stream info query");
+        assert_eq!(
+            data_stream_info.state.messages, 0,
+            "stream with non-dotted data subject must retain zero messages due to ACL publish rejection"
+        );
     }
 
     #[test]
