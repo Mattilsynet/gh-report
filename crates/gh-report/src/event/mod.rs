@@ -48,6 +48,15 @@ use limits::{
     MAX_TOKEN_SCOPES, MAX_TOPIC, MAX_TOPICS, MAX_UNAVAILABLE_CAPABILITIES, MAX_URL,
 };
 
+/// Native schema version for [`DomainEvent`].
+pub const DOMAIN_EVENT_SCHEMA_VERSION: u32 = 2;
+
+/// Native schema version for [`OrgStateCaptured`].
+pub const ORG_STATE_SCHEMA_VERSION: u32 = 2;
+
+/// Native schema version for [`TeamStateCaptured`].
+pub const TEAM_STATE_SCHEMA_VERSION: u32 = 2;
+
 macro_rules! impl_pardosa_enum {
     ($ty:ident { $($variant:ident = $val:expr),* $(,)? }) => {
         impl PardosaType for $ty {
@@ -723,7 +732,7 @@ impl_pardosa_struct!(OrgStateCaptured {
 
 impl PardosaSchema for OrgStateCaptured {
     fn schema_version() -> u32 {
-        1
+        ORG_STATE_SCHEMA_VERSION
     }
     fn schema_descriptor() -> DescriptorNode {
         Self::descriptor_node()
@@ -904,7 +913,7 @@ impl_pardosa_struct!(TeamStateCaptured {
 
 impl PardosaSchema for TeamStateCaptured {
     fn schema_version() -> u32 {
-        1
+        TEAM_STATE_SCHEMA_VERSION
     }
     fn schema_descriptor() -> DescriptorNode {
         Self::descriptor_node()
@@ -1212,7 +1221,7 @@ impl PardosaType for DomainEvent {
 
 impl PardosaSchema for DomainEvent {
     fn schema_version() -> u32 {
-        1
+        DOMAIN_EVENT_SCHEMA_VERSION
     }
     fn schema_descriptor() -> DescriptorNode {
         Self::descriptor_node()
@@ -1750,11 +1759,11 @@ mod tests {
         "cc4812aa267f39c6d430fc32d7dacf8e6af78595e178569bf79ea14364f846d5";
 
     const TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
-        "436df142b24b49432d60b4b2cdc77015c9d8d7c86ffa4892ec128eb39e92a8a1";
+        "c41b252a6cff87dadf9df198575ad5af88559f1131bb8aee8b20a12067352458";
     const TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY: &str =
-        "f8137e21373fd0bf085923aad35b241813ed85c56ef4e7ea45d586fee37bc384";
+        "2ec6b5d4f386afbe6a73fe4e0c962897e477316af3137591927bb18a31b4c38f";
     const TRUTHFUL_TEAM_STATE_SCHEMA_IDENTITY: &str =
-        "7b304fbf67dd4f8f45a08e47c9ce961edb48bf5721905204ec8770872ca84a67";
+        "fa78ebd335983b4db1d2cf12f0fd21deed7744dc1d9d1668aa6cc9721fc42321";
     const TRUTHFUL_SWEEP_TIMEOUT_SCHEMA_IDENTITY: &str =
         "55b9b99b6408ad5696d2e0ce5cc85c0f28ffd93c1f7ab230d524ae4d329ff44e";
 

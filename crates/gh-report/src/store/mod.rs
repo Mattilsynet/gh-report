@@ -86,11 +86,32 @@ struct StoreInner<E> {
     cached: Mutex<Vec<(bool, [u8; 16], E)>>,
 }
 
+fn verify_schema_descriptor<E: PardosaSchema>(
+    actual: Option<&SchemaDescriptor>,
+) -> Result<(), StoreError> {
+    let expected = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
+    match actual {
+        Some(actual) if actual.identity() == expected.identity() => Ok(()),
+        Some(actual) => Err(StoreError::Infrastructure(format!(
+            "schema descriptor identity mismatch: expected {}, got {}",
+            expected.identity().to_hex(),
+            actual.identity().to_hex(),
+        ))),
+        None => Err(StoreError::Infrastructure(
+            "missing schema descriptor in store metadata: refusing to open unadmitted store"
+                .to_string(),
+        )),
+    }
+}
+
 impl<E: PardosaSchema> StoreInner<E> {
     fn create_pgno(path: &Path, label: &'static str) -> Result<Self, StoreError> {
         let adapter = FileStorageAdapter::new(path);
         let claim = default_claim(1, label);
-        let _session = adapter.create(&claim)?;
+        let mut session = adapter.create(&claim)?;
+        let desc = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
+        session.set_schema_descriptor(&desc)?;
+        session.sync()?;
         Ok(Self {
             backend: StorageBackend::File(path.to_path_buf()),
             cached: Mutex::new(Vec::new()),
@@ -100,6 +121,7 @@ impl<E: PardosaSchema> StoreInner<E> {
     fn open_pgno(path: &Path, _label: &'static str) -> Result<Self, StoreError> {
         let adapter = FileStorageAdapter::new(path);
         let mut reader = adapter.open_read()?;
+        verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
         let envelopes = reader.read_all_envelopes()?;
         let mut cached = Vec::with_capacity(envelopes.len());
         for env in envelopes {
@@ -114,7 +136,10 @@ impl<E: PardosaSchema> StoreInner<E> {
 
     fn create_nats(adapter: NatsStorageAdapter, label: &'static str) -> Result<Self, StoreError> {
         let claim = default_claim(1, label);
-        let _session = adapter.create(&claim)?;
+        let mut session = adapter.create(&claim)?;
+        let desc = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
+        session.set_schema_descriptor(&desc)?;
+        session.sync()?;
         Ok(Self {
             backend: StorageBackend::Nats(Box::new(adapter)),
             cached: Mutex::new(Vec::new()),
@@ -123,6 +148,7 @@ impl<E: PardosaSchema> StoreInner<E> {
 
     fn open_nats(adapter: NatsStorageAdapter, _label: &'static str) -> Result<Self, StoreError> {
         let mut reader = adapter.open_read()?;
+        verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
         let envelopes = reader.read_all_envelopes()?;
         let mut cached = Vec::with_capacity(envelopes.len());
         for env in envelopes {
@@ -138,6 +164,7 @@ impl<E: PardosaSchema> StoreInner<E> {
     fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
         let adapter = FileStorageAdapter::new(path);
         let mut reader = adapter.open_read()?;
+        verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
         let envelopes = reader.read_all_envelopes()?;
         let mut cached = Vec::with_capacity(envelopes.len());
         for env in envelopes {
@@ -710,5 +737,71 @@ mod tests {
                 .expect("team fold"),
             1
         );
+    }
+
+    #[test]
+    fn open_pgno_rejects_unadmitted_store_without_schema_descriptor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("unadmitted.pgno");
+        let adapter = FileStorageAdapter::new(&path);
+        let claim = default_claim(1, "unadmitted");
+        let session = adapter.create(&claim).expect("create bare store");
+        drop(session);
+
+        let Err(err) = NativeStore::open_pgno(&path) else {
+            panic!("opening unadmitted store must fail closed");
+        };
+        assert!(matches!(
+            err,
+            StoreError::Infrastructure(ref msg)
+                if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
+        ));
+    }
+
+    #[test]
+    fn open_pgno_rejects_mismatched_schema_descriptor_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mismatched.pgno");
+        let adapter = FileStorageAdapter::new(&path);
+        let claim = default_claim(1, "mismatched");
+        let mut session = adapter.create(&claim).expect("create bare store");
+        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+        session
+            .set_schema_descriptor(&mismatched_desc)
+            .expect("set mismatched descriptor");
+        session.sync().expect("sync mismatched descriptor");
+        drop(session);
+
+        let Err(err) = NativeStore::open_pgno(&path) else {
+            panic!("opening mismatched store must fail closed");
+        };
+        assert!(matches!(
+            err,
+            StoreError::Infrastructure(ref msg)
+                if msg.contains("schema descriptor identity mismatch: expected ")
+        ));
+    }
+
+    #[test]
+    fn resync_pgno_rejects_unadmitted_or_mismatched_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let valid_path = dir.path().join("valid.pgno");
+        let unadmitted_path = dir.path().join("unadmitted.pgno");
+
+        let store = NativeStore::create_pgno(&valid_path).expect("create valid store");
+
+        let adapter = FileStorageAdapter::new(&unadmitted_path);
+        let claim = default_claim(1, "unadmitted");
+        let session = adapter.create(&claim).expect("create bare store");
+        drop(session);
+
+        let err = store
+            .resync_pgno_from_authoritative(&unadmitted_path)
+            .expect_err("resync against unadmitted store must fail closed");
+        assert!(matches!(
+            err,
+            StoreError::Infrastructure(ref msg)
+                if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
+        ));
     }
 }

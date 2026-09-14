@@ -77,6 +77,9 @@ impl PartialEq for Repository {
 impl Eq for Repository {}
 
 /// A nonempty repository update spelling, preserved without timestamp parsing.
+///
+/// Native event storage bounds this spelling to 128 bytes (`MAX_TIMESTAMP_TEXT`
+/// in [`crate::event::limits::MAX_TIMESTAMP_TEXT`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct UpdatedAt(String);

@@ -7,7 +7,7 @@ use crate::domain::checks::{CollectionFailureReason, ExclusionReason};
 use crate::domain::status::CollectionStatus;
 
 /// A rate metric with numerator, denominator, and optional rate percentage.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RateMetric {
     /// Number of repositories that satisfy the metric condition.
     pub numerator: u32,
@@ -23,6 +23,32 @@ pub struct RateMetric {
     /// from untrusted external API input.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct RateMetricHelper {
+    numerator: u32,
+    denominator: u32,
+    #[serde(default)]
+    #[expect(
+        dead_code,
+        reason = "consumed to prevent serde(flatten) capturing rate in extra"
+    )]
+    rate: Option<serde_json::Value>,
+    #[serde(flatten)]
+    extra: HashMap<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for RateMetric {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let helper = RateMetricHelper::deserialize(deserializer)?;
+        let mut metric = Self::new(helper.numerator, helper.denominator);
+        metric.extra = helper.extra;
+        Ok(metric)
+    }
 }
 
 impl RateMetric {
@@ -648,6 +674,41 @@ mod tests {
     fn rate_metric_rounds_to_one_decimal() {
         let metric = RateMetric::new(1, 3);
         assert_eq!(metric.rate, Some(33.3));
+    }
+
+    #[test]
+    fn rate_metric_deserialize_normalizes_zero_denominator_to_none() {
+        let json = serde_json::json!({
+            "numerator": 5,
+            "denominator": 0,
+            "rate": 50.0,
+            "extra_key": "custom_val"
+        });
+        let metric: RateMetric = serde_json::from_value(json).expect("valid json");
+        assert_eq!(metric.numerator, 5);
+        assert_eq!(metric.denominator, 0);
+        assert_eq!(metric.rate, None);
+        assert_eq!(
+            metric.extra.get("extra_key"),
+            Some(&serde_json::json!("custom_val"))
+        );
+        assert!(!metric.extra.contains_key("rate"));
+    }
+
+    #[test]
+    fn rate_metric_deserialize_recomputes_rate() {
+        let json = serde_json::json!({
+            "numerator": 1,
+            "denominator": 3,
+            "rate": 99.9,
+            "context": 42
+        });
+        let metric: RateMetric = serde_json::from_value(json).expect("valid json");
+        assert_eq!(metric.numerator, 1);
+        assert_eq!(metric.denominator, 3);
+        assert_eq!(metric.rate, Some(33.3));
+        assert_eq!(metric.extra.get("context"), Some(&serde_json::json!(42)));
+        assert!(!metric.extra.contains_key("rate"));
     }
 
     #[test]

@@ -130,18 +130,31 @@ fn process_alert(
         .get("node_id")
         .and_then(serde_json::Value::as_str);
 
-    let matched_repo = num_id
-        .as_ref()
-        .and_then(|id| known_scope.get(id))
-        .or_else(|| node_id.and_then(|nid| known_scope.get(nid)));
+    let numeric_match = num_id.as_ref().and_then(|id| known_scope.get(id));
+    let node_match = node_id.and_then(|nid| known_scope.get(nid));
 
-    let Some(repo) = matched_repo else {
-        trace!(
-            num_id = ?num_id,
-            node_id = ?node_id,
-            "skipping alert for repository outside inventory scope"
-        );
-        return;
+    let repo = match (numeric_match, node_match) {
+        (Some(repo_num), Some(repo_node)) if repo_num.id != repo_node.id => {
+            warn!(
+                num_id = ?num_id,
+                node_id = ?node_id,
+                repo_num_id = %repo_num.id,
+                repo_node_id = %repo_node.id,
+                "conflicting repository correlation between numeric id and node_id; degrading summary to prevent false alert-free classification"
+            );
+            summary.collection_status = CollectionStatus::Unavailable;
+            summary.collection_reason = Some("alert_coordinate_conflict".to_string());
+            return;
+        }
+        (Some(repo), _) | (_, Some(repo)) => repo,
+        (None, None) => {
+            trace!(
+                num_id = ?num_id,
+                node_id = ?node_id,
+                "skipping alert for repository outside inventory scope"
+            );
+            return;
+        }
     };
 
     let key = scope_key(repo);
@@ -889,6 +902,71 @@ mod tests {
         let repo_summary = summary.per_repo.get(&scope_key(&repo));
         assert!(repo_summary.is_some());
         assert_eq!(repo_summary.unwrap().open_alert_count, 1);
+    }
+
+    #[test]
+    fn process_alert_rejects_conflicting_numeric_and_node_id_correlation() {
+        let repo_a = sample_repo("11111", Some("R_node_AAA"), "repo-a");
+        let repo_b = sample_repo("22222", Some("R_node_BBB"), "repo-b");
+
+        let mut known_scope = HashMap::new();
+        known_scope.insert(scope_key(&repo_a), &repo_a);
+        if let Some(ref node_id) = repo_a.node_id {
+            known_scope.insert(node_id.clone(), &repo_a);
+        }
+        known_scope.insert(scope_key(&repo_b), &repo_b);
+        if let Some(ref node_id) = repo_b.node_id {
+            known_scope.insert(node_id.clone(), &repo_b);
+        }
+
+        let alert = serde_json::json!({
+            "repository": {
+                "id": 11111,
+                "node_id": "R_node_BBB"
+            },
+            "created_at": "2026-06-15T14:30:45Z"
+        });
+
+        let mut summary = OrgAlertSummary {
+            collection_status: CollectionStatus::Success,
+            collection_reason: None,
+            per_repo: HashMap::new(),
+            open_secret_alert_age_buckets: empty_age_buckets(),
+            total_open_secret_alerts: 0,
+            oldest_open_secret_alert_created_at: None,
+            newest_open_secret_alert_created_at: None,
+        };
+
+        let now = Timestamp::now();
+        process_alert(&alert, &known_scope, &mut summary, now);
+
+        assert_eq!(summary.total_open_secret_alerts, 0);
+        assert!(summary.per_repo.is_empty());
+        assert_eq!(summary.collection_status, CollectionStatus::Unavailable);
+        assert_eq!(
+            summary.collection_reason.as_deref(),
+            Some("alert_coordinate_conflict")
+        );
+
+        let eval_a = evaluate_with_org_summary(
+            &repo_a,
+            "2026-06-15T15:00:00Z",
+            &summary,
+            Some(SecretScanningStatus::Enabled),
+        );
+        assert_eq!(eval_a.has_open_alerts, None);
+        assert!(!eval_a.alerts_observable);
+        assert_eq!(eval_a.reason.as_deref(), Some("alert_coordinate_conflict"));
+
+        let eval_b = evaluate_with_org_summary(
+            &repo_b,
+            "2026-06-15T15:00:00Z",
+            &summary,
+            Some(SecretScanningStatus::Enabled),
+        );
+        assert_eq!(eval_b.has_open_alerts, None);
+        assert!(!eval_b.alerts_observable);
+        assert_eq!(eval_b.reason.as_deref(), Some("alert_coordinate_conflict"));
     }
 
     fn test_client(base_url: &str) -> GitHubClient {
