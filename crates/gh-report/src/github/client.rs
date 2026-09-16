@@ -42,138 +42,410 @@ use crate::github::route_template::{route_of_target, route_template};
 use cherry_pit_wq::BackoffRegulator;
 use std::num::NonZeroU32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PreDispatchFailure {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PreDispatchFailure {
     HaltedBeforeDispatch,
-    CredentialRefreshFailed,
+    CredentialRefreshFailed { cause: String },
     BudgetAcquireCancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DispatchedFailure {
-    CredentialRefreshFailed,
-    RateLimitHalt,
-    HttpError,
-    RetryExhausted,
+pub(crate) enum MalformedPayloadKind {
+    InvalidJson,
+    EmptyBody,
+    NotAnArray,
+    InvalidUtf8,
 }
 
-mod succeeded {
-    use super::ApiOutcome;
-
-    pub(super) struct SucceededOutcome(ApiOutcome);
-
-    impl SucceededOutcome {
-        pub(super) fn new(outcome: ApiOutcome) -> Result<Self, ApiOutcome> {
-            match outcome {
-                ApiOutcome::Success { .. } => Ok(Self(outcome)),
-                ApiOutcome::Failure { .. } => Err(outcome),
-            }
-        }
-
-        pub(super) fn status_code(&self) -> Option<u16> {
-            self.0.status_code()
-        }
-
-        pub(super) fn into_outcome(self) -> ApiOutcome {
-            self.0
-        }
-    }
-}
-
-use succeeded::SucceededOutcome;
-
-enum RequestRun {
-    NeverDispatched {
-        outcome: ApiOutcome,
-        cause: PreDispatchFailure,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RequestFailureKind {
+    CredentialRefreshFailed {
+        cause: String,
     },
-    Succeeded {
-        outcome: SucceededOutcome,
-        attempts: NonZeroU32,
+    Transport {
+        error: String,
+        timeout: bool,
     },
-    Failed {
-        outcome: ApiOutcome,
-        attempts: NonZeroU32,
-        cause: DispatchedFailure,
+    Http {
+        status_code: u16,
+        error: String,
+        retryable: bool,
+    },
+    BodyRead {
+        status_code: Option<u16>,
+        error: String,
+    },
+    MalformedPayload {
+        status_code: u16,
+        kind: MalformedPayloadKind,
+        error: String,
     },
 }
 
-impl RequestRun {
-    fn never_dispatched(outcome: ApiOutcome, cause: PreDispatchFailure) -> Self {
-        RequestRun::NeverDispatched { outcome, cause }
-    }
-
-    fn dispatched(outcome: ApiOutcome, attempt: u32, cause: DispatchedFailure) -> Self {
-        RequestRun::Failed {
-            outcome,
-            attempts: attempts_after(attempt),
-            cause,
-        }
-    }
-
-    fn dispatched_terminal(outcome: ApiOutcome, attempt: u32) -> Self {
-        let attempts = attempts_after(attempt);
-        let retryable = outcome.is_retryable();
-        match SucceededOutcome::new(outcome) {
-            Ok(outcome) => RequestRun::Succeeded { outcome, attempts },
-            Err(outcome) => RequestRun::Failed {
-                outcome,
-                attempts,
-                cause: if retryable {
-                    DispatchedFailure::RetryExhausted
-                } else {
-                    DispatchedFailure::HttpError
-                },
-            },
-        }
-    }
-
-    fn outcome(self) -> ApiOutcome {
+impl RequestFailureKind {
+    pub(crate) fn status_code(&self) -> Option<u16> {
         match self {
-            RequestRun::NeverDispatched { outcome, .. } | RequestRun::Failed { outcome, .. } => {
-                outcome
+            Self::CredentialRefreshFailed { .. } | Self::Transport { .. } => None,
+            Self::Http { status_code, .. } | Self::MalformedPayload { status_code, .. } => {
+                Some(*status_code)
             }
-            RequestRun::Succeeded { outcome, .. } => outcome.into_outcome(),
+            Self::BodyRead { status_code, .. } => *status_code,
+        }
+    }
+
+    pub(crate) fn is_retryable(&self) -> bool {
+        match self {
+            Self::Transport { .. } => true,
+            Self::Http { retryable, .. } => *retryable,
+            Self::CredentialRefreshFailed { .. }
+            | Self::BodyRead { .. }
+            | Self::MalformedPayload { .. } => false,
+        }
+    }
+
+    pub(crate) fn into_api_outcome(self) -> ApiOutcome {
+        match self {
+            Self::CredentialRefreshFailed { cause } => {
+                ApiOutcome::failure(None, format!("credential refresh failed: {cause}"), false)
+            }
+            Self::Transport { error, timeout } => ApiOutcome::failure(
+                None,
+                if timeout {
+                    "timeout".to_string()
+                } else {
+                    error
+                },
+                true,
+            ),
+            Self::Http {
+                status_code,
+                error,
+                retryable,
+            } => ApiOutcome::failure(Some(status_code), error, retryable),
+            Self::BodyRead { status_code, error } => {
+                ApiOutcome::failure(status_code, format!("body read error: {error}"), false)
+            }
+            Self::MalformedPayload {
+                status_code, error, ..
+            } => ApiOutcome::failure(Some(status_code), error, false),
+        }
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "prerequisite types/methods consumed by subsequent org/native missions"
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RequestClassification {
+    Success {
+        status_code: u16,
+        truncated: bool,
+    },
+    MalformedPayload {
+        status_code: u16,
+        kind: MalformedPayloadKind,
+    },
+    BodyRead {
+        status_code: Option<u16>,
+    },
+    HttpError {
+        status_code: Option<u16>,
+    },
+    TransportError,
+    CredentialRefreshFailed,
+    BudgetAcquireCancelled,
+    HaltedBeforeDispatch,
+}
+
+#[derive(Debug)]
+enum AttemptResult {
+    Success {
+        status_code: u16,
+        data: Option<serde_json::Value>,
+        headers: Option<HashMap<String, String>>,
+        truncated: bool,
+    },
+    Failure(Box<RequestFailureKind>),
+}
+
+impl AttemptResult {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Success { .. } => false,
+            Self::Failure(f) => f.is_retryable(),
         }
     }
 
     fn status_code(&self) -> Option<u16> {
         match self {
-            RequestRun::NeverDispatched { outcome, .. } | RequestRun::Failed { outcome, .. } => {
-                outcome.status_code()
-            }
-            RequestRun::Succeeded { outcome, .. } => outcome.status_code(),
+            Self::Success { status_code, .. } => Some(*status_code),
+            Self::Failure(f) => f.status_code(),
         }
     }
 
-    fn attempts(&self) -> u32 {
+    #[cfg(test)]
+    fn is_ok(&self) -> bool {
+        matches!(self, Self::Success { .. })
+    }
+
+    #[cfg(test)]
+    fn data(&self) -> Option<&serde_json::Value> {
         match self {
-            RequestRun::NeverDispatched { .. } => 0,
-            RequestRun::Succeeded { attempts, .. } | RequestRun::Failed { attempts, .. } => {
+            Self::Success { data, .. } => data.as_ref(),
+            Self::Failure(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn headers(&self) -> Option<&HashMap<String, String>> {
+        match self {
+            Self::Success { headers, .. } => headers.as_ref(),
+            Self::Failure(_) => None,
+        }
+    }
+
+    fn into_api_outcome(self) -> ApiOutcome {
+        match self {
+            Self::Success {
+                status_code,
+                data,
+                headers,
+                truncated,
+            } => ApiOutcome::Success {
+                status_code,
+                data,
+                headers,
+                truncated,
+            },
+            Self::Failure(f) => f.into_api_outcome(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum RunResult {
+    NeverDispatched(PreDispatchFailure),
+    Success {
+        status_code: u16,
+        data: Option<serde_json::Value>,
+        headers: Option<HashMap<String, String>>,
+        truncated: bool,
+        attempts: NonZeroU32,
+    },
+    Failed {
+        failure: Box<RequestFailureKind>,
+        attempts: NonZeroU32,
+    },
+}
+
+pub(crate) struct RequestRun {
+    result: RunResult,
+    halt_triggered: bool,
+}
+
+impl RequestRun {
+    fn never_dispatched(cause: PreDispatchFailure) -> Self {
+        Self {
+            result: RunResult::NeverDispatched(cause),
+            halt_triggered: false,
+        }
+    }
+
+    fn from_attempt(result: AttemptResult, attempt: u32, halt_triggered: bool) -> Self {
+        let attempts = attempts_after(attempt);
+        let run_result = match result {
+            AttemptResult::Success {
+                status_code,
+                data,
+                headers,
+                truncated,
+            } => RunResult::Success {
+                status_code,
+                data,
+                headers,
+                truncated,
+                attempts,
+            },
+            AttemptResult::Failure(failure) => RunResult::Failed { failure, attempts },
+        };
+        Self {
+            result: run_result,
+            halt_triggered,
+        }
+    }
+
+    pub(crate) fn is_success(&self) -> bool {
+        matches!(self.result, RunResult::Success { .. })
+    }
+
+    #[allow(
+        dead_code,
+        reason = "prerequisite types/methods consumed by subsequent org/native missions"
+    )]
+    pub(crate) fn is_truncated(&self) -> bool {
+        match &self.result {
+            RunResult::Success { truncated, .. } => *truncated,
+            _ => false,
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "prerequisite types/methods consumed by subsequent org/native missions"
+    )]
+    pub(crate) fn is_halt_triggered(&self) -> bool {
+        self.halt_triggered
+    }
+
+    #[allow(
+        dead_code,
+        reason = "prerequisite types/methods consumed by subsequent org/native missions"
+    )]
+    pub(crate) fn is_retries_exhausted(&self) -> bool {
+        !self.halt_triggered
+            && match &self.result {
+                RunResult::Failed { failure, .. } => failure.is_retryable(),
+                _ => false,
+            }
+    }
+
+    pub(crate) fn attempts(&self) -> u32 {
+        match &self.result {
+            RunResult::NeverDispatched(_) => 0,
+            RunResult::Success { attempts, .. } | RunResult::Failed { attempts, .. } => {
                 attempts.get()
             }
         }
     }
 
-    fn terminal_category(&self) -> &'static str {
-        match self {
-            RequestRun::NeverDispatched { cause, .. } => match cause {
-                PreDispatchFailure::HaltedBeforeDispatch => "halted_before_dispatch",
-                PreDispatchFailure::CredentialRefreshFailed => "credential_refresh_failed",
-                PreDispatchFailure::BudgetAcquireCancelled => "budget_acquire_cancelled",
+    pub(crate) fn status_code(&self) -> Option<u16> {
+        match &self.result {
+            RunResult::NeverDispatched(_) => None,
+            RunResult::Success { status_code, .. } => Some(*status_code),
+            RunResult::Failed { failure, .. } => failure.status_code(),
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "prerequisite types/methods consumed by subsequent org/native missions"
+    )]
+    pub(crate) fn failure_kind(&self) -> Option<&RequestFailureKind> {
+        match &self.result {
+            RunResult::Failed { failure, .. } => Some(failure),
+            _ => None,
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "prerequisite types/methods consumed by subsequent org/native missions"
+    )]
+    pub(crate) fn classification(&self) -> RequestClassification {
+        match &self.result {
+            RunResult::NeverDispatched(cause) => match cause {
+                PreDispatchFailure::HaltedBeforeDispatch => {
+                    RequestClassification::HaltedBeforeDispatch
+                }
+                PreDispatchFailure::CredentialRefreshFailed { .. } => {
+                    RequestClassification::CredentialRefreshFailed
+                }
+                PreDispatchFailure::BudgetAcquireCancelled => {
+                    RequestClassification::BudgetAcquireCancelled
+                }
             },
-            RequestRun::Succeeded { .. } => "success",
-            RequestRun::Failed { cause, .. } => match cause {
-                DispatchedFailure::CredentialRefreshFailed => "credential_refresh_failed",
-                DispatchedFailure::RateLimitHalt => "rate_limit_halt",
-                DispatchedFailure::HttpError => "http_error",
-                DispatchedFailure::RetryExhausted => "retry_exhausted",
+            RunResult::Success {
+                status_code,
+                truncated,
+                ..
+            } => RequestClassification::Success {
+                status_code: *status_code,
+                truncated: *truncated,
+            },
+            RunResult::Failed { failure, .. } => match &**failure {
+                RequestFailureKind::CredentialRefreshFailed { .. } => {
+                    RequestClassification::CredentialRefreshFailed
+                }
+                RequestFailureKind::Transport { .. } => RequestClassification::TransportError,
+                RequestFailureKind::Http { status_code, .. } => RequestClassification::HttpError {
+                    status_code: Some(*status_code),
+                },
+                RequestFailureKind::BodyRead { status_code, .. } => {
+                    RequestClassification::BodyRead {
+                        status_code: *status_code,
+                    }
+                }
+                RequestFailureKind::MalformedPayload {
+                    status_code, kind, ..
+                } => RequestClassification::MalformedPayload {
+                    status_code: *status_code,
+                    kind: *kind,
+                },
             },
         }
     }
 
-    fn is_success(&self) -> bool {
-        matches!(self, RequestRun::Succeeded { .. })
+    pub(crate) fn terminal_category(&self) -> &'static str {
+        match &self.result {
+            RunResult::NeverDispatched(cause) => match cause {
+                PreDispatchFailure::HaltedBeforeDispatch => "halted_before_dispatch",
+                PreDispatchFailure::CredentialRefreshFailed { .. } => "credential_refresh_failed",
+                PreDispatchFailure::BudgetAcquireCancelled => "budget_acquire_cancelled",
+            },
+            RunResult::Success { .. } => "success",
+            RunResult::Failed { failure, .. } => {
+                if self.halt_triggered {
+                    "rate_limit_halt"
+                } else if failure.is_retryable() {
+                    "retry_exhausted"
+                } else {
+                    match &**failure {
+                        RequestFailureKind::CredentialRefreshFailed { .. } => {
+                            "credential_refresh_failed"
+                        }
+                        RequestFailureKind::Transport { .. } => "transport_error",
+                        RequestFailureKind::Http { .. } => "http_error",
+                        RequestFailureKind::BodyRead { .. } => "body_read_error",
+                        RequestFailureKind::MalformedPayload { .. } => "malformed_payload",
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn outcome(self) -> ApiOutcome {
+        match self.result {
+            RunResult::NeverDispatched(cause) => match cause {
+                PreDispatchFailure::HaltedBeforeDispatch => ApiOutcome::failure(
+                    None,
+                    format!(
+                        "rate limit halt: remaining < {}",
+                        crate::github::rate_limit::HALT_THRESHOLD
+                    ),
+                    false,
+                ),
+                PreDispatchFailure::CredentialRefreshFailed { cause } => {
+                    ApiOutcome::failure(None, format!("credential refresh failed: {cause}"), false)
+                }
+                PreDispatchFailure::BudgetAcquireCancelled => {
+                    ApiOutcome::failure(None, "budget acquire cancelled".to_string(), false)
+                }
+            },
+            RunResult::Success {
+                status_code,
+                data,
+                headers,
+                truncated,
+                ..
+            } => ApiOutcome::Success {
+                status_code,
+                data,
+                headers,
+                truncated,
+            },
+            RunResult::Failed { failure, .. } => failure.into_api_outcome(),
+        }
     }
 }
 
@@ -209,16 +481,38 @@ pub(crate) fn truncate_error_body(body: &str) -> String {
     }
 }
 
-async fn read_body_limited(
+#[derive(Debug)]
+enum BodyReadError {
+    ContentLengthExceeded { len: u64, max_bytes: usize },
+    BodyLengthExceeded { max_bytes: usize },
+    Chunk(reqwest::Error),
+}
+
+impl std::fmt::Display for BodyReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContentLengthExceeded { len, max_bytes } => {
+                write!(
+                    f,
+                    "response Content-Length ({len}) exceeds {max_bytes} byte limit"
+                )
+            }
+            Self::BodyLengthExceeded { max_bytes } => {
+                write!(f, "response body exceeds {max_bytes} byte limit")
+            }
+            Self::Chunk(e) => write!(f, "body read error: {e}"),
+        }
+    }
+}
+
+async fn read_body_bytes_limited(
     response: reqwest::Response,
     max_bytes: usize,
-) -> Result<String, GitHubApiError> {
+) -> Result<Vec<u8>, BodyReadError> {
     if let Some(len) = response.content_length()
         && len > max_bytes as u64
     {
-        return Err(GitHubApiError::InvalidResponse {
-            reason: format!("response Content-Length ({len}) exceeds {max_bytes} byte limit"),
-        });
+        return Err(BodyReadError::ContentLengthExceeded { len, max_bytes });
     }
 
     let content_len = response.content_length().unwrap_or(0);
@@ -228,22 +522,26 @@ async fn read_body_limited(
     let mut body = Vec::with_capacity(hint);
     let mut stream = response;
 
-    while let Some(chunk) = stream
-        .chunk()
-        .await
-        .map_err(|e| GitHubApiError::InvalidResponse {
-            reason: format!("body read error: {e}"),
-        })?
-    {
+    while let Some(chunk) = stream.chunk().await.map_err(BodyReadError::Chunk)? {
         if body.len() + chunk.len() > max_bytes {
-            return Err(GitHubApiError::InvalidResponse {
-                reason: format!("response body exceeds {max_bytes} byte limit"),
-            });
+            return Err(BodyReadError::BodyLengthExceeded { max_bytes });
         }
         body.extend_from_slice(&chunk);
     }
 
-    String::from_utf8(body).map_err(|e| GitHubApiError::InvalidResponse {
+    Ok(body)
+}
+
+async fn read_body_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String, GitHubApiError> {
+    let bytes = read_body_bytes_limited(response, max_bytes)
+        .await
+        .map_err(|e| GitHubApiError::InvalidResponse {
+            reason: e.to_string(),
+        })?;
+    String::from_utf8(bytes).map_err(|e| GitHubApiError::InvalidResponse {
         reason: format!("response body is not valid UTF-8: {e}"),
     })
 }
@@ -512,14 +810,22 @@ impl GitHubClient {
         }
     }
 
-    async fn failure_outcome(&self, status: u16, response: reqwest::Response) -> ApiOutcome {
+    async fn http_failure_kind(
+        &self,
+        status: u16,
+        response: reqwest::Response,
+    ) -> RequestFailureKind {
         let retryable = matches!(status, 429 | 500 | 502 | 503 | 504);
         let response_headers = response.headers().clone();
         let body = read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES)
             .await
             .unwrap_or_default();
         self.record_secondary_limit_backoff(status, &response_headers, &body);
-        ApiOutcome::failure(Some(status), truncate_error_body(&body), retryable)
+        RequestFailureKind::Http {
+            status_code: status,
+            error: truncate_error_body(&body),
+            retryable,
+        }
     }
 
     /// Clear the rate-limit halt, allowing new requests immediately.
@@ -659,12 +965,24 @@ impl GitHubClient {
         retries: u32,
         timeout_secs: u64,
     ) -> ApiOutcome {
+        self.request_run(path, paginate, retries, timeout_secs)
+            .await
+            .outcome()
+    }
+
+    pub(crate) async fn request_run(
+        &self,
+        path: &str,
+        paginate: bool,
+        retries: u32,
+        timeout_secs: u64,
+    ) -> RequestRun {
         let started = Instant::now();
         let run = self
             .request_inner(path, paginate, retries, timeout_secs)
             .await;
         self.record_terminal_outcome(path, &run, started.elapsed());
-        run.outcome()
+        run
     }
 
     fn record_terminal_outcome(&self, path: &str, run: &RequestRun, elapsed: Duration) {
@@ -708,82 +1026,80 @@ impl GitHubClient {
         timeout_secs: u64,
     ) -> RequestRun {
         if self.is_halted() {
-            return RequestRun::never_dispatched(
-                ApiOutcome::failure(
-                    None,
-                    format!(
-                        "rate limit halt: remaining < {}",
-                        crate::github::rate_limit::HALT_THRESHOLD
-                    ),
-                    false,
-                ),
-                PreDispatchFailure::HaltedBeforeDispatch,
-            );
+            return RequestRun::never_dispatched(PreDispatchFailure::HaltedBeforeDispatch);
         }
 
         if let Err(e) = self.ensure_credential().await {
-            return RequestRun::never_dispatched(
-                ApiOutcome::failure(None, format!("credential refresh failed: {e}"), false),
-                PreDispatchFailure::CredentialRefreshFailed,
-            );
+            return RequestRun::never_dispatched(PreDispatchFailure::CredentialRefreshFailed {
+                cause: e.to_string(),
+            });
         }
 
         if !self.budget.acquire(&self.budget_cancel).await {
-            return RequestRun::never_dispatched(
-                ApiOutcome::failure(None, "budget acquire cancelled".to_string(), false),
-                PreDispatchFailure::BudgetAcquireCancelled,
-            );
+            return RequestRun::never_dispatched(PreDispatchFailure::BudgetAcquireCancelled);
         }
 
         let mut stale_token_retried = false;
         let attempts = retries + 1;
         for attempt in 0..attempts {
-            let result = if paginate {
-                self.request_paginated(path, timeout_secs, attempt).await
+            let attempt_result = if paginate {
+                Box::pin(self.request_paginated(path, timeout_secs, attempt)).await
             } else {
-                self.request_single(path, timeout_secs, attempt).await
+                Box::pin(self.request_single(path, timeout_secs, attempt)).await
             };
 
-            if self.rate_limit.should_halt() {
+            let halt_triggered = self.rate_limit.should_halt();
+            if halt_triggered {
                 self.note_rate_limit_halt();
-                return RequestRun::dispatched(result, attempt, DispatchedFailure::RateLimitHalt);
+                return RequestRun::from_attempt(attempt_result, attempt, true);
             }
 
-            if result.status_code() == Some(401) && !stale_token_retried {
+            if attempt_result.status_code() == Some(401)
+                && !stale_token_retried
+                && attempt < attempts - 1
+            {
                 stale_token_retried = true;
                 if let Err(e) = self.ensure_credential().await {
-                    return RequestRun::dispatched(
-                        ApiOutcome::failure(None, format!("credential refresh failed: {e}"), false),
+                    return RequestRun::from_attempt(
+                        AttemptResult::Failure(Box::new(
+                            RequestFailureKind::CredentialRefreshFailed {
+                                cause: e.to_string(),
+                            },
+                        )),
                         attempt,
-                        DispatchedFailure::CredentialRefreshFailed,
+                        false,
                     );
                 }
                 continue;
             }
 
-            if result.is_retryable() && attempt < attempts - 1 {
-                if result.status_code() == Some(429) {
+            if attempt_result.is_retryable() && attempt < attempts - 1 {
+                if attempt_result.status_code() == Some(429) {
                     self.rate_limit_warnings.fetch_add(1, Ordering::Relaxed);
                 }
                 let backoff = self.backoff_delay(attempt);
                 debug!(
                     backoff_ms = backoff.as_millis(),
                     attempt,
-                    status_code = ?result.status_code(),
+                    status_code = ?attempt_result.status_code(),
                     "retrying after backoff"
                 );
                 tokio::time::sleep(backoff).await;
                 continue;
             }
 
-            return RequestRun::dispatched_terminal(result, attempt);
+            return RequestRun::from_attempt(attempt_result, attempt, false);
         }
 
-        RequestRun::Failed {
-            outcome: ApiOutcome::failure(None, "retry exhaustion".to_string(), false),
-            attempts: NonZeroU32::new(attempts).unwrap_or(NonZeroU32::MIN),
-            cause: DispatchedFailure::RetryExhausted,
-        }
+        RequestRun::from_attempt(
+            AttemptResult::Failure(Box::new(RequestFailureKind::Http {
+                status_code: 401,
+                error: "unauthorized".to_string(),
+                retryable: false,
+            })),
+            attempts.saturating_sub(1),
+            false,
+        )
     }
 
     fn note_rate_limit_halt(&self) {
@@ -848,13 +1164,15 @@ impl GitHubClient {
         }
     }
 
-    async fn request_single(&self, path: &str, timeout_secs: u64, attempt: u32) -> ApiOutcome {
+    async fn request_single(&self, path: &str, timeout_secs: u64, attempt: u32) -> AttemptResult {
         self.request_single_inner(path, timeout_secs, false, attempt)
             .await
     }
 
     async fn request_single_with_headers(&self, path: &str, timeout_secs: u64) -> ApiOutcome {
-        self.request_single_inner(path, timeout_secs, true, 0).await
+        self.request_single_inner(path, timeout_secs, true, 0)
+            .await
+            .into_api_outcome()
     }
 
     async fn request_single_inner(
@@ -863,7 +1181,7 @@ impl GitHubClient {
         timeout_secs: u64,
         capture_headers: bool,
         attempt: u32,
-    ) -> ApiOutcome {
+    ) -> AttemptResult {
         let url = format!("{}{}", self.base_url, path);
         let auth = self.auth_header.load();
         let started = Instant::now();
@@ -878,13 +1196,13 @@ impl GitHubClient {
                 self.record_request_attempt(path, Some(resp.status().as_u16()), elapsed, attempt);
                 resp
             }
-            Err(e) if e.is_timeout() => {
-                self.record_request_attempt(path, None, elapsed, attempt);
-                return ApiOutcome::failure(None, "timeout".to_string(), true);
-            }
             Err(e) => {
                 self.record_request_attempt(path, None, elapsed, attempt);
-                return ApiOutcome::failure(None, e.to_string(), true);
+                let timeout = e.is_timeout();
+                return AttemptResult::Failure(Box::new(RequestFailureKind::Transport {
+                    error: e.to_string(),
+                    timeout,
+                }));
             }
         };
 
@@ -898,40 +1216,54 @@ impl GitHubClient {
             .map(String::from);
 
         let extracted_headers = if capture_headers {
-            let mut headers = HashMap::new();
-            for key in &[
-                "x-oauth-scopes",
-                "x-accepted-oauth-scopes",
-                "x-oauth-client-id",
-            ] {
-                if let Some(val) = response.headers().get(*key)
-                    && let Ok(s) = val.to_str()
-                {
-                    headers.insert(key.to_string(), s.to_string());
-                }
-            }
-            Some(headers)
+            Some(extract_oauth_headers(response.headers()))
         } else {
             None
         };
 
         if !response.status().is_success() {
-            return self.failure_outcome(status, response).await;
+            let failure = self.http_failure_kind(status, response).await;
+            return AttemptResult::Failure(Box::new(failure));
         }
 
-        let body = match read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES).await {
-            Ok(b) => b,
+        let body_bytes =
+            match read_body_bytes_limited(response, config::MAX_RESPONSE_BODY_BYTES).await {
+                Ok(b) => b,
+                Err(e) => {
+                    return AttemptResult::Failure(Box::new(RequestFailureKind::BodyRead {
+                        status_code: Some(status),
+                        error: e.to_string(),
+                    }));
+                }
+            };
+
+        self.parse_single_body(path, status, body_bytes, response_etag, extracted_headers)
+    }
+
+    fn parse_single_body(
+        &self,
+        path: &str,
+        status: u16,
+        body_bytes: Vec<u8>,
+        response_etag: Option<String>,
+        extracted_headers: Option<HashMap<String, String>>,
+    ) -> AttemptResult {
+        let body = match String::from_utf8(body_bytes) {
+            Ok(s) => s,
             Err(e) => {
-                return ApiOutcome::failure(Some(status), format!("body read error: {e}"), false);
+                return AttemptResult::Failure(Box::new(RequestFailureKind::MalformedPayload {
+                    status_code: status,
+                    kind: MalformedPayloadKind::InvalidUtf8,
+                    error: format!("response body is not valid UTF-8: {e}"),
+                }));
             }
         };
 
         if body.trim().is_empty() {
-            if let Some(ref etag) = response_etag {
-                self.last_response_etags
-                    .upsert_sync(path.to_string(), etag.clone());
+            if let Some(etag) = response_etag {
+                self.last_response_etags.upsert_sync(path.to_string(), etag);
             }
-            return ApiOutcome::Success {
+            return AttemptResult::Success {
                 status_code: status,
                 data: None,
                 headers: extracted_headers,
@@ -941,22 +1273,30 @@ impl GitHubClient {
 
         match serde_json::from_str(&body) {
             Ok(data) => {
-                if let Some(ref etag) = response_etag {
-                    self.last_response_etags
-                        .upsert_sync(path.to_string(), etag.clone());
+                if let Some(etag) = response_etag {
+                    self.last_response_etags.upsert_sync(path.to_string(), etag);
                 }
-                ApiOutcome::Success {
+                AttemptResult::Success {
                     status_code: status,
                     data: Some(data),
                     headers: extracted_headers,
                     truncated: false,
                 }
             }
-            Err(e) => ApiOutcome::failure(Some(status), format!("invalid json: {e}"), false),
+            Err(e) => AttemptResult::Failure(Box::new(RequestFailureKind::MalformedPayload {
+                status_code: status,
+                kind: MalformedPayloadKind::InvalidJson,
+                error: format!("invalid json: {e}"),
+            })),
         }
     }
 
-    async fn request_paginated(&self, path: &str, timeout_secs: u64, attempt: u32) -> ApiOutcome {
+    async fn request_paginated(
+        &self,
+        path: &str,
+        timeout_secs: u64,
+        attempt: u32,
+    ) -> AttemptResult {
         let route = route_template(path);
         let mut all_items: Vec<serde_json::Value> = Vec::new();
         let mut next_url: Option<String> = Some(format!("{}{}", self.base_url, path));
@@ -994,61 +1334,38 @@ impl GitHubClient {
                 .await
             {
                 Ok(resp) => resp,
-                Err(outcome) => return outcome,
+                Err(failure) => return AttemptResult::Failure(Box::new(failure)),
             };
 
             crate::github::rate_limit::update_from_headers(&self.rate_limit, response.headers());
             let status = response.status().as_u16();
 
             if !response.status().is_success() {
-                return self.failure_outcome(status, response).await;
+                let failure = self.http_failure_kind(status, response).await;
+                return AttemptResult::Failure(Box::new(failure));
             }
 
             next_url = trusted_next_url(response.headers(), &self.trusted_origin);
 
-            let body = match read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES).await {
-                Ok(b) => b,
-                Err(e) => {
-                    return ApiOutcome::failure(
-                        Some(status),
-                        format!("body read error: {e}"),
-                        false,
-                    );
-                }
-            };
+            let body_bytes =
+                match read_body_bytes_limited(response, config::MAX_RESPONSE_BODY_BYTES).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return AttemptResult::Failure(Box::new(RequestFailureKind::BodyRead {
+                            status_code: Some(status),
+                            error: e.to_string(),
+                        }));
+                    }
+                };
 
-            if body.trim().is_empty() {
-                continue;
-            }
-
-            match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(serde_json::Value::Array(items)) => {
-                    let remaining = config::MAX_PAGINATED_ITEMS.saturating_sub(all_items.len());
-                    if items.len() > remaining {
-                        all_items.extend(items.into_iter().take(remaining));
-                        warn!(
-                            items = all_items.len(),
-                            route, "paginated item limit reached"
-                        );
+            match parse_paginated_page_body(status, body_bytes, &mut all_items, route) {
+                Ok(page_truncated) => {
+                    if page_truncated {
                         truncated = true;
                         break;
                     }
-                    all_items.extend(items);
                 }
-                Ok(single) => {
-                    if all_items.len() >= config::MAX_PAGINATED_ITEMS {
-                        warn!(
-                            items = all_items.len(),
-                            route, "paginated item limit reached"
-                        );
-                        truncated = true;
-                        break;
-                    }
-                    all_items.push(single);
-                }
-                Err(e) => {
-                    return ApiOutcome::failure(Some(status), format!("invalid json: {e}"), false);
-                }
+                Err(failure) => return AttemptResult::Failure(Box::new(failure)),
             }
         }
 
@@ -1059,7 +1376,7 @@ impl GitHubClient {
             truncated,
             "paginated request complete"
         );
-        ApiOutcome::Success {
+        AttemptResult::Success {
             status_code: 200,
             data: Some(serde_json::Value::Array(all_items)),
             headers: None,
@@ -1072,7 +1389,7 @@ impl GitHubClient {
         url: &str,
         timeout_secs: u64,
         attempt: u32,
-    ) -> Result<reqwest::Response, ApiOutcome> {
+    ) -> Result<reqwest::Response, RequestFailureKind> {
         let auth = self.auth_header.load();
         let started = Instant::now();
         let sent = auth
@@ -1094,11 +1411,11 @@ impl GitHubClient {
             }
             Err(e) => {
                 self.record_request_attempt(url, None, elapsed, attempt);
-                if e.is_timeout() {
-                    Err(ApiOutcome::failure(None, "timeout".to_string(), true))
-                } else {
-                    Err(ApiOutcome::failure(None, e.to_string(), true))
-                }
+                let timeout = e.is_timeout();
+                Err(RequestFailureKind::Transport {
+                    error: e.to_string(),
+                    timeout,
+                })
             }
         }
     }
@@ -1675,7 +1992,8 @@ impl GitHubClient {
                 config::DEFAULT_REQUEST_TIMEOUT_SECS,
                 0,
             )
-            .await;
+            .await
+            .into_api_outcome();
         let repos_list = classify_capability_probe(&repos_list_probe);
         let sample_repo = first_repo_name(repos_list_probe.data())
             .and_then(|name| cherry_pit_web::sanitize_path_segment(name, "repo_name").ok())
@@ -1724,7 +2042,8 @@ impl GitHubClient {
     async fn probe_endpoint(&self, path: &str) -> CapabilityStatus {
         let result = self
             .request_single(path, config::DEFAULT_REQUEST_TIMEOUT_SECS, 0)
-            .await;
+            .await
+            .into_api_outcome();
         classify_capability_probe(&result)
     }
 }
@@ -1750,6 +2069,75 @@ fn fastrand_jitter(max_ms: u64) -> u64 {
         return 0;
     }
     fastrand::u64(0..max_ms)
+}
+
+fn extract_oauth_headers(headers: &HeaderMap) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for key in &[
+        "x-oauth-scopes",
+        "x-accepted-oauth-scopes",
+        "x-oauth-client-id",
+    ] {
+        if let Some(val) = headers.get(*key)
+            && let Ok(s) = val.to_str()
+        {
+            map.insert((*key).to_string(), s.to_string());
+        }
+    }
+    map
+}
+
+fn parse_paginated_page_body(
+    status: u16,
+    body_bytes: Vec<u8>,
+    all_items: &mut Vec<serde_json::Value>,
+    route: &'static str,
+) -> Result<bool, RequestFailureKind> {
+    let body = match String::from_utf8(body_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(RequestFailureKind::MalformedPayload {
+                status_code: status,
+                kind: MalformedPayloadKind::InvalidUtf8,
+                error: format!("malformed paginated response: invalid UTF-8: {e}"),
+            });
+        }
+    };
+
+    if body.trim().is_empty() {
+        return Err(RequestFailureKind::MalformedPayload {
+            status_code: status,
+            kind: MalformedPayloadKind::EmptyBody,
+            error: "malformed paginated response: empty body".to_string(),
+        });
+    }
+
+    match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(serde_json::Value::Array(items)) => {
+            let remaining = config::MAX_PAGINATED_ITEMS.saturating_sub(all_items.len());
+            if items.len() > remaining {
+                all_items.extend(items.into_iter().take(remaining));
+                warn!(
+                    items = all_items.len(),
+                    route, "paginated item limit reached"
+                );
+                Ok(true)
+            } else {
+                all_items.extend(items);
+                Ok(false)
+            }
+        }
+        Ok(_) => Err(RequestFailureKind::MalformedPayload {
+            status_code: status,
+            kind: MalformedPayloadKind::NotAnArray,
+            error: "malformed paginated response: expected array".to_string(),
+        }),
+        Err(e) => Err(RequestFailureKind::MalformedPayload {
+            status_code: status,
+            kind: MalformedPayloadKind::InvalidJson,
+            error: format!("invalid json: {e}"),
+        }),
+    }
 }
 
 impl std::fmt::Debug for GitHubClient {
@@ -4218,6 +4606,602 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_paginated_rejects_non_array_and_empty_frames_preserving_status() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(path("/non-array-object"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"error": "not array"})),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/empty-body"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/whitespace-body"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("   \n\t  "))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/scalar-body"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("42"))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/invalid-json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"unclosed\": "))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/invalid-utf8"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xff, 0xfe]))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+
+        let res_obj = client.request("/non-array-object", true, 0, 10).await;
+        assert!(res_obj.is_err());
+        assert_eq!(res_obj.status_code(), Some(200));
+
+        let res_empty = client.request("/empty-body", true, 0, 10).await;
+        assert!(res_empty.is_err());
+        assert_eq!(res_empty.status_code(), Some(200));
+
+        let res_ws = client.request("/whitespace-body", true, 0, 10).await;
+        assert!(res_ws.is_err());
+        assert_eq!(res_ws.status_code(), Some(200));
+
+        let res_scalar = client.request("/scalar-body", true, 0, 10).await;
+        assert!(res_scalar.is_err());
+        assert_eq!(res_scalar.status_code(), Some(200));
+
+        let res_json = client.request("/invalid-json", true, 0, 10).await;
+        assert!(res_json.is_err());
+        assert_eq!(res_json.status_code(), Some(200));
+
+        let res_utf8 = client.request("/invalid-utf8", true, 0, 10).await;
+        assert!(res_utf8.is_err());
+        assert_eq!(res_utf8.status_code(), Some(200));
+    }
+
+    #[tokio::test]
+    async fn request_paginated_retains_distinct_failing_page_status_on_later_page() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        let mount_two_page_flow =
+            |page1_path: &'static str,
+             page2_path: &'static str,
+             page2_template: ResponseTemplate| {
+                let server_ref = &server;
+                async move {
+                    let page2_url = format!("{}{page2_path}", server_ref.uri());
+                    let link = format!("<{page2_url}>; rel=\"next\"");
+                    Mock::given(path(page1_path))
+                        .respond_with(
+                            ResponseTemplate::new(200)
+                                .insert_header("link", link.as_str())
+                                .set_body_json(serde_json::json!([{"id": 1}])),
+                        )
+                        .mount(server_ref)
+                        .await;
+                    Mock::given(path(page2_path))
+                        .respond_with(page2_template)
+                        .mount(server_ref)
+                        .await;
+                }
+            };
+
+        mount_two_page_flow(
+            "/flow-empty-1",
+            "/flow-empty-2",
+            ResponseTemplate::new(203).set_body_string(""),
+        )
+        .await;
+
+        mount_two_page_flow(
+            "/flow-scalar-1",
+            "/flow-scalar-2",
+            ResponseTemplate::new(203).set_body_string("42"),
+        )
+        .await;
+
+        mount_two_page_flow(
+            "/flow-obj-1",
+            "/flow-obj-2",
+            ResponseTemplate::new(203).set_body_json(serde_json::json!({"error": "not array"})),
+        )
+        .await;
+
+        mount_two_page_flow(
+            "/flow-json-1",
+            "/flow-json-2",
+            ResponseTemplate::new(203).set_body_string("{\"truncated\": "),
+        )
+        .await;
+
+        mount_two_page_flow(
+            "/flow-utf8-1",
+            "/flow-utf8-2",
+            ResponseTemplate::new(203).set_body_bytes(vec![0xff, 0xfe]),
+        )
+        .await;
+
+        let client = build_test_client(&server.uri());
+
+        let res_empty = client.request("/flow-empty-1", true, 0, 10).await;
+        assert!(res_empty.is_err());
+        assert_eq!(res_empty.status_code(), Some(203));
+
+        let res_scalar = client.request("/flow-scalar-1", true, 0, 10).await;
+        assert!(res_scalar.is_err());
+        assert_eq!(res_scalar.status_code(), Some(203));
+
+        let res_obj = client.request("/flow-obj-1", true, 0, 10).await;
+        assert!(res_obj.is_err());
+        assert_eq!(res_obj.status_code(), Some(203));
+
+        let res_json = client.request("/flow-json-1", true, 0, 10).await;
+        assert!(res_json.is_err());
+        assert_eq!(res_json.status_code(), Some(203));
+
+        let res_utf8 = client.request("/flow-utf8-1", true, 0, 10).await;
+        assert!(res_utf8.is_err());
+        assert_eq!(res_utf8.status_code(), Some(203));
+    }
+
+    async fn spawn_supervised_single_truncated_server(
+        status_line: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener
+            .local_addr()
+            .expect("local address should be available");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("single connection should arrive");
+            let mut buf = [0u8; 1024];
+            let _bytes_read = socket
+                .read(&mut buf)
+                .await
+                .expect("request bytes should be readable");
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n[{{\"id\":"
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("response head should write successfully");
+            socket
+                .shutdown()
+                .await
+                .expect("intentional connection close should complete cleanly");
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    async fn spawn_supervised_two_page_truncated_server() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener
+            .local_addr()
+            .expect("local address should be available");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket1, _) = listener
+                .accept()
+                .await
+                .expect("page 1 connection should arrive");
+            let mut buf = [0u8; 1024];
+            let _bytes1 = socket1
+                .read(&mut buf)
+                .await
+                .expect("page 1 request should be readable");
+            let next_url = format!("http://{addr}/page2-interrupted");
+            let resp1 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nLink: <{next_url}>; rel=\"next\"\r\nContent-Length: 10\r\n\r\n[{{\"id\":1}}]"
+            );
+            socket1
+                .write_all(resp1.as_bytes())
+                .await
+                .expect("page 1 write should succeed");
+            socket1
+                .shutdown()
+                .await
+                .expect("page 1 shutdown should succeed");
+
+            let (mut socket2, _) = listener
+                .accept()
+                .await
+                .expect("page 2 connection should arrive");
+            let _bytes2 = socket2
+                .read(&mut buf)
+                .await
+                .expect("page 2 request should be readable");
+            let resp2 = "HTTP/1.1 203 Non-Authoritative Information\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n[{\"id\":";
+            socket2
+                .write_all(resp2.as_bytes())
+                .await
+                .expect("page 2 head write should succeed");
+            socket2
+                .shutdown()
+                .await
+                .expect("page 2 intentional close should succeed");
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn request_run_preserves_first_page_provenance_and_controls() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(path("/p1-empty"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/p1-obj"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"bad": true})),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/p1-scalar"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("42"))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/p1-valid-empty-array"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/p1-json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"broken\": "))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/p1-utf8"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xff, 0xfe]))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+
+        let run = client.request_run("/p1-empty", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 200,
+                kind: MalformedPayloadKind::EmptyBody,
+            }
+        );
+        assert_eq!(run.status_code(), Some(200));
+
+        let run = client.request_run("/p1-obj", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 200,
+                kind: MalformedPayloadKind::NotAnArray,
+            }
+        );
+        assert_eq!(run.status_code(), Some(200));
+
+        let run = client.request_run("/p1-scalar", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 200,
+                kind: MalformedPayloadKind::NotAnArray,
+            }
+        );
+        assert_eq!(run.status_code(), Some(200));
+
+        let run = client
+            .request_run("/p1-valid-empty-array", true, 0, 10)
+            .await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::Success {
+                status_code: 200,
+                truncated: false,
+            }
+        );
+        assert_eq!(run.status_code(), Some(200));
+        assert!(run.is_success());
+
+        let run = client.request_run("/p1-json", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 200,
+                kind: MalformedPayloadKind::InvalidJson,
+            }
+        );
+        assert_eq!(run.status_code(), Some(200));
+
+        let run = client.request_run("/p1-utf8", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 200,
+                kind: MalformedPayloadKind::InvalidUtf8,
+            }
+        );
+        assert_eq!(run.status_code(), Some(200));
+    }
+
+    #[tokio::test]
+    async fn request_run_preserves_first_page_truncation_and_body_read_controls() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        let oversized_page: Vec<serde_json::Value> = (0..=config::MAX_PAGINATED_ITEMS)
+            .map(|i| serde_json::json!({"id": i}))
+            .collect();
+        Mock::given(path("/p1-oversized"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(oversized_page))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+
+        let run = client.request_run("/p1-oversized", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::Success {
+                status_code: 200,
+                truncated: true,
+            }
+        );
+        assert!(run.is_truncated());
+        assert!(run.is_success());
+
+        let (truncated_200_server, handle_200) =
+            spawn_supervised_single_truncated_server("200 OK").await;
+        let client_200 = build_test_client(&truncated_200_server);
+        let run_200 = client_200
+            .request_run("/p1-truncated-body", true, 0, 10)
+            .await;
+        assert_eq!(
+            run_200.classification(),
+            RequestClassification::BodyRead {
+                status_code: Some(200),
+            }
+        );
+        assert_eq!(run_200.status_code(), Some(200));
+        handle_200
+            .await
+            .expect("truncated server 200 should join cleanly");
+    }
+
+    #[tokio::test]
+    async fn request_run_preserves_later_page_provenance_and_controls() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        let mount_two_page = |p1: &'static str, p2: &'static str, resp: ResponseTemplate| {
+            let server_ref = &server;
+            async move {
+                let next_url = format!("{}{p2}", server_ref.uri());
+                Mock::given(path(p1))
+                    .respond_with(
+                        ResponseTemplate::new(200)
+                            .insert_header("link", format!("<{next_url}>; rel=\"next\""))
+                            .set_body_json(serde_json::json!([{"id": 1}])),
+                    )
+                    .mount(server_ref)
+                    .await;
+                Mock::given(path(p2))
+                    .respond_with(resp)
+                    .mount(server_ref)
+                    .await;
+            }
+        };
+
+        mount_two_page(
+            "/flow-p1-empty",
+            "/p2-empty",
+            ResponseTemplate::new(203).set_body_string(""),
+        )
+        .await;
+        mount_two_page(
+            "/flow-p1-obj",
+            "/p2-obj",
+            ResponseTemplate::new(203).set_body_json(serde_json::json!({"bad": true})),
+        )
+        .await;
+        mount_two_page(
+            "/flow-p1-scalar",
+            "/p2-scalar",
+            ResponseTemplate::new(203).set_body_string("42"),
+        )
+        .await;
+        mount_two_page(
+            "/flow-p1-json",
+            "/p2-json",
+            ResponseTemplate::new(203).set_body_string("{\"broken\": "),
+        )
+        .await;
+        mount_two_page(
+            "/flow-p1-utf8",
+            "/p2-utf8",
+            ResponseTemplate::new(203).set_body_bytes(vec![0xff, 0xfe]),
+        )
+        .await;
+
+        let client = build_test_client(&server.uri());
+
+        let run = client.request_run("/flow-p1-empty", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 203,
+                kind: MalformedPayloadKind::EmptyBody,
+            }
+        );
+        assert_eq!(run.status_code(), Some(203));
+
+        let run = client.request_run("/flow-p1-obj", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 203,
+                kind: MalformedPayloadKind::NotAnArray,
+            }
+        );
+        assert_eq!(run.status_code(), Some(203));
+
+        let run = client.request_run("/flow-p1-scalar", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 203,
+                kind: MalformedPayloadKind::NotAnArray,
+            }
+        );
+        assert_eq!(run.status_code(), Some(203));
+
+        let run = client.request_run("/flow-p1-json", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 203,
+                kind: MalformedPayloadKind::InvalidJson,
+            }
+        );
+        assert_eq!(run.status_code(), Some(203));
+
+        let run = client.request_run("/flow-p1-utf8", true, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 203,
+                kind: MalformedPayloadKind::InvalidUtf8,
+            }
+        );
+        assert_eq!(run.status_code(), Some(203));
+    }
+
+    #[tokio::test]
+    async fn request_run_preserves_later_203_interrupted_body_flow() {
+        let (truncated_203_server, handle_203) = spawn_supervised_two_page_truncated_server().await;
+        let client_203 = build_test_client(&truncated_203_server);
+        let run_203 = client_203.request_run("/page1", true, 0, 10).await;
+        assert_eq!(
+            run_203.classification(),
+            RequestClassification::BodyRead {
+                status_code: Some(203),
+            }
+        );
+        assert_eq!(run_203.status_code(), Some(203));
+        handle_203
+            .await
+            .expect("two page truncated server should join cleanly");
+    }
+
+    #[tokio::test]
+    async fn halt_does_not_erase_malformed_provenance() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/halt-with-malformed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-ratelimit-remaining", "0")
+                    .insert_header("x-ratelimit-reset", "9999999999")
+                    .set_body_string(""),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let run = client
+            .request_run("/halt-with-malformed", true, 0, 10)
+            .await;
+
+        assert_eq!(
+            run.classification(),
+            RequestClassification::MalformedPayload {
+                status_code: 200,
+                kind: MalformedPayloadKind::EmptyBody,
+            }
+        );
+        assert_eq!(run.status_code(), Some(200));
+        assert!(run.is_halt_triggered());
+    }
+
+    #[tokio::test]
+    async fn exhaustion_preserves_transport_and_http_provenance() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/server-error-500"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("upstream boom"))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let run = client.request_run("/server-error-500", false, 1, 10).await;
+
+        assert_eq!(
+            run.classification(),
+            RequestClassification::HttpError {
+                status_code: Some(500),
+            }
+        );
+        assert_eq!(run.status_code(), Some(500));
+        assert!(run.is_retries_exhausted());
+    }
+
+    #[tokio::test]
+    async fn collect_auth_metadata_retains_known_mode_when_user_has_no_oauth_scopes() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/user"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"login": "test-user"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let meta = client.collect_auth_metadata().await;
+
+        assert_eq!(meta.auth_mode, crate::domain::auth::AuthMode::Pat);
+        assert_eq!(meta.token_scopes, "not-available");
+    }
+
+    #[tokio::test]
     async fn acceptance_1_retry_after_seconds_honored_before_resuming() {
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -4308,6 +5292,533 @@ mod tests {
         assert!(
             resume_at >= now + Duration::from_secs(RETRY_AFTER_SECS),
             "a later, shorter observation must never shorten an already-armed wait"
+        );
+    }
+
+    #[tokio::test]
+    async fn counterexample_final_401_retries_0_panics_on_unreachable() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/final-401-retries-0"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"message": "Bad credentials"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let run = client
+            .request_run("/final-401-retries-0", false, 0, 10)
+            .await;
+
+        assert_eq!(run.status_code(), Some(401));
+        assert_eq!(
+            run.classification(),
+            RequestClassification::HttpError {
+                status_code: Some(401),
+            }
+        );
+        assert!(!run.is_retries_exhausted());
+    }
+
+    #[tokio::test]
+    async fn counterexample_500_then_401_retries_1_panics_on_unreachable() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/500-then-401"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("upstream boom"))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/500-then-401"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"message": "Bad credentials"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let run = client.request_run("/500-then-401", false, 1, 10).await;
+
+        assert_eq!(run.status_code(), Some(401));
+        assert_eq!(
+            run.classification(),
+            RequestClassification::HttpError {
+                status_code: Some(401),
+            }
+        );
+        assert_eq!(run.attempts(), 2);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn counterexample_halt_401_single_mode_dispatches_excess_request_and_bypasses_halt() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/halt-401-single"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .insert_header("x-ratelimit-remaining", "0")
+                    .insert_header("x-ratelimit-reset", "9999999999")
+                    .set_body_json(
+                        serde_json::json!({"message": "rate limit exceeded and unauthorized"}),
+                    ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let run = client.request_run("/halt-401-single", false, 1, 10).await;
+
+        assert_eq!(run.status_code(), Some(401));
+        assert_eq!(
+            run.classification(),
+            RequestClassification::HttpError {
+                status_code: Some(401),
+            }
+        );
+        assert!(run.is_halt_triggered());
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn counterexample_halt_401_paginated_mode_returns_truncated_success_losing_401() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/halt-401-paginated"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .insert_header("x-ratelimit-remaining", "0")
+                    .insert_header("x-ratelimit-reset", "9999999999")
+                    .set_body_json(
+                        serde_json::json!({"message": "rate limit exceeded and unauthorized"}),
+                    ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let run = client.request_run("/halt-401-paginated", true, 1, 10).await;
+
+        assert_eq!(run.status_code(), Some(401));
+        assert_eq!(
+            run.classification(),
+            RequestClassification::HttpError {
+                status_code: Some(401),
+            }
+        );
+        assert!(run.is_halt_triggered());
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn counterexample_facade_500_exhaustion_preserves_retryable_parity_and_original_error() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/facade-500-exhausted"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("upstream boom"))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let outcome = client.request("/facade-500-exhausted", false, 1, 10).await;
+
+        assert!(outcome.is_err());
+        assert_eq!(outcome.status_code(), Some(500));
+        assert!(
+            outcome.is_retryable(),
+            "exhausted 500 must preserve retryable=true for collector parity"
+        );
+        assert_eq!(outcome.error_message().unwrap_or(""), "upstream boom");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn counterexample_facade_transport_exhaustion_preserves_retryable_and_source_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener
+            .local_addr()
+            .expect("local address should be available");
+        drop(listener);
+
+        let client = build_test_client(&format!("http://{addr}"));
+        let outcome = client.request("/transport-failure", false, 0, 1).await;
+
+        assert!(outcome.is_err());
+        assert!(
+            outcome.is_retryable(),
+            "exhausted transport failure must preserve retryable=true"
+        );
+        assert_ne!(
+            outcome.error_message().unwrap_or(""),
+            "retry exhaustion",
+            "transport error must not be overwritten with 'retry exhaustion'"
+        );
+    }
+
+    async fn spawn_supervised_single_truncated_server_with_halt(
+        status_line: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener
+            .local_addr()
+            .expect("local address should be available");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("single connection should arrive");
+            let mut buf = [0u8; 1024];
+            let _bytes_read = socket
+                .read(&mut buf)
+                .await
+                .expect("request bytes should be readable");
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 9999999999\r\nContent-Length: 1000\r\n\r\n[{{\"id\":"
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("response head should write successfully");
+            socket
+                .shutdown()
+                .await
+                .expect("intentional connection close should complete cleanly");
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn halt_with_body_read_error_preserves_both_halt_and_body_read_provenance() {
+        let (server_uri, handle) =
+            spawn_supervised_single_truncated_server_with_halt("200 OK").await;
+        let client = build_test_client(&server_uri);
+        let run = client.request_run("/halt-body-read", false, 0, 10).await;
+
+        assert!(run.is_halt_triggered());
+        assert_eq!(
+            run.classification(),
+            RequestClassification::BodyRead {
+                status_code: Some(200),
+            }
+        );
+        assert_eq!(run.status_code(), Some(200));
+        handle.await.expect("server handle should join cleanly");
+    }
+
+    #[tokio::test]
+    async fn retries_0_http_failure_preserves_http_classification_and_exhaustion() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/retries-0-500"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let run = client.request_run("/retries-0-500", false, 0, 10).await;
+
+        assert_eq!(run.status_code(), Some(500));
+        assert_eq!(
+            run.classification(),
+            RequestClassification::HttpError {
+                status_code: Some(500),
+            }
+        );
+        assert_eq!(run.attempts(), 1);
+        assert!(run.is_retries_exhausted());
+    }
+
+    #[tokio::test]
+    async fn retries_0_transport_failure_preserves_transport_classification_and_exhaustion() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener
+            .local_addr()
+            .expect("local address should be available");
+        drop(listener);
+
+        let client = build_test_client(&format!("http://{addr}"));
+        let run = client
+            .request_run("/retries-0-transport", false, 0, 1)
+            .await;
+
+        assert_eq!(run.status_code(), None);
+        assert_eq!(run.classification(), RequestClassification::TransportError,);
+        assert_eq!(run.attempts(), 1);
+        assert!(run.is_retries_exhausted());
+    }
+
+    #[tokio::test]
+    async fn later_page_exhaustion_preserves_http_error_and_exhausted_flag() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/paginated-page-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header(
+                        "link",
+                        format!("<{}/paginated-page-2>; rel=\"next\"", server.uri()),
+                    )
+                    .set_body_json(serde_json::json!([{"id": 1}])),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/paginated-page-2"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("page 2 failure"))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let run = client.request_run("/paginated-page-1", true, 1, 10).await;
+
+        assert_eq!(run.status_code(), Some(500));
+        assert_eq!(
+            run.classification(),
+            RequestClassification::HttpError {
+                status_code: Some(500),
+            }
+        );
+        assert!(run.is_retries_exhausted());
+        assert_eq!(run.attempts(), 2);
+    }
+
+    #[tokio::test]
+    async fn byte_cap_content_length_exceeded_fails_at_head_without_streaming() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _bytes_read = socket
+                .read(&mut buf)
+                .await
+                .expect("request bytes should be readable");
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n";
+            socket.write_all(response.as_bytes()).await.expect("write");
+            let _ = socket.shutdown().await;
+        });
+        let resp = reqwest::get(format!("http://{addr}")).await.expect("get");
+        let err = read_body_bytes_limited(resp, 10)
+            .await
+            .expect_err("should exceed");
+        assert!(matches!(
+            err,
+            BodyReadError::ContentLengthExceeded {
+                len: 50,
+                max_bytes: 10
+            }
+        ));
+        handle.await.expect("join");
+    }
+
+    #[tokio::test]
+    async fn byte_cap_streamed_overflow_fails_when_bytes_exceed_limit() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _bytes_read = socket
+                .read(&mut buf)
+                .await
+                .expect("request bytes should be readable");
+            let response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\nworld!\r\n0\r\n\r\n";
+            socket.write_all(response.as_bytes()).await.expect("write");
+            let _ = socket.shutdown().await;
+        });
+        let resp = reqwest::get(format!("http://{addr}")).await.expect("get");
+        let err = read_body_bytes_limited(resp, 5)
+            .await
+            .expect_err("should exceed");
+        assert!(matches!(
+            err,
+            BodyReadError::BodyLengthExceeded { max_bytes: 5 }
+        ));
+        handle.await.expect("join");
+    }
+
+    #[tokio::test]
+    async fn request_run_first_200_content_length_above_cap_fails_with_body_read_without_partial_success()
+     {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _bytes_read = socket
+                .read(&mut buf)
+                .await
+                .expect("request bytes should be readable");
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 60000000\r\n\r\n";
+            socket.write_all(response.as_bytes()).await.expect("write");
+            let _ = socket.shutdown().await;
+        });
+        let client = build_test_client(&format!("http://{addr}"));
+        let run = client.request_run("/large-cl", false, 0, 10).await;
+
+        assert_eq!(run.status_code(), Some(200));
+        assert_eq!(
+            run.classification(),
+            RequestClassification::BodyRead {
+                status_code: Some(200),
+            }
+        );
+        assert!(!run.is_success());
+        assert!(!run.is_retries_exhausted());
+        let outcome = run.outcome();
+        assert!(outcome.is_err());
+        assert_eq!(outcome.status_code(), Some(200));
+        assert!(!outcome.is_retryable());
+        let err_msg = outcome.error_message().unwrap_or("");
+        assert!(err_msg.contains("Content-Length (60000000) exceeds 52428800 byte limit"));
+        handle.await.expect("join");
+    }
+
+    #[tokio::test]
+    async fn request_run_same_origin_later_203_streamed_excess_maps_to_body_read_without_partial_success()
+     {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local tcp bind should succeed");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket1, _) = listener.accept().await.expect("page 1 connection");
+            let mut buf1 = [0u8; 1024];
+            let _read1 = socket1
+                .read(&mut buf1)
+                .await
+                .expect("page 1 request readable");
+            let resp1 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nLink: <http://{addr}/page-2>; rel=\"next\"\r\nContent-Length: 10\r\n\r\n[{{\"id\":1}}]"
+            );
+            socket1
+                .write_all(resp1.as_bytes())
+                .await
+                .expect("write resp1");
+            let _ = socket1.shutdown().await;
+
+            let (mut socket2, _) = listener.accept().await.expect("page 2 connection");
+            let mut buf2 = [0u8; 1024];
+            let _read2 = socket2
+                .read(&mut buf2)
+                .await
+                .expect("page 2 request readable");
+            let head2 = "HTTP/1.1 203 Non-Authoritative Information\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
+            socket2
+                .write_all(head2.as_bytes())
+                .await
+                .expect("write head 2");
+            let chunk_data = vec![b'x'; 1024 * 1024];
+            let chunk_header = format!("{:x}\r\n", chunk_data.len());
+            for _ in 0..53 {
+                if socket2.write_all(chunk_header.as_bytes()).await.is_err() {
+                    break;
+                }
+                if socket2.write_all(&chunk_data).await.is_err() {
+                    break;
+                }
+                if socket2.write_all(b"\r\n").await.is_err() {
+                    break;
+                }
+            }
+            let _ = socket2.shutdown().await;
+        });
+
+        let client = build_test_client(&format!("http://{addr}"));
+        let run = client.request_run("/page-1", true, 0, 10).await;
+
+        assert_eq!(run.status_code(), Some(203));
+        assert_eq!(
+            run.classification(),
+            RequestClassification::BodyRead {
+                status_code: Some(203),
+            }
+        );
+        assert!(!run.is_success());
+        assert!(!run.is_retries_exhausted());
+        let outcome = run.outcome();
+        assert!(outcome.is_err());
+        assert_eq!(outcome.status_code(), Some(203));
+        assert!(!outcome.is_retryable());
+        let err_msg = outcome.error_message().unwrap_or("");
+        assert!(err_msg.contains("response body exceeds 52428800 byte limit"));
+        handle.await.expect("join");
+    }
+
+    #[tokio::test]
+    async fn credential_refresh_failure_retains_diagnostic_cause() {
+        let expired = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(3600);
+        let credential =
+            GitHubCredential::from_installation_token("expired-token".to_string(), expired);
+        let (budget, rate_limit) = test_budget_and_rate_limit();
+        let client = GitHubClient::new(
+            credential,
+            "https://api.github.invalid",
+            "test-org",
+            None,
+            budget,
+            rate_limit,
+        )
+        .expect("client construction should succeed");
+
+        let run = client.request_run("/test", false, 0, 10).await;
+        assert_eq!(
+            run.classification(),
+            RequestClassification::CredentialRefreshFailed,
+        );
+        let outcome = run.outcome();
+        assert!(outcome.is_err());
+        let err_msg = outcome.error_message().unwrap_or("");
+        assert!(
+            err_msg.contains("credential refresh failed:"),
+            "error message should contain prefix: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("no GitHub App config available"),
+            "error message should retain diagnostic cause: {err_msg}"
         );
     }
 }
