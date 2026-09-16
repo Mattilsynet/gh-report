@@ -142,6 +142,18 @@ h1 {
    vertical-align: middle;
 }
 
+.coverage-capped-badge {
+   display: inline-block;
+   font-size: 0.8em;
+   font-weight: 500;
+   color: var(--tier-warn-border);
+   border: 1px solid var(--tier-warn-border);
+   border-radius: 4px;
+   padding: .1em .5em;
+   margin-left: .5em;
+   vertical-align: middle;
+}
+
 h2 {
    border-bottom: 1px solid var(--border-default);
    padding-bottom: .3em;

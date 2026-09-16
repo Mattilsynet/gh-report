@@ -20,6 +20,9 @@ pub struct RunMetadata {
     pub schema_version: String,
     /// Outcome of the run.
     pub status: RunStatus,
+    /// Coverage bounds and selection status for organization repository collection.
+    #[serde(default)]
+    pub coverage: crate::domain::evidence::CollectionCoverage,
 }
 
 /// Run lifecycle status.
@@ -43,6 +46,7 @@ impl RunMetadata {
             organization,
             schema_version,
             status: RunStatus::InProgress,
+            coverage: crate::domain::evidence::CollectionCoverage::default(),
         }
     }
 
@@ -210,6 +214,7 @@ mod tests {
             organization: original.organization.clone(),
             schema_version: original.schema_version.clone(),
             status: RunStatus::InProgress,
+            coverage: crate::domain::evidence::CollectionCoverage::default(),
         };
         assert_eq!(
             original.correlation_context(),
@@ -243,6 +248,7 @@ mod tests {
             organization: "Org".to_string(),
             schema_version: "1.0".to_string(),
             status: RunStatus::InProgress,
+            coverage: crate::domain::evidence::CollectionCoverage::default(),
         };
         let expected = uuid::Uuid::from_bytes([
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,

@@ -49,10 +49,10 @@ use limits::{
 };
 
 /// Native schema version for [`DomainEvent`].
-pub const DOMAIN_EVENT_SCHEMA_VERSION: u32 = 2;
+pub const DOMAIN_EVENT_SCHEMA_VERSION: u32 = 3;
 
 /// Native schema version for [`OrgStateCaptured`].
-pub const ORG_STATE_SCHEMA_VERSION: u32 = 2;
+pub const ORG_STATE_SCHEMA_VERSION: u32 = 3;
 
 /// Native schema version for [`TeamStateCaptured`].
 pub const TEAM_STATE_SCHEMA_VERSION: u32 = 2;
@@ -746,6 +746,97 @@ impl PardosaSchema for OrgStateCaptured {
     }
 }
 
+/// Coverage bounds and selection status for organization repository collection.
+///
+/// Literal 0 is unrepresentable for limit at compile time:
+/// ```compile_fail
+/// use gh_report::event::CollectionCoverage;
+/// let _ = CollectionCoverage::Known { total: 10, limit: 0 };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CollectionCoverage {
+    #[default]
+    Unknown,
+    Known {
+        total: u32,
+        limit: std::num::NonZeroU64,
+    },
+}
+
+impl PardosaType for CollectionCoverage {
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::Enum {
+            name: "CollectionCoverage".to_string(),
+            discriminant_width: 1,
+            variants: vec![
+                VariantDescriptor {
+                    discriminant: 0,
+                    name: "Unknown".to_string(),
+                    payload: None,
+                },
+                VariantDescriptor {
+                    discriminant: 1,
+                    name: "Known".to_string(),
+                    payload: Some(DescriptorNode::Struct {
+                        name: "CollectionCoverage_Known".to_string(),
+                        fields: vec![
+                            FieldDescriptor {
+                                name: "total".to_string(),
+                                node: <u32 as PardosaType>::descriptor_node(),
+                            },
+                            FieldDescriptor {
+                                name: "limit".to_string(),
+                                node: <u64 as PardosaType>::descriptor_node(),
+                            },
+                        ],
+                    }),
+                },
+            ],
+        }
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        match self {
+            Self::Unknown => {
+                buf.push(0);
+                Ok(())
+            }
+            Self::Known { total, limit } => {
+                buf.push(1);
+                total.encode_type(buf)?;
+                limit.get().encode_type(buf)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        if buf.is_empty() {
+            return Err(DecodeError::TruncatedPayload {
+                expected: 1,
+                available: 0,
+            });
+        }
+        let tag = buf[0];
+        let mut cursor = 1;
+        match tag {
+            0 => Ok((Self::Unknown, cursor)),
+            1 => {
+                let (total, c) = u32::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let (raw_limit, c) = u64::decode_type(&buf[cursor..])?;
+                cursor += c;
+                let limit = std::num::NonZeroU64::new(raw_limit)
+                    .ok_or(DecodeError::UnknownVariantDiscriminant { discriminant: 0 })?;
+                Ok((Self::Known { total, limit }, cursor))
+            }
+            other => Err(DecodeError::UnknownVariantDiscriminant {
+                discriminant: u32::from(other),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssessmentMetadata {
     pub date: EventString<MAX_ASSESSMENT_DATE>,
@@ -760,6 +851,7 @@ pub struct AssessmentMetadata {
     pub unavailable_capabilities: EventVec<Capability, MAX_UNAVAILABLE_CAPABILITIES>,
     pub inventory_fetched_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
     pub warm_start: bool,
+    pub coverage: CollectionCoverage,
 }
 impl_pardosa_struct!(AssessmentMetadata {
     date: EventString<MAX_ASSESSMENT_DATE>,
@@ -774,6 +866,7 @@ impl_pardosa_struct!(AssessmentMetadata {
     unavailable_capabilities: EventVec<Capability, MAX_UNAVAILABLE_CAPABILITIES>,
     inventory_fetched_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
     warm_start: bool,
+    coverage: CollectionCoverage,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1260,6 +1353,19 @@ pub(crate) fn from_bytes<T: PardosaSchema>(buf: &[u8]) -> Result<T, DecodeError>
 }
 
 #[cfg(test)]
+pub(crate) fn v22_org_state_descriptor() -> pardosa::prelude::SchemaDescriptor {
+    use pardosa::prelude::*;
+    let mut node = OrgStateCaptured::descriptor_node();
+    if let DescriptorNode::Struct { ref mut fields, .. } = node
+        && let Some(meta_field) = fields.get_mut(1)
+        && let DescriptorNode::Struct { ref mut fields, .. } = meta_field.node
+    {
+        fields.retain(|f| f.name != "coverage");
+    }
+    SchemaDescriptor::new(2, node)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -1416,6 +1522,7 @@ mod tests {
                 ],
                 inventory_fetched_at: Some("2026-06-14T12:01:00Z".to_string()),
                 warm_start: true,
+                coverage: crate::domain::evidence::CollectionCoverage::default(),
             },
             alert_summary: crate::domain::metrics::OrgAlertSummary {
                 collection_status: crate::domain::status::CollectionStatus::Success,
@@ -1749,6 +1856,83 @@ mod tests {
         assert!(malformed_nes.validate_structural_completeness().is_err());
     }
 
+    #[test]
+    fn native_coverage_zero_limit_is_unrepresentable_at_compile_time() {
+        assert!(std::num::NonZeroU64::new(0).is_none());
+        let valid_limit = std::num::NonZeroU64::new(10).unwrap();
+        let cov = CollectionCoverage::Known {
+            total: 100,
+            limit: valid_limit,
+        };
+        match cov {
+            CollectionCoverage::Known { limit, .. } => assert_eq!(limit.get(), 10),
+            CollectionCoverage::Unknown => panic!("expected known"),
+        }
+    }
+
+    #[test]
+    fn native_coverage_decode_rejects_zero_limit_and_malformed_bytes() {
+        let unknown_bytes = vec![0];
+        let (decoded, consumed) =
+            CollectionCoverage::decode_type(&unknown_bytes).expect("decode unknown");
+        assert_eq!(consumed, 1);
+        assert_eq!(decoded, CollectionCoverage::Unknown);
+
+        let mut valid_known_bytes = vec![1];
+        100u32.encode_type(&mut valid_known_bytes).unwrap();
+        10u64.encode_type(&mut valid_known_bytes).unwrap();
+        let (decoded, consumed) =
+            CollectionCoverage::decode_type(&valid_known_bytes).expect("decode known");
+        assert_eq!(consumed, 13);
+        assert_eq!(
+            decoded,
+            CollectionCoverage::Known {
+                total: 100,
+                limit: std::num::NonZeroU64::new(10).unwrap(),
+            }
+        );
+
+        let mut zero_limit_bytes = vec![1];
+        100u32.encode_type(&mut zero_limit_bytes).unwrap();
+        0u64.encode_type(&mut zero_limit_bytes).unwrap();
+        assert!(matches!(
+            CollectionCoverage::decode_type(&zero_limit_bytes),
+            Err(pardosa::encoding::DecodeError::UnknownVariantDiscriminant { discriminant: 0 })
+        ));
+
+        let empty_bytes: Vec<u8> = vec![];
+        assert!(matches!(
+            CollectionCoverage::decode_type(&empty_bytes),
+            Err(pardosa::encoding::DecodeError::TruncatedPayload { .. })
+        ));
+
+        for truncated in [
+            vec![1],
+            vec![1, 0, 0],
+            vec![1, 0, 0, 0, 100],
+            vec![1, 0, 0, 0, 100, 0, 0, 0],
+        ] {
+            assert!(matches!(
+                CollectionCoverage::decode_type(&truncated),
+                Err(pardosa::encoding::DecodeError::TruncatedPayload { .. })
+            ));
+        }
+
+        for invalid_tag in [vec![2], vec![255]] {
+            assert!(matches!(
+                CollectionCoverage::decode_type(&invalid_tag),
+                Err(pardosa::encoding::DecodeError::UnknownVariantDiscriminant { .. })
+            ));
+        }
+
+        let mut with_trailer = valid_known_bytes.clone();
+        with_trailer.push(99);
+        let (decoded_trailer, consumed_trailer) =
+            CollectionCoverage::decode_type(&with_trailer).expect("decode with trailer");
+        assert_eq!(consumed_trailer, 13);
+        assert_eq!(decoded_trailer, decoded);
+    }
+
     const LEGACY_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
         "3b1d43cb4b22f0e89ebb6e59928c1bdf398cf3d7d904d8f0d767dc682a44e86f";
     const LEGACY_ORG_STATE_SCHEMA_IDENTITY: &str =
@@ -1758,10 +1942,15 @@ mod tests {
     const LEGACY_SWEEP_TIMEOUT_SCHEMA_IDENTITY: &str =
         "cc4812aa267f39c6d430fc32d7dacf8e6af78595e178569bf79ea14364f846d5";
 
-    const TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
+    const V22_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
         "c41b252a6cff87dadf9df198575ad5af88559f1131bb8aee8b20a12067352458";
-    const TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY: &str =
+    const V22_ORG_STATE_SCHEMA_IDENTITY: &str =
         "2ec6b5d4f386afbe6a73fe4e0c962897e477316af3137591927bb18a31b4c38f";
+
+    const TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
+        "87b0c97d9dfa2e9f610173df23491ec6cd4e335f25c3487afc3b999b36f3e0c2";
+    const TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY: &str =
+        "5d1add16b630f8ec14c469db3566da4c78d34382fc11f9033576303411043022";
     const TRUTHFUL_TEAM_STATE_SCHEMA_IDENTITY: &str =
         "fa78ebd335983b4db1d2cf12f0fd21deed7744dc1d9d1668aa6cc9721fc42321";
     const TRUTHFUL_SWEEP_TIMEOUT_SCHEMA_IDENTITY: &str =
@@ -1793,14 +1982,14 @@ mod tests {
         1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
         45, 49, 50, 0, 0, 0, 0, 0, 0, 0,
     ];
-    const CANONICAL_ORG_CAPTURED_BYTES: [u8; 328] = [
+    const CANONICAL_ORG_CAPTURED_BYTES: [u8; 329] = [
         2, 0, 0, 0, 10, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 4, 0, 0, 0, 97, 99, 109,
         101, 3, 0, 0, 0, 49, 46, 48, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 84, 49,
         50, 58, 48, 48, 58, 48, 48, 90, 7, 0, 0, 0, 114, 117, 110, 45, 49, 50, 51, 0, 29, 0, 0, 0,
         114, 101, 112, 111, 44, 114, 101, 97, 100, 58, 111, 114, 103, 44, 115, 101, 99, 117, 114,
         105, 116, 121, 95, 101, 118, 101, 110, 116, 115, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 20, 0, 0,
-        0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 84, 49, 50, 58, 48, 49, 58, 48, 48, 90, 1, 0, 1,
-        9, 0, 0, 0, 99, 111, 108, 108, 101, 99, 116, 101, 100, 1, 0, 0, 0, 6, 0, 0, 0, 114, 101,
+        0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 84, 49, 50, 58, 48, 49, 58, 48, 48, 90, 1, 0, 0,
+        1, 9, 0, 0, 0, 99, 111, 108, 108, 101, 99, 116, 101, 100, 1, 0, 0, 0, 6, 0, 0, 0, 114, 101,
         112, 111, 45, 49, 7, 0, 0, 0, 0, 0, 0, 0, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45,
         49, 51, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54,
         45, 49, 52, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 2, 0, 0, 0, 8, 0, 0, 0, 48, 95, 55, 95,
@@ -1899,10 +2088,20 @@ mod tests {
             TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY,
             LEGACY_DOMAIN_EVENT_SCHEMA_IDENTITY,
         );
+        assert_ne!(
+            DomainEvent::schema_identity().to_hex(),
+            V22_DOMAIN_EVENT_SCHEMA_IDENTITY
+        );
+
         assert_admitted_and_identity::<OrgStateCaptured>(
             TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY,
             LEGACY_ORG_STATE_SCHEMA_IDENTITY,
         );
+        assert_ne!(
+            OrgStateCaptured::schema_identity().to_hex(),
+            V22_ORG_STATE_SCHEMA_IDENTITY
+        );
+
         assert_admitted_and_identity::<TeamStateCaptured>(
             TRUTHFUL_TEAM_STATE_SCHEMA_IDENTITY,
             LEGACY_TEAM_STATE_SCHEMA_IDENTITY,
@@ -1910,6 +2109,11 @@ mod tests {
         assert_admitted_and_identity::<SweepTimeoutEvent>(
             TRUTHFUL_SWEEP_TIMEOUT_SCHEMA_IDENTITY,
             LEGACY_SWEEP_TIMEOUT_SCHEMA_IDENTITY,
+        );
+
+        assert_eq!(
+            v22_org_state_descriptor().identity().to_hex(),
+            V22_ORG_STATE_SCHEMA_IDENTITY
         );
     }
 }

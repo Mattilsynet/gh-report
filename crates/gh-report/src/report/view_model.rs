@@ -1632,6 +1632,10 @@ pub struct ReportViewModel {
     pub total_repos: u32,
     /// Total repositories, including archived repositories.
     pub total_all_repos: u32,
+    /// Accessible label for non-archived repositories in the scope header.
+    pub scope_non_archived_label: &'static str,
+    /// HTML disclosure notice if repository collection was capped by `max_repos`.
+    pub coverage_notice: Option<String>,
 
     /// Prose precision (1 decimal), used by the report.html metric
     /// paragraphs and index.html cards.
@@ -2030,7 +2034,32 @@ impl ReportViewModel {
             date_time: format_run_timestamp(&metadata.run_timestamp),
             run_id: metadata.run_id.clone(),
             total_repos: stats.total_repos,
-            total_all_repos: stats.total_repos.saturating_add(archived),
+            total_all_repos: metadata.coverage.total().map_or_else(
+                || stats.total_repos.saturating_add(archived),
+                |tot| u32::try_from(tot).unwrap_or(u32::MAX),
+            ),
+            scope_non_archived_label: if metadata.coverage.is_capped() {
+                "non-archived report rows"
+            } else {
+                "non-archived"
+            },
+            coverage_notice: if metadata.coverage.is_capped() {
+                let selected = metadata
+                    .coverage
+                    .selected()
+                    .unwrap_or(stats.total_repos as usize);
+                let total = metadata.coverage.total().unwrap_or(selected);
+                let limit = metadata
+                    .coverage
+                    .limit()
+                    .map_or(selected as u64, std::num::NonZero::get);
+                let report_rows = stats.total_repos;
+                Some(format!(
+                    "<strong>Coverage:</strong> Capped ({selected} of {total} repositories selected for sweep; max_repos={limit}; {report_rows} non-archived report rows (may include unread and retained evidence))"
+                ))
+            } else {
+                None
+            },
             policy_coverage_formatted: m.security_policy_coverage.to_string(),
             dependabot_coverage_formatted: m.dependabot_security_updates_coverage.to_string(),
             secret_scanning_coverage_formatted: m.secret_scanning_coverage.to_string(),
@@ -4721,5 +4750,50 @@ mod tests {
             vm.population_description(),
             "stale-lifecycle repositories (archived repositories and active repositories not updated in 2+ years)"
         );
+    }
+
+    #[test]
+    fn view_model_coverage_notice_when_capped_labels_selected_not_evaluated() {
+        let mut metadata = test_fixtures::make_metadata();
+        metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+            776,
+            std::num::NonZeroU64::new(10).unwrap(),
+        );
+        let evidence = test_fixtures::make_full_evidence(
+            metadata,
+            test_fixtures::make_collection_statistics(10, 10, 0, 0),
+            crate::aggregate::metrics::aggregate_metrics(&[]),
+            test_fixtures::make_observability(),
+            vec![],
+        );
+
+        let vm = ReportViewModel::from_evidence(&evidence, &super::CoverageTiers::default());
+        let notice = vm
+            .coverage_notice
+            .expect("capped coverage must have notice");
+        assert!(notice.contains(
+            "10 of 776 repositories selected for sweep; max_repos=10; 10 non-archived report rows (may include unread and retained evidence)"
+        ));
+        assert!(!notice.contains("evaluated"));
+        assert!(!notice.contains("evaluated10"));
+    }
+
+    #[test]
+    fn view_model_coverage_notice_when_uncapped_is_none() {
+        let mut metadata = test_fixtures::make_metadata();
+        metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+            50,
+            std::num::NonZeroU64::new(100).unwrap(),
+        );
+        let evidence = test_fixtures::make_full_evidence(
+            metadata,
+            test_fixtures::make_collection_statistics(50, 50, 0, 0),
+            crate::aggregate::metrics::aggregate_metrics(&[]),
+            test_fixtures::make_observability(),
+            vec![],
+        );
+
+        let vm = ReportViewModel::from_evidence(&evidence, &super::CoverageTiers::default());
+        assert!(vm.coverage_notice.is_none());
     }
 }

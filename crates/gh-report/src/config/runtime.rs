@@ -57,6 +57,8 @@ pub struct RuntimeConfig {
     /// a test can inject a one-second budget instead of awaiting the real
     /// two-hour timer (SEC-0004:R2; CHE-0055:R10 injected-time precedent).
     pub sweep_timeout: config::SweepTimeout,
+    /// Maximum distinct repositories admitted per collection sweep.
+    pub max_repos: config::MaxRepos,
     /// Root-supervised Tokio runtime for NATS `JetStream` storage adapters.
     /// The caller maintains the obligation to keep an outer handle alive
     /// synchronously until all background tasks have drained.
@@ -217,6 +219,7 @@ impl RuntimeConfig {
             team_roster_read_from_projection: true,
             rate_regulator: RateRegulatorKind::default(),
             sweep_timeout: config::SweepTimeout::default(),
+            max_repos: config::MaxRepos::default(),
             nats_runtime: None,
         })
     }
@@ -279,7 +282,7 @@ mod tests {
         assert!(cfg.durable_consumer.contains(major));
 
         let token = org_token("acme".as_bytes());
-        let next_major = "v23";
+        let next_major = "v24";
         assert_ne!(major, next_major, "counterfactual major must differ");
 
         let this_stream = cfg.stream_name.clone();
@@ -361,6 +364,13 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_defaults_to_one_thousand_max_repos() {
+        let cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
+        assert_eq!(cfg.max_repos, config::MaxRepos::default());
+        assert_eq!(cfg.max_repos.get(), 1000);
+    }
+
+    #[test]
     fn runtime_config_accepts_an_injected_test_sized_sweep_timeout() {
         let mut cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
         cfg.sweep_timeout = config::SweepTimeout::new(1).expect("1s is a valid sweep timeout");
@@ -378,9 +388,9 @@ mod tests {
         let dotted = NatsStoreConfig::for_org("a.b", DEFAULT_NATS_URL).unwrap();
         let dashed = NatsStoreConfig::for_org("a-b", DEFAULT_NATS_URL).unwrap();
 
-        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267-v22");
-        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.v22.events");
-        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267-v22");
+        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267-v23");
+        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.v23.events");
+        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267-v23");
         assert_ne!(my_org.stream_name, my_dash_org.stream_name);
         assert_ne!(my_org.subject, my_dash_org.subject);
         assert_ne!(dotted.stream_name, dashed.stream_name);
@@ -395,9 +405,9 @@ mod tests {
         let repo = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL).unwrap();
         let org = repo.org_events();
 
-        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-v22-org");
-        assert_eq!(org.subject, "gh-report.org_6d79206f7267.v22.org.events");
-        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-v22-org");
+        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-v23-org");
+        assert_eq!(org.subject, "gh-report.org_6d79206f7267.v23.org.events");
+        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-v23-org");
         assert_ne!(repo.stream_name, org.stream_name);
         assert_ne!(repo.subject, org.subject);
     }
@@ -437,7 +447,7 @@ mod tests {
         assert_eq!(cfg.nats_url, DEFAULT_NATS_URL);
         assert_eq!(
             cfg.nats_store_config().unwrap().stream_name,
-            "gh-report-org_6f7267-v22"
+            "gh-report-org_6f7267-v23"
         );
         assert!(cfg.nats_store_config().unwrap().credentials_path.is_none());
     }

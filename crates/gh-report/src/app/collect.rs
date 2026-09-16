@@ -232,13 +232,7 @@ struct CollectionContext {
     budget_baseline: u64,
 }
 
-#[derive(Clone)]
-struct InventoryLoad {
-    active_repos: Vec<Arc<Repository>>,
-    complete: bool,
-    /// ISO 8601 timestamp of when inventory was fetched from API.
-    inventory_fetched_at: Option<String>,
-}
+pub(crate) type InventoryLoad = AdmittedInventory;
 
 struct OrgAlertContext {
     summary: OrgAlertSummary,
@@ -301,7 +295,7 @@ fn apply_per_run_budget_ceiling(state: &AppState) {
 /// loading, report rendering, or cache population fails. Individual
 /// repository evaluation failures are isolated and do not abort the run.
 pub async fn run(config: RuntimeConfig, state: Arc<AppState>) -> Result<(), AppError> {
-    run_with_outcome(config, state).await.map(|_| ())
+    Box::pin(run_with_outcome(config, state)).await.map(|_| ())
 }
 
 pub(crate) async fn run_with_outcome(
@@ -352,13 +346,13 @@ async fn run_collection_inner(
     let inventory = load_active_repositories(&setup.client).await?;
 
     let stale_check: Vec<(String, Option<String>)> = inventory
-        .active_repos
+        .active_repos()
         .iter()
         .map(|r| (r.name.clone(), r.updated_at.as_deref().map(str::to_owned)))
         .collect();
     setup.client.evict_stale_entries(&stale_check);
 
-    let org_alert = collect_org_alert_context(&setup.client, &inventory.active_repos, run).await;
+    let org_alert = collect_org_alert_context(&setup.client, inventory.active_repos(), run).await;
 
     let CollectionSetup {
         lock,
@@ -467,13 +461,19 @@ async fn run_collection_pipeline(
     run: &mut RunMetadata,
     corr_ctx: &CorrelationContext,
     ctx: CollectionContext,
-    inventory: &InventoryLoad,
+    inventory: &ValidatedInventory,
     org_alert: OrgAlertContext,
     state: &Arc<AppState>,
 ) -> Result<(), AppError> {
+    let bounded_inventory = bound_active_repositories(inventory, config.max_repos);
+    run.coverage = crate::domain::evidence::CollectionCoverage::known(
+        bounded_inventory.total_discovered(),
+        std::num::NonZeroU64::new(config.max_repos.get() as u64).expect("max_repos is non-zero"),
+    );
+    state.current_run.store(Arc::new(Some(run.clone())));
     let mut saga = SweepSaga::new(run, &ctx, org_alert, state);
     let mut sweep_ctx = SweepCtx::new(config, run, corr_ctx, state);
-    saga.run_to_completion(&mut sweep_ctx, &ctx, inventory)
+    saga.run_to_completion(&mut sweep_ctx, &ctx, &bounded_inventory)
         .await
 }
 
@@ -800,7 +800,7 @@ impl SweepSaga {
         Self::emit_progress(
             sweep.run(),
             self.completed.len() as u64,
-            inventory.active_repos.len() as u64,
+            inventory.active_repos().len() as u64,
         );
 
         self.step_baseline(sweep, inventory);
@@ -808,7 +808,7 @@ impl SweepSaga {
         Self::emit_progress(
             sweep.run(),
             (self.completed.len() + self.baseline_cache.len()) as u64,
-            inventory.active_repos.len() as u64,
+            inventory.active_repos().len() as u64,
         );
 
         self.step_enqueue_and_await(sweep, ctx, inventory).await?;
@@ -837,7 +837,7 @@ impl SweepSaga {
         debug_assert_eq!(self.phase, SweepPhase::Resumed);
 
         self.baseline_cache = reuse_from_baseline(
-            &inventory.active_repos,
+            inventory.active_repos(),
             &self.completed,
             &self.run_timestamp,
             sweep.state,
@@ -861,7 +861,7 @@ impl SweepSaga {
     fn step_start_sweep(&self, sweep: &SweepCtx<'_>, inventory: &InventoryLoad) {
         info!(
             org = %sweep.config.org_name,
-            repo_count = inventory.active_repos.len(),
+            repo_count = inventory.active_repos().len(),
             batch_id = %sweep.run().run_id,
             timestamp = %jiff::Timestamp::now(),
             snapshot_signature = %self.snapshot_signature,
@@ -884,7 +884,7 @@ impl SweepSaga {
         debug_assert_eq!(self.phase, SweepPhase::BaselineReused);
 
         let pending: Vec<&Arc<Repository>> = inventory
-            .active_repos
+            .active_repos()
             .iter()
             .filter(|r| {
                 !self.completed.contains_key(&r.inventory_key)
@@ -893,7 +893,7 @@ impl SweepSaga {
             .collect();
 
         info!(
-            total = inventory.active_repos.len(),
+            total = inventory.active_repos().len(),
             resumed = self.resumed_count,
             baseline_reused = self.baseline_reused,
             pending = pending.len(),
@@ -931,7 +931,7 @@ impl SweepSaga {
                 cancel_sweep_timeout(sweep, armed_timeout).await?;
                 self.phase = SweepPhase::BatchDrained;
 
-                let total = inventory.active_repos.len() as u64;
+                let total = inventory.active_repos().len() as u64;
                 Self::emit_progress(sweep.run(), total, total);
             }
             Ok(false) => {
@@ -1001,9 +1001,7 @@ impl SweepSaga {
         let config = sweep.config;
         let state = sweep.state;
 
-        if inventory.complete && !inventory.active_repos.is_empty() {
-            reconcile_deleted_repositories(state, inventory, &sweep.run().timestamp()).await?;
-        }
+        reconcile_deleted_repositories(state, inventory, &sweep.run().timestamp()).await?;
 
         let result = finalize_and_publish(FinalizeParams {
             config,
@@ -1024,7 +1022,7 @@ impl SweepSaga {
                 info!(
                     batch_id = %sweep.run().run_id,
                     duration_ms = self.elapsed_ms(),
-                    repo_count = inventory.active_repos.len(),
+                    repo_count = inventory.active_repos().len(),
                     timestamp = %jiff::Timestamp::now(),
                     "sweep completed"
                 );
@@ -1211,7 +1209,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         pause_notify: Arc::clone(pause_notify),
         config: config.clone(),
         run: run.clone(),
-        inventory_fetched_at: inventory.inventory_fetched_at.clone(),
+        inventory_fetched_at: inventory.inventory_fetched_at().map(str::to_owned),
         inventory: inventory.clone(),
         org_alert_summary: Some(Arc::clone(org_summary)),
         auth_metadata: auth_metadata.clone(),
@@ -1384,7 +1382,7 @@ async fn finalize_and_publish(
         org_state: snapshot.org_state(),
         config,
         run,
-        inventory_fetched_at: inventory.inventory_fetched_at.clone(),
+        inventory_fetched_at: inventory.inventory_fetched_at().map(str::to_owned),
         org_alert_summary: Some(org_summary),
         auth_metadata,
         capabilities,
@@ -1614,181 +1612,381 @@ async fn prepare_collection(
     })
 }
 
-async fn load_active_repositories(client: &GitHubClient) -> Result<InventoryLoad, AppError> {
+async fn load_active_repositories(client: &GitHubClient) -> Result<ValidatedInventory, AppError> {
     let inv = inventory::build_inventory_from_api(client, None).await?;
     let load = inventory_load_from_payload(inv)?;
     info!(
-        total = load.active_repos.len(),
+        total = load.total_discovered(),
         "repository inventory loaded"
     );
     Ok(load)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum InventoryValidationError {
-    IdentityConflict {
-        identity_key: String,
-        first_id: String,
-        second_id: String,
-    },
-    PayloadMismatch {
-        repo_id: String,
-        field: &'static str,
-    },
-}
-
-impl From<InventoryValidationError> for InventoryError {
-    fn from(err: InventoryValidationError) -> Self {
-        InventoryError::ApiFetchFailed {
-            reason: match err {
-                InventoryValidationError::IdentityConflict {
-                    identity_key,
-                    first_id,
-                    second_id,
-                } => format!(
-                    "inventory identity conflict on '{identity_key}': repo '{first_id}' vs '{second_id}'"
-                ),
-                InventoryValidationError::PayloadMismatch { repo_id, field } => {
-                    format!("inventory payload conflict for repo '{repo_id}' on field '{field}'")
-                }
-            },
-        }
-    }
-}
-
-fn find_payload_difference(a: &Repository, b: &Repository) -> Option<&'static str> {
-    if a.id != b.id {
-        return Some("id");
-    }
-    if a.node_id != b.node_id {
-        return Some("node_id");
-    }
-    if a.name != b.name {
-        return Some("name");
-    }
-    if a.visibility != b.visibility {
-        return Some("visibility");
-    }
-    if a.language != b.language {
-        return Some("language");
-    }
-    if a.default_branch != b.default_branch {
-        return Some("default_branch");
-    }
-    if a.archived != b.archived {
-        return Some("archived");
-    }
-    if a.inventory_key != b.inventory_key {
-        return Some("inventory_key");
-    }
-    if a.updated_at != b.updated_at {
-        return Some("updated_at");
-    }
-    if a.has_issues != b.has_issues {
-        return Some("has_issues");
-    }
-    if a.pushed_at != b.pushed_at {
-        return Some("pushed_at");
-    }
-    if a.created_at != b.created_at {
-        return Some("created_at");
-    }
-    if a.description != b.description {
-        return Some("description");
-    }
-    if a.fork != b.fork {
-        return Some("fork");
-    }
-    if a.is_empty != b.is_empty {
-        return Some("is_empty");
-    }
-    if a.html_url != b.html_url {
-        return Some("html_url");
-    }
-    if a.topics != b.topics {
-        return Some("topics");
-    }
-    if a.license_spdx != b.license_spdx {
-        return Some("license_spdx");
-    }
-    None
-}
-
-fn validate_and_deduplicate_repositories(
-    repositories: Vec<Repository>,
-) -> Result<Vec<Arc<Repository>>, InventoryValidationError> {
-    let mut unique_repos: Vec<Arc<Repository>> = Vec::new();
-    let mut id_map: HashMap<String, usize> = HashMap::new();
-    let mut key_map: HashMap<String, usize> = HashMap::new();
-
-    for repo in repositories {
-        let match_id = id_map.get(repo.id.as_str()).copied();
-        let match_key = key_map.get(repo.inventory_key.as_str()).copied();
-
-        let matches: [(Option<usize>, &str); 2] = [(match_id, "id"), (match_key, "inventory_key")];
-        let mut matched_index: Option<usize> = None;
-
-        for (m, label) in matches {
-            if let Some(idx) = m {
-                if let Some(prior_idx) = matched_index {
-                    if prior_idx != idx {
-                        return Err(InventoryValidationError::IdentityConflict {
-                            identity_key: label.to_string(),
-                            first_id: unique_repos[prior_idx].id.clone(),
-                            second_id: unique_repos[idx].id.clone(),
-                        });
-                    }
-                } else {
-                    matched_index = Some(idx);
-                }
-            }
-        }
-
-        if let Some(idx) = matched_index {
-            let existing = &unique_repos[idx];
-            if let Some(differing_field) = find_payload_difference(&repo, existing) {
-                return Err(InventoryValidationError::PayloadMismatch {
-                    repo_id: repo.id,
-                    field: differing_field,
-                });
-            }
-        } else {
-            let idx = unique_repos.len();
-            id_map.insert(repo.id.clone(), idx);
-            key_map.insert(repo.inventory_key.clone(), idx);
-            unique_repos.push(Arc::new(repo));
-        }
-    }
-
-    Ok(unique_repos)
-}
-
 fn inventory_load_from_payload(
     payload: inventory::InventoryPayload,
-) -> Result<InventoryLoad, InventoryError> {
-    let inventory_fetched_at = payload.inventory_fetched_at;
-    let active_repos = validate_and_deduplicate_repositories(payload.repositories)?;
-    Ok(InventoryLoad {
-        active_repos,
-        complete: payload.complete,
-        inventory_fetched_at,
-    })
+) -> Result<ValidatedInventory, InventoryError> {
+    ValidatedInventory::from_payload(payload)
+}
+
+mod inventory_authority {
+    use super::{Arc, BTreeSet, HashMap, InventoryError, Repository, config, info, inventory};
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct ValidatedInventory {
+        active_repos: Vec<Arc<Repository>>,
+        complete: bool,
+        inventory_fetched_at: Option<String>,
+        total_discovered: usize,
+        archived_discovered: u32,
+    }
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct AdmittedInventory {
+        active_repos: Vec<Arc<Repository>>,
+        complete: bool,
+        inventory_fetched_at: Option<String>,
+        is_capped: bool,
+        total_discovered: usize,
+        archived_discovered: u32,
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct DeletionAuthority<'a> {
+        active_keys: BTreeSet<&'a str>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum InventoryValidationError {
+        IdentityConflict {
+            identity_key: String,
+            first_id: String,
+            second_id: String,
+        },
+        PayloadMismatch {
+            repo_id: String,
+            field: &'static str,
+        },
+    }
+
+    impl From<InventoryValidationError> for InventoryError {
+        fn from(err: InventoryValidationError) -> Self {
+            InventoryError::ApiFetchFailed {
+                reason: match err {
+                    InventoryValidationError::IdentityConflict {
+                        identity_key,
+                        first_id,
+                        second_id,
+                    } => format!(
+                        "inventory identity conflict on '{identity_key}': repo '{first_id}' vs '{second_id}'"
+                    ),
+                    InventoryValidationError::PayloadMismatch { repo_id, field } => {
+                        format!(
+                            "inventory payload conflict for repo '{repo_id}' on field '{field}'"
+                        )
+                    }
+                },
+            }
+        }
+    }
+
+    impl ValidatedInventory {
+        pub(crate) fn from_payload(
+            payload: inventory::InventoryPayload,
+        ) -> Result<Self, InventoryError> {
+            let inventory_fetched_at = payload.inventory_fetched_at;
+            let active_repos = validate_and_deduplicate_repositories(payload.repositories)?;
+            let total_discovered = active_repos.len();
+            let archived_discovered =
+                u32::try_from(active_repos.iter().filter(|r| r.archived).count())
+                    .unwrap_or(u32::MAX);
+            Ok(Self {
+                active_repos,
+                complete: payload.complete,
+                inventory_fetched_at,
+                total_discovered,
+                archived_discovered,
+            })
+        }
+
+        pub(crate) fn active_repos(&self) -> &[Arc<Repository>] {
+            &self.active_repos
+        }
+
+        #[cfg(test)]
+        pub(crate) fn is_complete(&self) -> bool {
+            self.complete
+        }
+
+        #[cfg(test)]
+        pub(crate) fn inventory_fetched_at(&self) -> Option<&str> {
+            self.inventory_fetched_at.as_deref()
+        }
+
+        pub(crate) fn total_discovered(&self) -> usize {
+            self.total_discovered
+        }
+
+        #[cfg(test)]
+        pub(crate) fn archived_discovered(&self) -> u32 {
+            self.archived_discovered
+        }
+
+        pub(crate) fn admit(&self, max_repos: config::MaxRepos) -> AdmittedInventory {
+            let total_discovered = self.total_discovered;
+            let limit = max_repos.get();
+            let is_capped = total_discovered > limit;
+            let mut active_repos = self.active_repos.clone();
+            active_repos.sort_by(|a, b| a.id.cmp(&b.id));
+            if is_capped {
+                active_repos.truncate(limit);
+                info!(
+                    selected = active_repos.len(),
+                    total = total_discovered,
+                    limit,
+                    "repository collection capped by max_repos"
+                );
+            }
+            AdmittedInventory {
+                active_repos,
+                complete: self.complete,
+                inventory_fetched_at: self.inventory_fetched_at.clone(),
+                is_capped,
+                total_discovered,
+                archived_discovered: self.archived_discovered,
+            }
+        }
+
+        #[cfg(test)]
+        #[expect(clippy::needless_pass_by_value, reason = "test helper ergonomics")]
+        pub(crate) fn from_test_parts(
+            repositories: Vec<Arc<Repository>>,
+            complete: bool,
+            inventory_fetched_at: Option<String>,
+        ) -> Result<Self, InventoryValidationError> {
+            let raw_repos: Vec<Repository> = repositories.iter().map(|r| (**r).clone()).collect();
+            let active_repos = validate_and_deduplicate_repositories(raw_repos)?;
+            let total_discovered = active_repos.len();
+            let archived_discovered =
+                u32::try_from(active_repos.iter().filter(|r| r.archived).count())
+                    .unwrap_or(u32::MAX);
+            Ok(Self {
+                active_repos,
+                complete,
+                inventory_fetched_at,
+                total_discovered,
+                archived_discovered,
+            })
+        }
+
+        #[cfg(test)]
+        pub(crate) fn from_test_repos(active_repos: Vec<Arc<Repository>>, complete: bool) -> Self {
+            Self::from_test_parts(active_repos, complete, None).expect("valid test repositories")
+        }
+    }
+
+    impl AdmittedInventory {
+        pub(crate) fn active_repos(&self) -> &[Arc<Repository>] {
+            &self.active_repos
+        }
+
+        pub(crate) fn is_complete(&self) -> bool {
+            self.complete
+        }
+
+        pub(crate) fn inventory_fetched_at(&self) -> Option<&str> {
+            self.inventory_fetched_at.as_deref()
+        }
+
+        pub(crate) fn is_capped(&self) -> bool {
+            self.is_capped
+        }
+
+        pub(crate) fn total_discovered(&self) -> usize {
+            self.total_discovered
+        }
+
+        pub(crate) fn archived_discovered(&self) -> u32 {
+            self.archived_discovered
+        }
+
+        pub(crate) fn deletion_authority(&self) -> Option<DeletionAuthority<'_>> {
+            if !self.complete || self.is_capped || self.active_repos.is_empty() {
+                return None;
+            }
+            let active_keys: BTreeSet<&str> = self
+                .active_repos
+                .iter()
+                .map(|repo| repo.inventory_key.as_str())
+                .collect();
+            Some(DeletionAuthority { active_keys })
+        }
+
+        #[cfg(test)]
+        pub(crate) fn from_test_parts(
+            repositories: Vec<Arc<Repository>>,
+            complete: bool,
+            inventory_fetched_at: Option<String>,
+            max_repos: config::MaxRepos,
+        ) -> Result<Self, InventoryValidationError> {
+            let validated =
+                ValidatedInventory::from_test_parts(repositories, complete, inventory_fetched_at)?;
+            Ok(validated.admit(max_repos))
+        }
+
+        #[cfg(test)]
+        pub(crate) fn from_test_repos(active_repos: Vec<Arc<Repository>>, complete: bool) -> Self {
+            ValidatedInventory::from_test_repos(active_repos, complete)
+                .admit(config::MaxRepos::default())
+        }
+    }
+
+    impl DeletionAuthority<'_> {
+        pub(crate) fn contains(&self, key: &str) -> bool {
+            self.active_keys.contains(key)
+        }
+    }
+
+    pub(crate) fn find_payload_difference(a: &Repository, b: &Repository) -> Option<&'static str> {
+        if a.id != b.id {
+            return Some("id");
+        }
+        if a.node_id != b.node_id {
+            return Some("node_id");
+        }
+        if a.name != b.name {
+            return Some("name");
+        }
+        if a.visibility != b.visibility {
+            return Some("visibility");
+        }
+        if a.language != b.language {
+            return Some("language");
+        }
+        if a.default_branch != b.default_branch {
+            return Some("default_branch");
+        }
+        if a.archived != b.archived {
+            return Some("archived");
+        }
+        if a.inventory_key != b.inventory_key {
+            return Some("inventory_key");
+        }
+        if a.updated_at != b.updated_at {
+            return Some("updated_at");
+        }
+        if a.has_issues != b.has_issues {
+            return Some("has_issues");
+        }
+        if a.pushed_at != b.pushed_at {
+            return Some("pushed_at");
+        }
+        if a.created_at != b.created_at {
+            return Some("created_at");
+        }
+        if a.description != b.description {
+            return Some("description");
+        }
+        if a.fork != b.fork {
+            return Some("fork");
+        }
+        if a.is_empty != b.is_empty {
+            return Some("is_empty");
+        }
+        if a.html_url != b.html_url {
+            return Some("html_url");
+        }
+        if a.topics != b.topics {
+            return Some("topics");
+        }
+        if a.license_spdx != b.license_spdx {
+            return Some("license_spdx");
+        }
+        None
+    }
+
+    pub(crate) fn validate_and_deduplicate_repositories(
+        repositories: Vec<Repository>,
+    ) -> Result<Vec<Arc<Repository>>, InventoryValidationError> {
+        let mut unique_repos: Vec<Arc<Repository>> = Vec::new();
+        let mut id_map: HashMap<String, usize> = HashMap::new();
+        let mut key_map: HashMap<String, usize> = HashMap::new();
+
+        for repo in repositories {
+            let match_id = id_map.get(repo.id.as_str()).copied();
+            let match_key = key_map.get(repo.inventory_key.as_str()).copied();
+
+            let matches: [(Option<usize>, &str); 2] =
+                [(match_id, "id"), (match_key, "inventory_key")];
+            let mut matched_index: Option<usize> = None;
+
+            for (m, label) in matches {
+                if let Some(idx) = m {
+                    if let Some(prior_idx) = matched_index {
+                        if prior_idx != idx {
+                            return Err(InventoryValidationError::IdentityConflict {
+                                identity_key: label.to_string(),
+                                first_id: unique_repos[prior_idx].id.clone(),
+                                second_id: unique_repos[idx].id.clone(),
+                            });
+                        }
+                    } else {
+                        matched_index = Some(idx);
+                    }
+                }
+            }
+
+            if let Some(idx) = matched_index {
+                let existing = &unique_repos[idx];
+                if let Some(differing_field) = find_payload_difference(&repo, existing) {
+                    return Err(InventoryValidationError::PayloadMismatch {
+                        repo_id: repo.id,
+                        field: differing_field,
+                    });
+                }
+            } else {
+                let idx = unique_repos.len();
+                id_map.insert(repo.id.clone(), idx);
+                key_map.insert(repo.inventory_key.clone(), idx);
+                unique_repos.push(Arc::new(repo));
+            }
+        }
+
+        Ok(unique_repos)
+    }
+}
+
+pub(crate) use inventory_authority::{AdmittedInventory, ValidatedInventory};
+#[cfg(test)]
+pub(crate) use inventory_authority::{
+    InventoryValidationError, validate_and_deduplicate_repositories,
+};
+
+fn bound_active_repositories(
+    inventory: &ValidatedInventory,
+    max_repos: config::MaxRepos,
+) -> AdmittedInventory {
+    inventory.admit(max_repos)
 }
 
 async fn reconcile_deleted_repositories(
     state: &AppState,
-    inventory: &InventoryLoad,
+    inventory: &AdmittedInventory,
     detected_at: &str,
 ) -> Result<(), PersistenceError> {
-    let active_keys: BTreeSet<&str> = inventory
-        .active_repos
-        .iter()
-        .map(|repo| repo.inventory_key.as_str())
-        .collect();
+    let Some(authority) = inventory.deletion_authority() else {
+        if inventory.is_capped() {
+            info!(
+                selected = inventory.active_repos().len(),
+                total = inventory.total_discovered(),
+                "capped collection withholds deletion authority; skipping deleted repository reconciliation"
+            );
+        }
+        return Ok(());
+    };
     let disappeared: Vec<(String, String)> = state
         .projection_key_name_snapshot()
         .into_iter()
-        .filter(|(inventory_key, _name)| !active_keys.contains(inventory_key.as_str()))
+        .filter(|(inventory_key, _name)| !authority.contains(inventory_key.as_str()))
         .collect();
     for (domain_key, repo_name) in disappeared {
         write_with_policy(|| state.mark_repo_deleted(&domain_key, &repo_name, detected_at))
@@ -1817,7 +2015,7 @@ async fn reconcile_deleted_repositories_after_successful_inventory(
     let Ok(inventory) = inventory_result else {
         return Ok(());
     };
-    if !inventory.complete || inventory.active_repos.is_empty() {
+    if !inventory.is_complete() || inventory.active_repos().is_empty() {
         return Ok(());
     }
     reconcile_deleted_repositories(state, inventory, detected_at).await
@@ -2070,7 +2268,7 @@ impl PublicationQuality {
     fn from_evidence(evidence: &Evidence, inventory: Option<&InventoryLoad>) -> Self {
         Self {
             provenance: PublicationProvenance::Unordered,
-            inventory_known: inventory.is_some_and(|inventory| inventory.complete),
+            inventory_known: inventory.is_some_and(AdmittedInventory::is_complete),
             repositories: evidence
                 .repositories
                 .iter()
@@ -2238,10 +2436,10 @@ impl InventoryCoverage {
     fn from_evidence(inventory: Option<&InventoryLoad>, evidence: &Evidence) -> Self {
         let observed = observed_repository_keys(&evidence.repositories);
         match inventory {
-            Some(inventory) if inventory.complete => Self::Known {
-                expected: inventory.active_repos.len(),
+            Some(inventory) if inventory.is_complete() => Self::Known {
+                expected: inventory.active_repos().len(),
                 unread: inventory
-                    .active_repos
+                    .active_repos()
                     .iter()
                     .filter(|repo| !observed.contains(repo.inventory_key.as_str()))
                     .count(),
@@ -2272,7 +2470,7 @@ fn include_unread_repositories(
         .map(|repo| repo.repository.inventory_key.as_str())
         .collect();
     let unread: Vec<_> = inventory
-        .active_repos
+        .active_repos()
         .iter()
         .filter(|repo| !present.contains(repo.inventory_key.as_str()))
         .map(|repo| {
@@ -3090,19 +3288,11 @@ fn build_org_state_snapshot(
     params: &OrgSnapshotParams<'_>,
 ) -> crate::domain::evidence::OrgStateSnapshot {
     crate::domain::evidence::OrgStateSnapshot {
-        archived_repos: u32::try_from(
-            params
-                .inventory
-                .active_repos
-                .iter()
-                .filter(|repo| repo.archived)
-                .count(),
-        )
-        .unwrap_or(u32::MAX),
+        archived_repos: params.inventory.archived_discovered(),
         assessment_metadata: build_assessment_metadata(
             params.config,
             params.run,
-            params.inventory.inventory_fetched_at.clone(),
+            params.inventory.inventory_fetched_at().map(str::to_owned),
             params.auth_metadata,
             params.capabilities,
             params.rate_limit_warnings,
@@ -3159,6 +3349,7 @@ fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
     );
     if is_collection_run {
         assessment_metadata.warm_start = false;
+        assessment_metadata.coverage = params.run.coverage;
     }
 
     Evidence {
@@ -3194,6 +3385,7 @@ fn build_assessment_metadata(
             .unavailable_capabilities_for_auth_mode(auth_metadata.auth_mode),
         inventory_fetched_at,
         warm_start: false,
+        coverage: run.coverage,
     }
 }
 
@@ -3993,13 +4185,17 @@ mod tests {
 
         let load = inventory_load_from_payload(payload).unwrap();
 
-        let names: Vec<&str> = load.active_repos.iter().map(|r| r.name.as_str()).collect();
+        let names: Vec<&str> = load
+            .active_repos()
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
         assert!(
             names.contains(&"archived-pub"),
             "archived repos must flow through to active_repos so the evaluator pipeline emits RepoEvaluated events for them; got {names:?}",
         );
-        assert_eq!(load.active_repos.len(), 3);
-        assert_eq!(load.active_repos.iter().filter(|r| r.archived).count(), 1);
+        assert_eq!(load.active_repos().len(), 3);
+        assert_eq!(load.active_repos().iter().filter(|r| r.archived).count(), 1);
     }
 
     #[test]
@@ -4012,7 +4208,7 @@ mod tests {
 
         let load = inventory_load_from_payload(payload).unwrap();
 
-        assert_eq!(load.active_repos.iter().filter(|r| r.archived).count(), 2);
+        assert_eq!(load.active_repos().iter().filter(|r| r.archived).count(), 2);
     }
 
     #[test]
@@ -4220,7 +4416,7 @@ mod tests {
             let payload = inventory_payload_with(order);
             let load = inventory_load_from_payload(payload)
                 .expect("inventory load must accept distinct repositories");
-            assert_eq!(load.active_repos.len(), 4);
+            assert_eq!(load.active_repos().len(), 4);
         }
     }
 
@@ -4257,8 +4453,8 @@ mod tests {
         let load = inventory_load_from_payload(payload)
             .expect("fully identical duplicates must be accepted");
 
-        assert_eq!(load.active_repos.len(), 2);
-        assert!(load.complete);
+        assert_eq!(load.active_repos().len(), 2);
+        assert!(load.is_complete());
     }
 
     #[tokio::test]
@@ -4369,9 +4565,9 @@ mod tests {
             .expect("identical duplicates across pages must succeed");
         server.verify().await;
 
-        assert_eq!(load.active_repos.len(), 1);
-        assert_eq!(load.active_repos[0].id, "7");
-        assert!(!load.active_repos[0].is_empty);
+        assert_eq!(load.active_repos().len(), 1);
+        assert_eq!(load.active_repos()[0].id, "7");
+        assert!(!load.active_repos()[0].is_empty);
     }
 
     #[tokio::test]
@@ -4413,7 +4609,7 @@ mod tests {
             .await
             .expect("distinct repos with shared/empty metadata must succeed in page order 1");
         server_order1.verify().await;
-        assert_eq!(load1.active_repos.len(), 4);
+        assert_eq!(load1.active_repos().len(), 4);
 
         let server_order2 = MockServer::start().await;
         Mock::given(path("/orgs/TestOrg/repos"))
@@ -4439,7 +4635,423 @@ mod tests {
             .await
             .expect("distinct repos with shared/empty metadata must succeed in page order 2");
         server_order2.verify().await;
-        assert_eq!(load2.active_repos.len(), 4);
+        assert_eq!(load2.active_repos().len(), 4);
+    }
+
+    #[test]
+    fn bounded_inventory_preserves_discovered_total_and_deletion_authority() {
+        let r1 = arc_repo("repo-1");
+        let r2 = arc_repo("repo-2");
+        let r3 = arc_repo("repo-3");
+
+        let validated = ValidatedInventory::from_test_parts(
+            vec![Arc::clone(&r1), Arc::clone(&r2), Arc::clone(&r3)],
+            true,
+            Some("2026-06-02T00:00:01+00:00".to_string()),
+        )
+        .unwrap();
+        assert_eq!(validated.total_discovered(), 3);
+        assert_eq!(validated.active_repos().len(), 3);
+
+        let under = validated.admit(config::MaxRepos::new(10).unwrap());
+        assert_eq!(under.total_discovered(), 3);
+        assert_eq!(under.active_repos().len(), 3);
+        assert!(!under.is_capped());
+        assert!(under.is_complete());
+        assert!(under.deletion_authority().is_some());
+
+        let over = validated.admit(config::MaxRepos::new(2).unwrap());
+        assert_eq!(over.total_discovered(), 3);
+        assert_eq!(over.active_repos().len(), 2);
+        assert!(over.is_capped());
+        assert!(over.is_complete());
+        assert!(over.deletion_authority().is_none());
+
+        let incomplete_val =
+            ValidatedInventory::from_test_parts(vec![Arc::clone(&r1)], false, None).unwrap();
+        let incomplete = incomplete_val.admit(config::MaxRepos::new(10).unwrap());
+        assert_eq!(incomplete.total_discovered(), 1);
+        assert_eq!(incomplete.active_repos().len(), 1);
+        assert!(!incomplete.is_capped());
+        assert!(!incomplete.is_complete());
+        assert!(incomplete.deletion_authority().is_none());
+
+        let empty_val = ValidatedInventory::from_test_parts(vec![], true, None).unwrap();
+        let empty = empty_val.admit(config::MaxRepos::new(10).unwrap());
+        assert_eq!(empty.total_discovered(), 0);
+        assert!(empty.active_repos().is_empty());
+        assert!(!empty.is_capped());
+        assert!(empty.is_complete());
+        assert!(empty.deletion_authority().is_none());
+    }
+
+    #[test]
+    fn full_inventory_archived_count_preserved_under_cap() {
+        let mut r1 = test_repository("repo-archived-1");
+        r1.archived = true;
+        r1.id = "1".to_string();
+        let mut r2 = test_repository("repo-active-2");
+        r2.archived = false;
+        r2.id = "2".to_string();
+        let mut r3 = test_repository("repo-archived-3");
+        r3.archived = true;
+        r3.id = "3".to_string();
+
+        let validated = ValidatedInventory::from_test_parts(
+            vec![Arc::new(r1), Arc::new(r2), Arc::new(r3)],
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(validated.total_discovered(), 3);
+        assert_eq!(validated.archived_discovered(), 2);
+
+        let capped = validated.admit(config::MaxRepos::new(1).unwrap());
+        assert_eq!(capped.total_discovered(), 3);
+        assert_eq!(capped.active_repos().len(), 1);
+        assert_eq!(capped.archived_discovered(), 2);
+    }
+
+    #[test]
+    fn bound_active_repositories_under_limit_is_unmodified() {
+        let repo1 = arc_repo("repo-1");
+        let repo2 = arc_repo("repo-2");
+        let inventory = ValidatedInventory::from_test_parts(
+            vec![Arc::clone(&repo1), Arc::clone(&repo2)],
+            true,
+            Some("2026-06-02T00:00:01+00:00".to_string()),
+        )
+        .unwrap();
+        let max = config::MaxRepos::new(10).unwrap();
+        let bounded = bound_active_repositories(&inventory, max);
+        assert_eq!(bounded.active_repos().len(), 2);
+        assert_eq!(bounded.active_repos()[0].name, "repo-1");
+        assert_eq!(bounded.active_repos()[1].name, "repo-2");
+        assert_eq!(bounded.is_complete(), inventory.is_complete());
+        assert_eq!(
+            bounded.inventory_fetched_at(),
+            inventory.inventory_fetched_at()
+        );
+        assert!(!bounded.is_capped());
+        assert_eq!(bounded.total_discovered(), 2);
+    }
+
+    #[test]
+    fn bound_active_repositories_over_limit_caps_and_sorts_by_repo_id() {
+        let mut r1 = test_repository("repo-d");
+        r1.id = "4".to_string();
+        let mut r2 = test_repository("repo-b");
+        r2.id = "2".to_string();
+        let mut r3 = test_repository("repo-a");
+        r3.id = "1".to_string();
+        let mut r4 = test_repository("repo-c");
+        r4.id = "3".to_string();
+
+        let inventory = ValidatedInventory::from_test_parts(
+            vec![Arc::new(r1), Arc::new(r2), Arc::new(r3), Arc::new(r4)],
+            true,
+            Some("2026-06-02T00:00:01+00:00".to_string()),
+        )
+        .unwrap();
+        let max = config::MaxRepos::new(2).unwrap();
+        let bounded = bound_active_repositories(&inventory, max);
+        assert_eq!(bounded.active_repos().len(), 2);
+        assert_eq!(bounded.active_repos()[0].id, "1");
+        assert_eq!(bounded.active_repos()[0].name, "repo-a");
+        assert_eq!(bounded.active_repos()[1].id, "2");
+        assert_eq!(bounded.active_repos()[1].name, "repo-b");
+        assert_eq!(bounded.is_complete(), inventory.is_complete());
+        assert_eq!(
+            bounded.inventory_fetched_at(),
+            inventory.inventory_fetched_at()
+        );
+        assert!(bounded.is_capped());
+        assert_eq!(bounded.total_discovered(), 4);
+    }
+
+    #[test]
+    fn bound_active_repositories_zero_org_empty_inventory_is_valid() {
+        let inventory = ValidatedInventory::from_test_parts(
+            vec![],
+            true,
+            Some("2026-06-02T00:00:01+00:00".to_string()),
+        )
+        .unwrap();
+        let max = config::MaxRepos::default();
+        let bounded = bound_active_repositories(&inventory, max);
+        assert!(bounded.active_repos().is_empty());
+        assert!(!bounded.is_capped());
+        assert_eq!(bounded.total_discovered(), 0);
+        assert!(bounded.is_complete());
+    }
+
+    #[test]
+    fn bound_active_repositories_test_10_capping() {
+        let repos: Vec<Arc<Repository>> = (0..15)
+            .map(|i| {
+                let mut r = test_repository(&format!("repo-{i:02}"));
+                r.id = format!("{i:02}");
+                Arc::new(r)
+            })
+            .collect();
+        let inventory = ValidatedInventory::from_test_parts(
+            repos,
+            true,
+            Some("2026-06-02T00:00:01+00:00".to_string()),
+        )
+        .unwrap();
+        let max = config::MaxRepos::new(10).unwrap();
+        assert_eq!(max.get(), 10);
+        let bounded = bound_active_repositories(&inventory, max);
+        assert_eq!(bounded.active_repos().len(), 10);
+        assert!(bounded.is_capped());
+        assert_eq!(bounded.total_discovered(), 15);
+        for i in 0..10 {
+            assert_eq!(bounded.active_repos()[i].id, format!("{i:02}"));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capped_inventory_finalization_retains_unselected_repositories() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let mut run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+        let timestamp = run.timestamp();
+        let in_cap = sample_repo("repo-in-cap");
+        let outside_cap = sample_repo("repo-outside-cap");
+        let in_cap_key = in_cap.repository.inventory_key.clone();
+        let outside_cap_key = outside_cap.repository.inventory_key.clone();
+
+        for evidence in [in_cap.clone(), outside_cap.clone()] {
+            let domain_key = evidence.repository.inventory_key.clone();
+            let repo_name = evidence.repository.name.clone();
+            state
+                .record_repo(&domain_key, evidence, &repo_name, &timestamp)
+                .expect("record repo");
+        }
+
+        let mut saga = make_test_saga_in(&config, &run, SweepPhase::BatchDrained);
+        let validated = ValidatedInventory::from_test_parts(
+            vec![
+                Arc::new(in_cap.repository.clone()),
+                Arc::new(outside_cap.repository.clone()),
+            ],
+            true,
+            Some(timestamp.clone()),
+        )
+        .unwrap();
+        let capped_inventory = validated.admit(config::MaxRepos::new(1).unwrap());
+        assert!(capped_inventory.is_capped());
+        assert_eq!(capped_inventory.active_repos().len(), 1);
+        assert_eq!(capped_inventory.total_discovered(), 2);
+
+        saga_step_finalize(
+            &mut saga,
+            &config,
+            &mut run,
+            &ctx,
+            &capped_inventory,
+            &state,
+        )
+        .await
+        .expect("finalize");
+
+        assert!(state.projection_contains(&in_cap_key));
+        assert!(
+            state.projection_contains(&outside_cap_key),
+            "unselected repo outside cap must be retained in projection"
+        );
+        assert!(
+            state.projection_deleted_snapshot().is_empty(),
+            "capped inventory must never record any deletions"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_collection_pipeline_caps_and_updates_run_coverage_faithfully() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config_with_dir(dir.path());
+        config.max_repos = config::MaxRepos::new(2).unwrap();
+        config.force_refresh = true;
+
+        let mut run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+        let corr_ctx = CorrelationContext::none();
+        let org_alert = OrgAlertContext {
+            summary: test_org_summary(),
+            snapshot: None,
+        };
+
+        let evaluated_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let evaluated_ids_eval = Arc::clone(&evaluated_ids);
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            move |repo: &Repository, ts: &str| {
+                evaluated_ids_eval.lock().unwrap().push(repo.id.clone());
+                Ok(sample_repo_from_domain(repo, ts))
+            },
+        )));
+        let (pool_handle, delivery_handle) = start_test_worker_pool(&state, evaluator, 2);
+
+        let timestamp = run.timestamp();
+        let repos: Vec<RepositoryEvidence> = (0..5)
+            .map(|i| {
+                let mut r = sample_repo(&format!("pipeline-repo-{i}"));
+                r.repository.id = format!("{i}");
+                r.repository.updated_at =
+                    crate::domain::repository::UpdatedAt::new("2026-06-01T00:00:00Z");
+                r
+            })
+            .collect();
+
+        for evidence in &repos {
+            let domain_key = evidence.repository.inventory_key.clone();
+            let repo_name = evidence.repository.name.clone();
+            state
+                .record_repo(&domain_key, evidence.clone(), &repo_name, &timestamp)
+                .expect("record repo in baseline");
+        }
+
+        let inventory = ValidatedInventory::from_test_parts(
+            repos
+                .iter()
+                .map(|e| Arc::new(e.repository.clone()))
+                .collect(),
+            true,
+            Some(timestamp.clone()),
+        )
+        .unwrap();
+
+        run_collection_pipeline(
+            &config, &mut run, &corr_ctx, ctx, &inventory, org_alert, &state,
+        )
+        .await
+        .expect("pipeline completion");
+
+        state.work_queue.close();
+        pool_handle.await.expect("pool shutdown");
+        delivery_handle.await.expect("delivery shutdown");
+
+        let evaluated = evaluated_ids.lock().unwrap().clone();
+        assert_eq!(
+            evaluated.len(),
+            2,
+            "only capped admission repos must enter evaluation"
+        );
+        assert!(evaluated.contains(&"0".to_string()));
+        assert!(evaluated.contains(&"1".to_string()));
+
+        assert_eq!(
+            run.coverage,
+            crate::domain::evidence::CollectionCoverage::known(
+                5,
+                std::num::NonZeroU64::new(2).unwrap(),
+            )
+        );
+        assert!(run.coverage.is_capped());
+        assert_eq!(run.coverage.selected(), Some(2));
+        assert_eq!(run.coverage.total(), Some(5));
+
+        let current = state.current_run.load();
+        let current_meta = current.as_ref().as_ref().expect("current run present");
+        assert_eq!(current_meta.coverage, run.coverage);
+
+        assert!(state.projection_deleted_snapshot().is_empty());
+        for evidence in &repos {
+            assert!(state.projection_contains(&evidence.repository.inventory_key));
+        }
+    }
+
+    #[tokio::test]
+    async fn at_limit_complete_inventory_reconciles_only_disappeared_repositories() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let timestamp = "2026-06-24T00:00:00Z";
+        let first_kept = sample_repo("at-limit-kept-a");
+        let second_kept = sample_repo("at-limit-kept-b");
+        let disappeared = sample_repo("at-limit-disappeared-c");
+        let first_kept_key = first_kept.repository.inventory_key.clone();
+        let second_kept_key = second_kept.repository.inventory_key.clone();
+        let disappeared_key = disappeared.repository.inventory_key.clone();
+
+        for evidence in [first_kept.clone(), second_kept.clone(), disappeared.clone()] {
+            let domain_key = evidence.repository.inventory_key.clone();
+            let repo_name = evidence.repository.name.clone();
+            state
+                .record_repo(&domain_key, evidence, &repo_name, timestamp)
+                .expect("record repo");
+        }
+
+        let max = config::MaxRepos::new(2).unwrap();
+        let validated = ValidatedInventory::from_test_parts(
+            vec![
+                Arc::new(first_kept.repository.clone()),
+                Arc::new(second_kept.repository.clone()),
+            ],
+            true,
+            Some(timestamp.to_string()),
+        )
+        .unwrap();
+        let at_limit_inventory = validated.admit(max);
+        assert_eq!(at_limit_inventory.total_discovered(), 2);
+        assert_eq!(at_limit_inventory.active_repos().len(), 2);
+        assert!(!at_limit_inventory.is_capped());
+        assert!(at_limit_inventory.deletion_authority().is_some());
+
+        reconcile_deleted_repositories(&state, &at_limit_inventory, timestamp)
+            .await
+            .expect("reconcile");
+
+        assert!(state.projection_contains(&first_kept_key));
+        assert!(state.projection_contains(&second_kept_key));
+        assert!(!state.projection_contains(&disappeared_key));
+    }
+
+    #[test]
+    fn caller_boundary_construction_witness_rejects_forgery() {
+        let r1 = test_repository("repo-a");
+        let mut r2 = r1.clone();
+        r2.is_empty = !r1.is_empty;
+        let conflict =
+            ValidatedInventory::from_test_parts(vec![Arc::new(r1), Arc::new(r2)], true, None);
+        assert!(
+            conflict.is_err(),
+            "validated inventory rejects conflicting repositories"
+        );
+
+        let r_kept = arc_repo("kept-repo");
+        let r_outside = arc_repo("outside-repo");
+        let validated = ValidatedInventory::from_test_parts(
+            vec![Arc::clone(&r_kept), Arc::clone(&r_outside)],
+            true,
+            None,
+        )
+        .unwrap();
+        let capped = validated.admit(config::MaxRepos::new(1).unwrap());
+        assert!(capped.is_capped());
+        assert!(
+            capped.deletion_authority().is_none(),
+            "capped inventory must never authorize deletion"
+        );
+
+        let partial_val =
+            ValidatedInventory::from_test_parts(vec![Arc::clone(&r_kept)], false, None).unwrap();
+        let partial = partial_val.admit(config::MaxRepos::new(10).unwrap());
+        assert!(!partial.is_capped());
+        assert!(!partial.is_complete());
+        assert!(
+            partial.deletion_authority().is_none(),
+            "partial inventory must never authorize deletion"
+        );
+
+        let empty_val = ValidatedInventory::from_test_parts(vec![], true, None).unwrap();
+        let empty = empty_val.admit(config::MaxRepos::new(10).unwrap());
+        assert!(empty.active_repos().is_empty());
+        assert!(
+            empty.deletion_authority().is_none(),
+            "empty inventory must never authorize deletion"
+        );
     }
 
     #[test]
@@ -4484,6 +5096,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
         }
     }
@@ -5013,6 +5626,207 @@ mod tests {
     }
 
     #[test]
+    fn build_evidence_candidate_coverage_uses_current_capped_run_over_projected_uncapped() {
+        let config = sample_config();
+        let mut run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        run_meta.coverage = crate::domain::evidence::CollectionCoverage::known(
+            100,
+            std::num::NonZeroU64::new(10).unwrap(),
+        );
+
+        let mut org_state = crate::projection::OrgReadModel {
+            archived_repos: 20,
+            assessment_metadata: test_fixtures::make_metadata(),
+            alert_summary: test_org_summary(),
+        };
+        org_state.assessment_metadata.warm_start = true;
+        org_state.assessment_metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+            100,
+            std::num::NonZeroU64::new(100).unwrap(),
+        );
+
+        let fresh_params = BuildEvidenceParams {
+            repositories: Vec::new(),
+            deleted: vec![],
+            org_state: Some(org_state.clone()),
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: Some("2026-06-25T00:00:00Z".to_string()),
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        };
+
+        let fresh_evidence = build_evidence(fresh_params);
+        assert_eq!(
+            fresh_evidence.assessment_metadata.coverage, run_meta.coverage,
+            "fresh candidate collection evidence must reflect current capped run coverage"
+        );
+        assert!(!fresh_evidence.assessment_metadata.warm_start);
+
+        let warm_params = BuildEvidenceParams {
+            repositories: Vec::new(),
+            deleted: vec![],
+            org_state: Some(org_state.clone()),
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        };
+
+        let warm_evidence = build_evidence(warm_params);
+        assert_eq!(
+            warm_evidence.assessment_metadata.coverage, org_state.assessment_metadata.coverage,
+            "warm-start / projection read must preserve durable org_state coverage"
+        );
+        assert!(warm_evidence.assessment_metadata.warm_start);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exercises aligned capped intermediate admission followed by worse candidate rejection to retained cache"
+    )]
+    async fn partial_publish_fresh_candidate_uses_capped_run_and_retained_rejection_preserves_coverage()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let all_repos: Vec<Arc<Repository>> = (0..100)
+            .map(|i| {
+                Arc::new(test_fixtures::make_repository(
+                    &format!("repo-{i:02}"),
+                    false,
+                    Visibility::Public,
+                ))
+            })
+            .collect();
+
+        let inventory = AdmittedInventory::from_test_parts(
+            all_repos.clone(),
+            true,
+            Some("2026-06-25T12:00:00Z".to_string()),
+            crate::config::MaxRepos::new(10).unwrap(),
+        )
+        .expect("valid admitted inventory");
+
+        assert!(inventory.is_capped());
+        assert_eq!(inventory.total_discovered(), 100);
+        assert_eq!(inventory.active_repos().len(), 10);
+
+        for repo in inventory.active_repos() {
+            let evidence = test_fixtures::all_passing_evidence(&repo.name);
+            state
+                .record_repo(
+                    &repo.inventory_key,
+                    evidence,
+                    &repo.name,
+                    "2026-06-25T12:00:00Z",
+                )
+                .expect("record repo");
+        }
+
+        let mut capped_run = test_run_meta();
+        capped_run.coverage = crate::domain::evidence::CollectionCoverage::known(
+            100,
+            std::num::NonZeroU64::new(10).unwrap(),
+        );
+
+        let pp = PartialPublishConfig {
+            pause_notify: Arc::new(tokio::sync::Notify::new()),
+            config: config.clone(),
+            run: capped_run.clone(),
+            inventory_fetched_at: Some("2026-06-25T12:00:00Z".to_string()),
+            inventory: inventory.clone(),
+            org_alert_summary: None,
+            auth_metadata: test_auth_metadata(),
+            capabilities: test_capabilities(),
+            state: Arc::clone(&state),
+        };
+
+        partial_render_once(&pp, &state).await;
+
+        let accepted_cache = state.html_cache().load_full();
+        let accepted_index =
+            &accepted_cache.as_ref().as_ref().expect("accepted cache")["index.html"];
+        let accepted_bytes = accepted_index.body.identity_bytes().unwrap();
+        let accepted_html = String::from_utf8_lossy(&accepted_bytes);
+        assert!(accepted_html.contains("class=\"coverage-capped-badge\""));
+        assert!(accepted_html.contains("10 of 100 repositories selected for sweep; max_repos=10"));
+
+        let mut worse_run = test_run_meta();
+        worse_run.coverage = crate::domain::evidence::CollectionCoverage::known(
+            50,
+            std::num::NonZeroU64::new(100).unwrap(),
+        );
+
+        let worse_evidence = build_evidence(BuildEvidenceParams {
+            repositories: vec![],
+            deleted: vec![],
+            org_state: None,
+            config: &config,
+            run: &worse_run,
+            inventory_fetched_at: Some("2026-06-25T13:00:00Z".to_string()),
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        });
+
+        let worse_candidate = build_sourced_publication_pages(
+            &config,
+            &worse_evidence,
+            PublicationStage::Intermediate,
+            None,
+            PublicationProvenance::Unordered,
+        )
+        .await
+        .expect("build worse candidate");
+
+        commit_cached_pages(&state, &worse_run, worse_candidate);
+
+        assert!(
+            matches!(
+                state.evidence().publication.lock().unwrap().as_ref(),
+                Some(AdmittedPublication::Retained(_))
+            ),
+            "worse candidate omitting observed evidence without deletion authority must be rejected to Retained"
+        );
+
+        let retained_cache = state.html_cache().load_full();
+        let retained_index =
+            &retained_cache.as_ref().as_ref().expect("retained cache")["index.html"];
+        let retained_bytes = retained_index.body.identity_bytes().unwrap();
+        let retained_html = String::from_utf8_lossy(&retained_bytes);
+
+        assert!(
+            retained_html.contains("10 of 100 repositories selected for sweep; max_repos=10"),
+            "retained publication must preserve previous capped coverage metadata"
+        );
+        assert!(
+            !retained_html.contains("50 of 50") && !retained_html.contains("max_repos=100"),
+            "retained publication must not adopt incoming rejected coverage"
+        );
+    }
+
+    #[test]
     fn build_evidence_empty_repos() {
         let config = sample_config();
         let run_meta = RunMetadata::new(
@@ -5333,11 +6147,7 @@ mod tests {
         );
 
         let state = AppState::new_with_cache_capacity(10).await;
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
 
         let mut saga = make_test_saga_in(&config, &run_meta, SweepPhase::Resumed);
         let corr_ctx = run_meta.correlation_context();
@@ -5699,14 +6509,13 @@ mod tests {
             ],
         );
 
-        let inventory = InventoryLoad {
-            active_repos: vec![
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![
                 arc_repo_with_updated_at("repo-1", Some(fresh_updated_at)),
                 arc_repo_with_updated_at("repo-2", Some(fresh_updated_at)),
             ],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+            true,
+        );
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         assert_eq!(saga.baseline_reused, 2);
@@ -5734,14 +6543,13 @@ mod tests {
         e1.repository.updated_at = crate::domain::repository::UpdatedAt::new(fresh_updated_at);
         seed_baseline(dir.path(), &state, vec![("repo-1", fresh_updated_at, e1)]);
 
-        let inventory = InventoryLoad {
-            active_repos: vec![
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![
                 arc_repo_with_updated_at("repo-1", Some(fresh_updated_at)),
                 arc_repo("repo-2"),
             ],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+            true,
+        );
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         assert_eq!(saga.baseline_reused, 1);
@@ -5761,11 +6569,8 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let _ = dir;
 
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory =
+            AdmittedInventory::from_test_repos(vec![arc_repo("repo-1"), arc_repo("repo-2")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         assert_eq!(saga.baseline_reused, 0);
@@ -5793,11 +6598,10 @@ mod tests {
             vec![("repo-1", fresh_updated_at, evidence_1)],
         );
 
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo_with_updated_at("repo-1", Some(fresh_updated_at))],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![arc_repo_with_updated_at("repo-1", Some(fresh_updated_at))],
+            true,
+        );
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
@@ -5836,11 +6640,10 @@ mod tests {
             vec![("repo-1", old_updated_at, evidence)],
         );
 
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo_with_updated_at("repo-1", Some(old_updated_at))],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![arc_repo_with_updated_at("repo-1", Some(old_updated_at))],
+            true,
+        );
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
@@ -5879,11 +6682,10 @@ mod tests {
             vec![("repo-1", old_updated_at, evidence)],
         );
 
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo_with_updated_at("repo-1", Some(old_updated_at))],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![arc_repo_with_updated_at("repo-1", Some(old_updated_at))],
+            true,
+        );
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
@@ -5912,14 +6714,13 @@ mod tests {
             vec![("repo-1", "2026-04-09T00:00:00Z", evidence)],
         );
 
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo_with_updated_at(
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![arc_repo_with_updated_at(
                 "repo-1",
                 Some("2026-04-10T12:00:00Z"),
             )],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+            true,
+        );
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
@@ -5948,11 +6749,7 @@ mod tests {
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
         );
 
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
@@ -6032,11 +6829,10 @@ mod tests {
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2"), arc_repo("repo-3")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![arc_repo("repo-1"), arc_repo("repo-2"), arc_repo("repo-3")],
+            true,
+        );
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6074,11 +6870,10 @@ mod tests {
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("pass-repo"), arc_repo("fail-repo")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![arc_repo("pass-repo"), arc_repo("fail-repo")],
+            true,
+        );
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6113,11 +6908,8 @@ mod tests {
 
         let mut saga = make_test_saga(&config, &run);
         let names = ["zebra", "alpha", "middle"];
-        let inventory = InventoryLoad {
-            active_repos: names.iter().map(|n| arc_repo(n)).collect(),
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory =
+            AdmittedInventory::from_test_repos(names.iter().map(|n| arc_repo(n)).collect(), true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6152,11 +6944,7 @@ mod tests {
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 1);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("panic-repo")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("panic-repo")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6192,11 +6980,7 @@ mod tests {
         let (pool, delivery) = start_test_worker_pool(&state, evaluator, 1);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("panic-repo")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("panic-repo")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6247,11 +7031,7 @@ mod tests {
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, config.max_workers);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6282,11 +7062,7 @@ mod tests {
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6315,11 +7091,8 @@ mod tests {
         let (pool, delivery) = start_test_worker_pool(&state, evaluator, 2);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory =
+            AdmittedInventory::from_test_repos(vec![arc_repo("repo-1"), arc_repo("repo-2")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6495,14 +7268,13 @@ mod tests {
         state.fence_active_run(signal);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo_with_updated_at(
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![arc_repo_with_updated_at(
                 "repo-1",
                 Some("2026-04-10T00:00:00Z"),
             )],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+            true,
+        );
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -6567,14 +7339,13 @@ mod tests {
         let (pool, delivery) = start_test_worker_pool_with_recorder(&state, evaluator, 1, recorder);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo_with_updated_at(
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![arc_repo_with_updated_at(
                 "repo-1",
                 Some("2026-04-10T00:00:00Z"),
             )],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+            true,
+        );
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -6616,11 +7387,7 @@ mod tests {
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6663,11 +7430,13 @@ mod tests {
         }
 
         let mut saga = make_test_saga_in(&config, &run, SweepPhase::BatchDrained);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("kept-repo")],
-            complete: true,
-            inventory_fetched_at: Some("2026-06-24T00:00:00Z".to_string()),
-        };
+        let inventory = AdmittedInventory::from_test_parts(
+            vec![arc_repo("kept-repo")],
+            true,
+            Some("2026-06-24T00:00:00Z".to_string()),
+            config::MaxRepos::default(),
+        )
+        .unwrap();
 
         saga_step_finalize(&mut saga, &config, &mut run, &ctx, &inventory, &state)
             .await
@@ -6705,11 +7474,13 @@ mod tests {
         }
 
         let active_repos: Vec<Arc<Repository>> = kept_names.into_iter().map(arc_repo).collect();
-        let inventory = Ok(InventoryLoad {
+        let inventory = Ok(AdmittedInventory::from_test_parts(
             active_repos,
-            complete: true,
-            inventory_fetched_at: Some(timestamp.to_string()),
-        });
+            true,
+            Some(timestamp.to_string()),
+            config::MaxRepos::default(),
+        )
+        .unwrap());
 
         reconcile_deleted_repositories_after_successful_inventory(&state, &inventory, timestamp)
             .await
@@ -6777,11 +7548,13 @@ mod tests {
                 .record_repo(&domain_key, evidence, &repo_name, timestamp)
                 .expect("record repo");
         }
-        let empty = Ok(InventoryLoad {
-            active_repos: vec![],
-            complete: true,
-            inventory_fetched_at: Some(timestamp.to_string()),
-        });
+        let empty = Ok(AdmittedInventory::from_test_parts(
+            vec![],
+            true,
+            Some(timestamp.to_string()),
+            config::MaxRepos::default(),
+        )
+        .unwrap());
 
         reconcile_deleted_repositories_after_successful_inventory(&state, &empty, timestamp)
             .await
@@ -6803,11 +7576,13 @@ mod tests {
         state
             .record_repo(&key, evidence, &name, timestamp)
             .expect("record repo");
-        let partial = Ok(InventoryLoad {
-            active_repos: vec![arc_repo("some-other-repo")],
-            complete: false,
-            inventory_fetched_at: Some(timestamp.to_string()),
-        });
+        let partial = Ok(AdmittedInventory::from_test_parts(
+            vec![arc_repo("some-other-repo")],
+            false,
+            Some(timestamp.to_string()),
+            config::MaxRepos::default(),
+        )
+        .unwrap());
 
         reconcile_deleted_repositories_after_successful_inventory(&state, &partial, timestamp)
             .await
@@ -6836,11 +7611,7 @@ mod tests {
         )));
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 1);
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![repo],
-            complete: true,
-            inventory_fetched_at: Some(timestamp.clone()),
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![repo], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6883,11 +7654,7 @@ mod tests {
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -6939,11 +7706,7 @@ mod tests {
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
 
         let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
@@ -7055,15 +7818,14 @@ mod tests {
             vec![("repo-reused", fresh_updated_at, reused)],
         );
 
-        let inventory = InventoryLoad {
-            active_repos: vec![
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![
                 arc_repo_with_updated_at("repo-reused", Some(fresh_updated_at)),
                 arc_repo("repo-pending"),
             ],
-            complete: true,
-            inventory_fetched_at: None,
-        };
-        let total = inventory.active_repos.len() as u64;
+            true,
+        );
+        let total = inventory.active_repos().len() as u64;
         assert_eq!(total, 2);
 
         let mut saga = make_test_saga(&config, &run);
@@ -7152,11 +7914,7 @@ mod tests {
         let config = sample_config();
         let run = test_run_meta();
         let state = AppState::new_with_cache_capacity(10).await;
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("retained-repo")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: vec![crate::test_fixtures::all_passing_evidence("retained-repo")],
             deleted: Vec::new(),
@@ -7316,11 +8074,7 @@ mod tests {
             RepositoryReadState::from_checks(&failed.checks),
             RepositoryReadState::Failed
         );
-        let inventory = InventoryLoad {
-            active_repos: vec![repo],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![repo], true);
         let repositories =
             include_unread_repositories(vec![failed.clone()], &inventory, "2026-09-06T12:01:00Z");
         assert_eq!(repositories, vec![failed]);
@@ -7412,11 +8166,8 @@ mod tests {
             skipped_lines: 0,
         });
         state.lock_projection().load_baseline(vec![repo.clone()]);
-        let inventory = InventoryLoad {
-            active_repos: vec![Arc::new(repo.repository.clone())],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory =
+            AdmittedInventory::from_test_repos(vec![Arc::new(repo.repository.clone())], true);
         let pp = PartialPublishConfig {
             pause_notify: Arc::new(tokio::sync::Notify::new()),
             config: config.clone(),
@@ -7901,11 +8652,7 @@ mod tests {
 
     #[test]
     fn admission_cold_inventory_preserves_pending_and_failed_entries() {
-        let inventory = InventoryLoad {
-            active_repos: Vec::new(),
-            complete: false,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(Vec::new(), false);
         let pending =
             failure_evidence_with_reason(&arc_repo("pending"), "2026-09-06T12:00:00Z", "pending");
         let failed = failure_evidence(&arc_repo("failed"), "2026-09-06T12:00:00Z");
@@ -8030,11 +8777,7 @@ mod tests {
             config: sample_config(),
             run: test_run_meta(),
             inventory_fetched_at: None,
-            inventory: InventoryLoad {
-                active_repos: Vec::new(),
-                complete: false,
-                inventory_fetched_at: None,
-            },
+            inventory: AdmittedInventory::from_test_repos(Vec::new(), false),
             org_alert_summary: None,
             auth_metadata: AuthMetadata {
                 token_tier: crate::domain::auth::TokenTier::Unknown,
@@ -8064,11 +8807,7 @@ mod tests {
         let body = index.body.identity_bytes().unwrap();
         let _html = String::from_utf8_lossy(&body);
 
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("unread-repo")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("unread-repo")], true);
         let pp = PartialPublishConfig { inventory, ..pp };
         partial_render_once(&pp, &state).await;
         let cache = state.html_cache().load_full();
@@ -8267,11 +9006,7 @@ mod tests {
     async fn terminal_publication_does_not_claim_unread_evidence_complete() {
         let config = sample_config();
         let run = test_run_meta();
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("unread-repo")],
-            complete: true,
-            inventory_fetched_at: None,
-        };
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("unread-repo")], true);
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: include_unread_repositories(Vec::new(), &inventory, &run.timestamp()),
             deleted: Vec::new(),
@@ -8321,5 +9056,265 @@ mod tests {
         let body = pages.pages["index.html"].body.identity_bytes().unwrap();
         let html = String::from_utf8_lossy(&body);
         assert!(!html.contains("publication-status"));
+    }
+
+    fn make_100_repo_test_inventory() -> AdmittedInventory {
+        let mut all_repos = Vec::with_capacity(100);
+        all_repos.push(Arc::new(test_fixtures::make_repository(
+            "repo-01-archived",
+            true,
+            Visibility::Public,
+        )));
+        all_repos.push(Arc::new(test_fixtures::make_repository(
+            "repo-02-archived",
+            true,
+            Visibility::Public,
+        )));
+        for i in 3..=10 {
+            all_repos.push(Arc::new(test_fixtures::make_repository(
+                &format!("repo-{i:02}-active"),
+                false,
+                Visibility::Public,
+            )));
+        }
+        for i in 11..=28 {
+            all_repos.push(Arc::new(test_fixtures::make_repository(
+                &format!("repo-{i:02}-archived"),
+                true,
+                Visibility::Public,
+            )));
+        }
+        for i in 29..=100 {
+            all_repos.push(Arc::new(test_fixtures::make_repository(
+                &format!("repo-{i:02}-active"),
+                false,
+                Visibility::Public,
+            )));
+        }
+
+        AdmittedInventory::from_test_parts(
+            all_repos,
+            true,
+            Some("2026-09-16T12:00:00Z".to_string()),
+            crate::config::MaxRepos::new(10).unwrap(),
+        )
+        .expect("valid admitted inventory")
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exercises genuine multi-stage population, read-state, and template rendering oracle"
+    )]
+    fn truthful_population_fixture_with_unread_and_retained_rows() {
+        let inventory = make_100_repo_test_inventory();
+
+        assert_eq!(inventory.total_discovered(), 100);
+        assert_eq!(inventory.archived_discovered(), 20);
+        assert!(inventory.is_capped());
+        assert_eq!(inventory.active_repos().len(), 10);
+        assert_eq!(
+            inventory
+                .active_repos()
+                .iter()
+                .filter(|r| r.archived)
+                .count(),
+            2
+        );
+        assert_eq!(
+            inventory
+                .active_repos()
+                .iter()
+                .filter(|r| !r.archived)
+                .count(),
+            8
+        );
+
+        let older_retained_1 = test_fixtures::all_passing_evidence("repo-91-active");
+        let older_retained_2 = test_fixtures::all_passing_evidence("repo-92-active");
+        let sweep_repos = vec![older_retained_1.clone(), older_retained_2.clone()];
+        let run_ts = "2026-09-16T12:05:00Z";
+
+        let populated_repos = include_unread_repositories(sweep_repos, &inventory, run_ts);
+
+        assert_eq!(populated_repos.len(), 12);
+
+        let unread_archived: Vec<_> = populated_repos
+            .iter()
+            .filter(|r| r.repository.archived)
+            .collect();
+        assert_eq!(unread_archived.len(), 2);
+        for r in &unread_archived {
+            assert!(
+                r.repository.name == "repo-01-archived" || r.repository.name == "repo-02-archived"
+            );
+            assert_eq!(
+                crate::domain::evidence::RepositoryReadState::from_checks(&r.checks),
+                crate::domain::evidence::RepositoryReadState::Pending
+            );
+            assert!(!r.is_complete());
+        }
+
+        let unread_active: Vec<_> = populated_repos
+            .iter()
+            .filter(|r| !r.repository.archived && !r.is_complete())
+            .collect();
+        assert_eq!(unread_active.len(), 8);
+        for r in &unread_active {
+            assert_eq!(
+                crate::domain::evidence::RepositoryReadState::from_checks(&r.checks),
+                crate::domain::evidence::RepositoryReadState::Pending
+            );
+        }
+
+        let retained_active: Vec<_> = populated_repos
+            .iter()
+            .filter(|r| !r.repository.archived && r.is_complete())
+            .collect();
+        assert_eq!(retained_active.len(), 2);
+        for r in &retained_active {
+            assert!(r.repository.name == "repo-91-active" || r.repository.name == "repo-92-active");
+            assert_eq!(
+                crate::domain::evidence::RepositoryReadState::from_checks(&r.checks),
+                crate::domain::evidence::RepositoryReadState::Observed
+            );
+        }
+
+        let non_archived_count = populated_repos
+            .iter()
+            .filter(|r| !r.repository.archived)
+            .count();
+        assert_eq!(non_archived_count, 10);
+        let selected_count = inventory.active_repos().len();
+        assert_eq!(selected_count, 10);
+        assert_eq!(non_archived_count, selected_count);
+
+        let config = sample_config();
+        let mut run = test_run_meta();
+        run.coverage = crate::domain::evidence::CollectionCoverage::known(
+            100,
+            std::num::NonZeroU64::new(10).unwrap(),
+        );
+
+        let org_state = crate::projection::OrgReadModel {
+            archived_repos: inventory.archived_discovered(),
+            assessment_metadata: build_assessment_metadata(
+                &config,
+                &run,
+                inventory.inventory_fetched_at().map(str::to_owned),
+                &test_auth_metadata(),
+                &test_capabilities(),
+                0,
+            ),
+            alert_summary: test_org_summary(),
+        };
+
+        let equal_evidence = build_evidence(BuildEvidenceParams {
+            repositories: populated_repos,
+            deleted: Vec::new(),
+            org_state: Some(org_state.clone()),
+            config: &config,
+            run: &run,
+            inventory_fetched_at: inventory.inventory_fetched_at().map(str::to_owned),
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        });
+
+        assert_eq!(equal_evidence.collection_statistics.total_repos, 10);
+        assert_eq!(equal_evidence.collection_statistics.archived_repos, 20);
+
+        let equal_pages =
+            crate::report::html::render_dashboard(&equal_evidence, &DashboardConfig::default())
+                .unwrap();
+        let equal_index = &equal_pages["index.html"];
+        let equal_report = &equal_pages["report.html"];
+
+        assert!(equal_index.contains(
+            "100 total · 10 non-archived report rows · 20 archived repositories in <code>TestOrg</code>"
+        ));
+        assert!(
+            equal_report
+                .contains("100 total · 10 non-archived report rows · 20 archived repositories in")
+        );
+        assert!(equal_report.contains("<code>TestOrg</code>"));
+
+        let older_retained_3 = test_fixtures::all_passing_evidence("repo-93-active");
+        let sweep_repos_unequal = vec![older_retained_1, older_retained_2, older_retained_3];
+        let populated_unequal =
+            include_unread_repositories(sweep_repos_unequal, &inventory, run_ts);
+        assert_eq!(populated_unequal.len(), 13);
+        let unequal_non_archived = populated_unequal
+            .iter()
+            .filter(|r| !r.repository.archived)
+            .count();
+        assert_eq!(unequal_non_archived, 11);
+
+        let unequal_evidence = build_evidence(BuildEvidenceParams {
+            repositories: populated_unequal,
+            deleted: Vec::new(),
+            org_state: Some(org_state),
+            config: &config,
+            run: &run,
+            inventory_fetched_at: inventory.inventory_fetched_at().map(str::to_owned),
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        });
+
+        assert_eq!(unequal_evidence.collection_statistics.total_repos, 11);
+        assert_eq!(unequal_evidence.collection_statistics.archived_repos, 20);
+
+        let unequal_pages =
+            crate::report::html::render_dashboard(&unequal_evidence, &DashboardConfig::default())
+                .unwrap();
+        let unequal_index = &unequal_pages["index.html"];
+        let unequal_report = &unequal_pages["report.html"];
+
+        assert!(unequal_index.contains(
+            "100 total · 11 non-archived report rows · 20 archived repositories in <code>TestOrg</code>"
+        ));
+        assert!(
+            unequal_report
+                .contains("100 total · 11 non-archived report rows · 20 archived repositories in")
+        );
+        assert!(unequal_report.contains("<code>TestOrg</code>"));
+
+        assert!(
+            !unequal_index.contains("retained/evaluated"),
+            "must not claim all rows are evaluated when unread pending rows exist; got: {unequal_index}"
+        );
+        assert!(
+            !unequal_report.contains("retained/evaluated"),
+            "must not claim all rows are evaluated when unread pending rows exist; got: {unequal_report}"
+        );
+        assert!(
+            unequal_index
+                .contains("11 non-archived report rows (may include unread and retained evidence)"),
+            "coverage notice must use neutral population disclosure distinguishing non-archived rows; got: {unequal_index}"
+        );
+        assert!(
+            unequal_report
+                .contains("11 non-archived report rows (may include unread and retained evidence)"),
+            "coverage notice must use neutral population disclosure distinguishing non-archived rows; got: {unequal_report}"
+        );
+        assert!(
+            equal_index
+                .contains("10 non-archived report rows (may include unread and retained evidence)"),
+            "coverage notice must not suppress population disclosure when counts are equal but membership differs; got: {equal_index}"
+        );
+        assert!(
+            equal_report
+                .contains("10 non-archived report rows (may include unread and retained evidence)"),
+            "coverage notice must not suppress population disclosure when counts are equal but membership differs; got: {equal_report}"
+        );
     }
 }

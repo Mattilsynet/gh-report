@@ -724,7 +724,7 @@ fn spawn_collection_loop(
     tokio::spawn(async move {
         {
             let cfg = initial_run_config(&config, &force_flag, &force_refresh_flag);
-            match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
+            match Box::pin(collect::run_with_outcome(cfg, Arc::clone(&state))).await {
                 Ok(collect::CollectionOutcome::Completed) => info!("initial collection complete"),
                 Ok(collect::CollectionOutcome::Cancelled) => {
                     info!("initial collection aborted on shutdown — no report published");
@@ -773,7 +773,7 @@ fn spawn_collection_loop(
                 NextTick::Run => {}
             }
             let cfg = scheduled_run_config(&config, &force_flag, &force_refresh_flag);
-            match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
+            match Box::pin(collect::run_with_outcome(cfg, Arc::clone(&state))).await {
                 Ok(collect::CollectionOutcome::Completed) => {
                     info!(
                         rss_kb = ?read_rss_kb(),
@@ -1736,6 +1736,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
         };
         let force_flag = OneShotFlag::new(true);
@@ -1973,6 +1974,7 @@ mod tests {
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             sweep_timeout: crate::config::SweepTimeout::default(),
+            max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
         };
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);

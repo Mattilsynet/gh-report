@@ -617,6 +617,17 @@ impl AppState {
         })
     }
 
+    pub(crate) fn projection_org_coverage(
+        &self,
+    ) -> Option<crate::domain::evidence::CollectionCoverage> {
+        resolve_projection(&self.projection_state, |projection| {
+            projection
+                .org_state
+                .as_ref()
+                .map(|o| o.assessment_metadata.coverage)
+        })
+    }
+
     /// Look up evidence for `key` in `projection_state`, returning an
     /// owned clone.
     ///
@@ -2260,6 +2271,37 @@ impl AppState {
         let projection_repo_count = self.projection_len();
         let projection_bytes_est = projection_repo_count
             * std::mem::size_of::<crate::domain::evidence::RepositoryEvidence>();
+
+        let (coverage_provenance, coverage_obj) = if let Some(curr) = current.as_ref().as_ref() {
+            if curr.coverage.is_known() {
+                ("current_run", curr.coverage)
+            } else {
+                (
+                    "unknown",
+                    crate::domain::evidence::CollectionCoverage::Unknown,
+                )
+            }
+        } else if let Some(completed) = last.as_ref().as_ref() {
+            if completed.coverage.is_known() {
+                ("last_completed_run", completed.coverage)
+            } else {
+                (
+                    "unknown",
+                    crate::domain::evidence::CollectionCoverage::Unknown,
+                )
+            }
+        } else if let Some(durable_cov) = self
+            .projection_org_coverage()
+            .filter(crate::domain::evidence::CollectionCoverage::is_known)
+        {
+            ("durable_assessment", durable_cov)
+        } else {
+            (
+                "unknown",
+                crate::domain::evidence::CollectionCoverage::Unknown,
+            )
+        };
+
         serde_json::json!({
             "current_run": current.as_ref(),
             "last_completed_run": last.as_ref(),
@@ -2268,6 +2310,18 @@ impl AppState {
             "rss_kb": read_rss_kb(),
             "projection_repo_count": projection_repo_count,
             "projection_bytes_est": projection_bytes_est,
+            "coverage": {
+                "provenance": coverage_provenance,
+                "status": if coverage_obj.is_unknown() { "unknown" } else { "known" },
+                "capped": coverage_obj.is_capped(),
+                "selected": coverage_obj.selected(),
+                "total": coverage_obj.total(),
+                "limit": coverage_obj.limit().map(std::num::NonZero::get),
+            },
+            "coverage_capped": coverage_obj.is_capped(),
+            "selected_repos": coverage_obj.selected(),
+            "total_repos": coverage_obj.total(),
+            "cap_limit": coverage_obj.limit().map(std::num::NonZero::get),
         })
     }
 }
@@ -2734,6 +2788,255 @@ mod tests {
         drop(nats_runtime);
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn real_store_create_record_drop_reopen_warm_html_and_status() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let events_dir = tmp.path().join("events");
+        std::fs::create_dir_all(&events_dir).expect("mk events dir");
+
+        let org = "test-durable-warm";
+        let nats_config =
+            NatsStoreConfig::for_org(org, crate::config::runtime::DEFAULT_NATS_URL).unwrap();
+
+        {
+            let app_state =
+                AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats_config.clone())
+                    .await
+                    .expect("with_stores 1");
+
+            let mut metadata = crate::test_fixtures::make_metadata();
+            metadata.organization = org.to_string();
+            metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+                100,
+                std::num::NonZeroU64::new(10).unwrap(),
+            );
+
+            let snapshot = crate::domain::evidence::OrgStateSnapshot {
+                archived_repos: 20,
+                assessment_metadata: metadata.clone(),
+                alert_summary: empty_org_summary(),
+            };
+
+            let repo_evidence = crate::test_fixtures::all_passing_evidence("seed-repo");
+            app_state
+                .record_repo(
+                    "id-seed-repo",
+                    repo_evidence,
+                    "seed-repo",
+                    &metadata.run_timestamp,
+                )
+                .expect("record_repo");
+            app_state.record_org(snapshot).expect("record_org");
+        }
+
+        {
+            let app_state =
+                AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats_config.clone())
+                    .await
+                    .expect("with_stores 2");
+
+            app_state.snapshot_fast_path_init().expect("rehydrate");
+
+            let status = app_state.status_payload();
+            assert_eq!(status["coverage"]["status"], "known");
+            assert_eq!(status["coverage"]["provenance"], "durable_assessment");
+            assert_eq!(status["coverage"]["total"], 100);
+            assert_eq!(status["coverage"]["limit"], 10);
+            assert_eq!(status["coverage"]["selected"], 10);
+            assert_eq!(status["coverage"]["capped"], true);
+
+            {
+                let projection_arc = app_state.projection_state_for_test();
+                let projection = projection_arc.lock().expect("projection lock");
+                let org_model = projection.org_state.as_ref().expect("org_state present");
+                assert_eq!(org_model.archived_repos, 20);
+                assert_eq!(
+                    org_model.assessment_metadata.coverage,
+                    crate::domain::evidence::CollectionCoverage::known(
+                        100,
+                        std::num::NonZeroU64::new(10).unwrap(),
+                    )
+                );
+            }
+
+            let config = test_warm_config(org, tmp.path());
+
+            let ok = crate::app::collect::warm_start_from_baseline(&config, &app_state).await;
+            assert!(
+                ok,
+                "warm_start_from_baseline must succeed from durable store"
+            );
+
+            let cache = app_state.html_cache().load_full();
+            let pages = cache.as_ref().as_ref().expect("html cache populated");
+            let index = &pages["index.html"];
+            let bytes = index.body.identity_bytes().unwrap();
+            let html = String::from_utf8_lossy(&bytes);
+            assert!(html.contains("warm-start-badge"));
+            assert!(html.contains("10 of 100 repositories selected"));
+            assert!(html.contains("class=\"coverage-capped-badge\""));
+            assert!(html.contains("100 total"));
+            assert!(html.contains("20 archived repositories"));
+        }
+    }
+
+    fn test_warm_config(
+        org: &str,
+        store_dir: &std::path::Path,
+    ) -> crate::config::runtime::RuntimeConfig {
+        crate::config::runtime::RuntimeConfig {
+            org_name: org.to_string(),
+            no_resume: true,
+            max_workers: 4,
+            store_dir: store_dir.to_path_buf(),
+            pardosa_backend: crate::config::runtime::PardosaBackend::Pgno,
+            nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
+            nats_creds: None,
+            force_unlock: false,
+            force_refresh: false,
+            dashboard_config: crate::config::dashboard::DashboardConfig::default(),
+            team_roster_read_from_projection: true,
+            rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            sweep_timeout: crate::config::SweepTimeout::default(),
+            max_repos: crate::config::MaxRepos::default(),
+            nats_runtime: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn real_store_unknown_coverage_control_reopen() {
+        let tmp_unk = tempfile::tempdir().expect("tempdir unk");
+        let events_dir_unk = tmp_unk.path().join("events");
+        std::fs::create_dir_all(&events_dir_unk).expect("mk events dir unk");
+        let nats_config_unk =
+            NatsStoreConfig::for_org("test-unk-control", crate::config::runtime::DEFAULT_NATS_URL)
+                .unwrap();
+
+        {
+            let app_state = AppState::with_stores(
+                &events_dir_unk,
+                PardosaBackend::Pgno,
+                nats_config_unk.clone(),
+            )
+            .await
+            .expect("with_stores unk 1");
+
+            let mut metadata = crate::test_fixtures::make_metadata();
+            metadata.organization = "test-unk-control".to_string();
+            metadata.coverage = crate::domain::evidence::CollectionCoverage::Unknown;
+
+            let snapshot = crate::domain::evidence::OrgStateSnapshot {
+                archived_repos: 5,
+                assessment_metadata: metadata.clone(),
+                alert_summary: empty_org_summary(),
+            };
+
+            let repo_evidence = crate::test_fixtures::all_passing_evidence("seed-repo-unk");
+            app_state
+                .record_repo(
+                    "id-seed-repo-unk",
+                    repo_evidence,
+                    "seed-repo-unk",
+                    &metadata.run_timestamp,
+                )
+                .expect("record_repo unk");
+            app_state.record_org(snapshot).expect("record_org unk");
+        }
+
+        {
+            let app_state =
+                AppState::with_stores(&events_dir_unk, PardosaBackend::Pgno, nats_config_unk)
+                    .await
+                    .expect("with_stores unk 2");
+
+            app_state.snapshot_fast_path_init().expect("rehydrate unk");
+
+            let status = app_state.status_payload();
+            assert_eq!(status["coverage"]["status"], "unknown");
+            assert_eq!(status["coverage"]["provenance"], "unknown");
+            assert!(status["coverage"]["total"].is_null());
+            assert!(status["coverage"]["limit"].is_null());
+            assert!(status["coverage"]["selected"].is_null());
+            assert_eq!(status["coverage"]["capped"], false);
+
+            {
+                let projection_arc = app_state.projection_state_for_test();
+                let projection = projection_arc.lock().expect("projection lock unk");
+                let org_model = projection
+                    .org_state
+                    .as_ref()
+                    .expect("org_state present unk");
+                assert_eq!(
+                    org_model.assessment_metadata.coverage,
+                    crate::domain::evidence::CollectionCoverage::Unknown
+                );
+            }
+
+            let config = test_warm_config("test-unk-control", tmp_unk.path());
+
+            let ok = crate::app::collect::warm_start_from_baseline(&config, &app_state).await;
+            assert!(
+                ok,
+                "warm_start_from_baseline must succeed for unknown coverage"
+            );
+
+            let cache = app_state.html_cache().load_full();
+            let pages = cache.as_ref().as_ref().expect("html cache populated");
+            let index = &pages["index.html"];
+            let bytes = index.body.identity_bytes().unwrap();
+            let html = String::from_utf8_lossy(&bytes);
+            assert!(html.contains("warm-start-badge"));
+            assert!(!html.contains("class=\"coverage-capped-badge\""));
+        }
+    }
+
+    #[tokio::test]
+    async fn v22_schema_descriptor_refusal_on_reopen() {
+        use pardosa::prelude::*;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let events_dir = tmp.path().join("events");
+        let org = "test-v22-refusal";
+        let org_events_dir = events_dir.join(org);
+        std::fs::create_dir_all(&org_events_dir).expect("mk events dir");
+
+        let org_pgno_path = events_dir.join("org-events.pgno");
+        let adapter = FileStorageAdapter::new(&org_pgno_path);
+        let claim = OwnershipClaimRecord {
+            epoch: 1,
+            machine_id: [0u8; 16],
+            boot_id: [0u8; 16],
+            process_id: u64::from(std::process::id()),
+            process_start_time_ns: 0,
+            claim_time_ns: 0,
+            operator_label: "v22-descriptor-seed".to_string(),
+        };
+        let mut session = adapter.create(&claim).expect("create bare org store");
+        let v22_desc = crate::event::v22_org_state_descriptor();
+        assert_eq!(
+            v22_desc.identity().to_hex(),
+            "2ec6b5d4f386afbe6a73fe4e0c962897e477316af3137591927bb18a31b4c38f",
+            "must prove historical v22 descriptor identity before seeding store"
+        );
+        session
+            .set_schema_descriptor(&v22_desc)
+            .expect("set v22 descriptor");
+        session.sync().expect("sync v22 descriptor");
+        drop(session);
+
+        let nats_config =
+            NatsStoreConfig::for_org(org, crate::config::runtime::DEFAULT_NATS_URL).unwrap();
+        let result = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats_config).await;
+
+        let Err(err) = result else {
+            panic!("reopening store with v22 schema descriptor must be refused");
+        };
+        assert!(
+            err.to_string()
+                .contains("schema descriptor identity mismatch"),
+            "expected schema descriptor identity mismatch error, got: {err}"
+        );
+    }
+
     #[test]
     fn nats_subjects_for_stem_derives_dotted_subjects() {
         let (meta, data) = nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v22");
@@ -2825,7 +3128,10 @@ mod tests {
             assessment_metadata: AssessmentMetadata {
                 date: EventString::new("2026-07-16".to_string()).unwrap(),
                 organization: EventString::new(org.to_string()).unwrap(),
-                schema_version: EventString::new("22.0".to_string()).unwrap(),
+                schema_version: EventString::new(
+                    crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+                )
+                .unwrap(),
                 run_timestamp: EventString::new("2026-07-16T00:00:00Z".to_string()).unwrap(),
                 run_id: EventString::new("run-1".to_string()).unwrap(),
                 token_tier: TokenTier::Full,
@@ -2837,6 +3143,7 @@ mod tests {
                     EventString::new("2026-07-16T00:00:00Z".to_string()).unwrap(),
                 ),
                 warm_start: false,
+                coverage: crate::event::CollectionCoverage::default(),
             },
             alert_summary: OrgAlertSummary {
                 collection_status: CollectionStatus::Success,
@@ -4413,5 +4720,89 @@ accounts: {
             state.projection_contains("queued-repo"),
             "concurrent drain must not drop an already queued delivery outcome"
         );
+    }
+
+    #[tokio::test]
+    async fn status_payload_identifies_coverage_provenance_faithfully() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let empty_payload = state.status_payload();
+        assert_eq!(empty_payload["coverage"]["provenance"], "unknown");
+        assert_eq!(empty_payload["coverage"]["capped"], false);
+        assert!(empty_payload["coverage"]["selected"].is_null());
+
+        let mut completed = RunMetadata::new("Org".to_string(), "1.0".to_string());
+        completed.complete();
+        completed.coverage = crate::domain::evidence::CollectionCoverage::known(
+            50,
+            std::num::NonZeroU64::new(100).unwrap(),
+        );
+        state.last_completed_run.store(Arc::new(Some(completed)));
+
+        let mut current_unknown = RunMetadata::new("Org".to_string(), "1.0".to_string());
+        current_unknown.coverage = crate::domain::evidence::CollectionCoverage::Unknown;
+        state.current_run.store(Arc::new(Some(current_unknown)));
+
+        let active_unknown_payload = state.status_payload();
+        assert_eq!(
+            active_unknown_payload["coverage"]["provenance"], "unknown",
+            "active run with unknown coverage must not borrow completed run coverage"
+        );
+        assert_eq!(active_unknown_payload["coverage"]["capped"], false);
+
+        state.current_run.store(Arc::new(None));
+        let completed_payload = state.status_payload();
+        assert_eq!(
+            completed_payload["coverage"]["provenance"],
+            "last_completed_run"
+        );
+        assert_eq!(completed_payload["coverage"]["capped"], false);
+        assert_eq!(completed_payload["coverage"]["selected"], 50);
+        assert_eq!(completed_payload["coverage"]["total"], 50);
+        assert_eq!(completed_payload["coverage"]["limit"], 100);
+
+        let mut current_known = RunMetadata::new("Org".to_string(), "1.0".to_string());
+        current_known.coverage = crate::domain::evidence::CollectionCoverage::known(
+            776,
+            std::num::NonZeroU64::new(10).unwrap(),
+        );
+        state.current_run.store(Arc::new(Some(current_known)));
+
+        let current_payload = state.status_payload();
+        assert_eq!(current_payload["coverage"]["provenance"], "current_run");
+        assert_eq!(current_payload["coverage"]["capped"], true);
+        assert_eq!(current_payload["coverage"]["selected"], 10);
+        assert_eq!(current_payload["coverage"]["total"], 776);
+        assert_eq!(current_payload["coverage"]["limit"], 10);
+
+        state.current_run.store(Arc::new(None));
+        state.last_completed_run.store(Arc::new(None));
+        let mut org_event = synthetic_org_state("Org");
+        org_event.assessment_metadata.coverage = crate::event::CollectionCoverage::Known {
+            total: 200,
+            limit: std::num::NonZeroU64::new(25).unwrap(),
+        };
+        state.fold_org_event_into_projection(org_event);
+        let durable_payload = state.status_payload();
+        assert_eq!(
+            durable_payload["coverage"]["provenance"],
+            "durable_assessment"
+        );
+        assert_eq!(durable_payload["coverage"]["capped"], true);
+        assert_eq!(durable_payload["coverage"]["selected"], 25);
+        assert_eq!(durable_payload["coverage"]["total"], 200);
+        assert_eq!(durable_payload["coverage"]["limit"], 25);
+
+        let mut completed_unknown = RunMetadata::new("Org".to_string(), "1.0".to_string());
+        completed_unknown.complete();
+        completed_unknown.coverage = crate::domain::evidence::CollectionCoverage::Unknown;
+        state
+            .last_completed_run
+            .store(Arc::new(Some(completed_unknown)));
+        let completed_unknown_payload = state.status_payload();
+        assert_eq!(
+            completed_unknown_payload["coverage"]["provenance"], "unknown",
+            "completed run with unknown coverage must not borrow durable assessment"
+        );
+        assert_eq!(completed_unknown_payload["coverage"]["capped"], false);
     }
 }

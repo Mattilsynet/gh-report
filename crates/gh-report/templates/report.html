@@ -12,8 +12,8 @@
     <h1>{{ vm.organization }} GitHub Governance Overview</h1>
 
     <div class="meta">
-        <p><strong>Date:</strong> {{ vm.date_time }} · <strong>Run:</strong> {{ vm.run_id }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} non-archived · {{ vm.archived_repos }} archived repositories in
-            <code>{{ vm.organization }}</code></p>
+        <p><strong>Date:</strong> {{ vm.date_time }} · <strong>Run:</strong> {{ vm.run_id }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} {{ vm.scope_non_archived_label }} · {{ vm.archived_repos }} archived repositories in
+            <code>{{ vm.organization }}</code>{% if let Some(notice) = vm.coverage_notice %} <span class="coverage-capped-badge">{{ notice|safe }}</span>{% endif %}</p>
     </div>
 
     <h2>Summary</h2>

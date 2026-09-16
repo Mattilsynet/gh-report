@@ -5,7 +5,7 @@ expression: metadata
 {
   "date": "2026-04-09",
   "organization": "TestOrg",
-  "schema_version": "22.0",
+  "schema_version": "23.0",
   "run_timestamp": "2026-04-09T12:00:00+00:00",
   "run_id": "test-run-id",
   "token_tier": "full",
@@ -13,5 +13,8 @@ expression: metadata
   "auth_mode": "pat",
   "rate_limit_warnings": 0,
   "unavailable_capabilities": [],
-  "warm_start": false
+  "warm_start": false,
+  "coverage": {
+    "status": "unknown"
+  }
 }

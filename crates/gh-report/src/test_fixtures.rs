@@ -492,6 +492,7 @@ pub fn make_metadata() -> AssessmentMetadata {
         unavailable_capabilities: vec![],
         inventory_fetched_at: None,
         warm_start: false,
+        coverage: crate::domain::evidence::CollectionCoverage::default(),
     }
 }
 
