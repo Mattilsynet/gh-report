@@ -51,7 +51,9 @@ use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::OrgAlertSummary;
 use crate::domain::repository::Repository;
 use crate::domain::run::RunMetadata;
-use crate::error::{AppError, GitHubApiError, PersistenceError, persist_error_variant};
+use crate::error::{
+    AppError, GitHubApiError, InventoryError, PersistenceError, persist_error_variant,
+};
 use crate::event::SweepTimeoutEvent;
 use crate::github::auth::{AuthMetadata, CapabilitySet, GitHubAppConfig, GitHubCredential};
 use crate::github::client::{GitHubClient, truncate_error_body};
@@ -1614,7 +1616,7 @@ async fn prepare_collection(
 
 async fn load_active_repositories(client: &GitHubClient) -> Result<InventoryLoad, AppError> {
     let inv = inventory::build_inventory_from_api(client, None).await?;
-    let load = inventory_load_from_payload(inv);
+    let load = inventory_load_from_payload(inv)?;
     info!(
         total = load.active_repos.len(),
         "repository inventory loaded"
@@ -1622,15 +1624,155 @@ async fn load_active_repositories(client: &GitHubClient) -> Result<InventoryLoad
     Ok(load)
 }
 
-fn inventory_load_from_payload(payload: inventory::InventoryPayload) -> InventoryLoad {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InventoryValidationError {
+    IdentityConflict {
+        identity_key: String,
+        first_id: String,
+        second_id: String,
+    },
+    PayloadMismatch {
+        repo_id: String,
+        field: &'static str,
+    },
+}
+
+impl From<InventoryValidationError> for InventoryError {
+    fn from(err: InventoryValidationError) -> Self {
+        InventoryError::ApiFetchFailed {
+            reason: match err {
+                InventoryValidationError::IdentityConflict {
+                    identity_key,
+                    first_id,
+                    second_id,
+                } => format!(
+                    "inventory identity conflict on '{identity_key}': repo '{first_id}' vs '{second_id}'"
+                ),
+                InventoryValidationError::PayloadMismatch { repo_id, field } => {
+                    format!("inventory payload conflict for repo '{repo_id}' on field '{field}'")
+                }
+            },
+        }
+    }
+}
+
+fn find_payload_difference(a: &Repository, b: &Repository) -> Option<&'static str> {
+    if a.id != b.id {
+        return Some("id");
+    }
+    if a.node_id != b.node_id {
+        return Some("node_id");
+    }
+    if a.name != b.name {
+        return Some("name");
+    }
+    if a.visibility != b.visibility {
+        return Some("visibility");
+    }
+    if a.language != b.language {
+        return Some("language");
+    }
+    if a.default_branch != b.default_branch {
+        return Some("default_branch");
+    }
+    if a.archived != b.archived {
+        return Some("archived");
+    }
+    if a.inventory_key != b.inventory_key {
+        return Some("inventory_key");
+    }
+    if a.updated_at != b.updated_at {
+        return Some("updated_at");
+    }
+    if a.has_issues != b.has_issues {
+        return Some("has_issues");
+    }
+    if a.pushed_at != b.pushed_at {
+        return Some("pushed_at");
+    }
+    if a.created_at != b.created_at {
+        return Some("created_at");
+    }
+    if a.description != b.description {
+        return Some("description");
+    }
+    if a.fork != b.fork {
+        return Some("fork");
+    }
+    if a.is_empty != b.is_empty {
+        return Some("is_empty");
+    }
+    if a.html_url != b.html_url {
+        return Some("html_url");
+    }
+    if a.topics != b.topics {
+        return Some("topics");
+    }
+    if a.license_spdx != b.license_spdx {
+        return Some("license_spdx");
+    }
+    None
+}
+
+fn validate_and_deduplicate_repositories(
+    repositories: Vec<Repository>,
+) -> Result<Vec<Arc<Repository>>, InventoryValidationError> {
+    let mut unique_repos: Vec<Arc<Repository>> = Vec::new();
+    let mut id_map: HashMap<String, usize> = HashMap::new();
+    let mut key_map: HashMap<String, usize> = HashMap::new();
+
+    for repo in repositories {
+        let match_id = id_map.get(repo.id.as_str()).copied();
+        let match_key = key_map.get(repo.inventory_key.as_str()).copied();
+
+        let matches: [(Option<usize>, &str); 2] = [(match_id, "id"), (match_key, "inventory_key")];
+        let mut matched_index: Option<usize> = None;
+
+        for (m, label) in matches {
+            if let Some(idx) = m {
+                if let Some(prior_idx) = matched_index {
+                    if prior_idx != idx {
+                        return Err(InventoryValidationError::IdentityConflict {
+                            identity_key: label.to_string(),
+                            first_id: unique_repos[prior_idx].id.clone(),
+                            second_id: unique_repos[idx].id.clone(),
+                        });
+                    }
+                } else {
+                    matched_index = Some(idx);
+                }
+            }
+        }
+
+        if let Some(idx) = matched_index {
+            let existing = &unique_repos[idx];
+            if let Some(differing_field) = find_payload_difference(&repo, existing) {
+                return Err(InventoryValidationError::PayloadMismatch {
+                    repo_id: repo.id,
+                    field: differing_field,
+                });
+            }
+        } else {
+            let idx = unique_repos.len();
+            id_map.insert(repo.id.clone(), idx);
+            key_map.insert(repo.inventory_key.clone(), idx);
+            unique_repos.push(Arc::new(repo));
+        }
+    }
+
+    Ok(unique_repos)
+}
+
+fn inventory_load_from_payload(
+    payload: inventory::InventoryPayload,
+) -> Result<InventoryLoad, InventoryError> {
     let inventory_fetched_at = payload.inventory_fetched_at;
-    let active_repos: Vec<Arc<Repository>> =
-        payload.repositories.into_iter().map(Arc::new).collect();
-    InventoryLoad {
+    let active_repos = validate_and_deduplicate_repositories(payload.repositories)?;
+    Ok(InventoryLoad {
         active_repos,
         complete: payload.complete,
         inventory_fetched_at,
-    }
+    })
 }
 
 async fn reconcile_deleted_repositories(
@@ -3849,7 +3991,7 @@ mod tests {
             test_fixtures::make_repository("active-priv", false, Visibility::Private),
         ]);
 
-        let load = inventory_load_from_payload(payload);
+        let load = inventory_load_from_payload(payload).unwrap();
 
         let names: Vec<&str> = load.active_repos.iter().map(|r| r.name.as_str()).collect();
         assert!(
@@ -3868,9 +4010,436 @@ mod tests {
             test_fixtures::make_repository("c", false, Visibility::Public),
         ]);
 
-        let load = inventory_load_from_payload(payload);
+        let load = inventory_load_from_payload(payload).unwrap();
 
         assert_eq!(load.active_repos.iter().filter(|r| r.archived).count(), 2);
+    }
+
+    #[test]
+    fn inventory_load_rejects_identity_conflicts_in_all_permutations() {
+        let mut a = test_repository("repo-a");
+        a.id = "a".to_string();
+        a.inventory_key = "k".to_string();
+
+        let mut b = test_repository("repo-b");
+        b.id = "a".to_string();
+        b.inventory_key = "l".to_string();
+
+        let mut c = test_repository("repo-c");
+        c.id = "b".to_string();
+        c.inventory_key = "l".to_string();
+
+        let permutations = [
+            vec![a.clone(), b.clone(), c.clone()],
+            vec![a.clone(), c.clone(), b.clone()],
+            vec![b.clone(), a.clone(), c.clone()],
+            vec![b.clone(), c.clone(), a.clone()],
+            vec![c.clone(), a.clone(), b.clone()],
+            vec![c.clone(), b.clone(), a.clone()],
+        ];
+
+        for (idx, perm) in permutations.into_iter().enumerate() {
+            let err = validate_and_deduplicate_repositories(perm.clone())
+                .expect_err("permutation must reject");
+            assert!(
+                matches!(
+                    err,
+                    InventoryValidationError::IdentityConflict { .. }
+                        | InventoryValidationError::PayloadMismatch { .. }
+                ),
+                "permutation {idx} must yield typed validation error, got {err:?}"
+            );
+            let payload = inventory_payload_with(perm);
+            let res = inventory_load_from_payload(payload);
+            assert!(
+                matches!(res, Err(InventoryError::ApiFetchFailed { .. })),
+                "permutation {idx} must map to InventoryError::ApiFetchFailed"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "comprehensive 18-field payload difference test table"
+    )]
+    fn inventory_load_rejects_each_same_identity_payload_difference() {
+        let base = Repository {
+            id: "7".to_string(),
+            node_id: Some("node-7".to_string()),
+            name: "repo-7".to_string(),
+            visibility: Visibility::Public,
+            language: Some("Rust".to_string()),
+            default_branch: "main".to_string(),
+            archived: false,
+            inventory_key: "7".to_string(),
+            updated_at: crate::domain::repository::UpdatedAt::new("2026-01-01T00:00:00Z"),
+            has_issues: true,
+            pushed_at: Some("2026-01-02T00:00:00Z".to_string()),
+            created_at: Some("2025-01-01T00:00:00Z".to_string()),
+            description: Some("base description".to_string()),
+            fork: false,
+            is_empty: false,
+            html_url: Some("https://github.com/TestOrg/repo-7".to_string()),
+            topics: vec!["topic-1".to_string(), "topic-2".to_string()],
+            license_spdx: Some("MIT".to_string()),
+        };
+
+        let expected_fields = [
+            "id",
+            "node_id",
+            "name",
+            "visibility",
+            "language",
+            "default_branch",
+            "archived",
+            "inventory_key",
+            "updated_at",
+            "has_issues",
+            "pushed_at",
+            "created_at",
+            "description",
+            "fork",
+            "is_empty",
+            "html_url",
+            "topics",
+            "license_spdx",
+        ];
+
+        for (field_idx, &expected_field) in expected_fields.iter().enumerate() {
+            let mut variant = base.clone();
+            match field_idx {
+                0 => {
+                    variant.id = "other-id".to_string();
+                }
+                1 => {
+                    variant.node_id = Some("other-node".to_string());
+                }
+                2 => {
+                    variant.name = "other-name".to_string();
+                }
+                3 => {
+                    variant.visibility = Visibility::Private;
+                }
+                4 => {
+                    variant.language = Some("Go".to_string());
+                }
+                5 => {
+                    variant.default_branch = "dev".to_string();
+                }
+                6 => {
+                    variant.archived = true;
+                }
+                7 => {
+                    variant.inventory_key = "other-key".to_string();
+                }
+                8 => {
+                    variant.updated_at =
+                        crate::domain::repository::UpdatedAt::new("2026-02-01T00:00:00Z");
+                }
+                9 => {
+                    variant.has_issues = false;
+                }
+                10 => {
+                    variant.pushed_at = Some("2026-03-01T00:00:00Z".to_string());
+                }
+                11 => {
+                    variant.created_at = Some("2024-01-01T00:00:00Z".to_string());
+                }
+                12 => {
+                    variant.description = Some("other description".to_string());
+                }
+                13 => {
+                    variant.fork = true;
+                }
+                14 => {
+                    variant.is_empty = true;
+                }
+                15 => {
+                    variant.html_url = Some("https://github.com/TestOrg/other".to_string());
+                }
+                16 => {
+                    variant.topics = vec!["topic-2".to_string(), "topic-1".to_string()];
+                }
+                17 => {
+                    variant.license_spdx = Some("Apache-2.0".to_string());
+                }
+                _ => unreachable!(),
+            }
+
+            let expected_repo_id = if field_idx == 0 { "other-id" } else { "7" };
+            let err = validate_and_deduplicate_repositories(vec![base.clone(), variant.clone()])
+                .expect_err("payload difference must reject");
+            assert_eq!(
+                err,
+                InventoryValidationError::PayloadMismatch {
+                    repo_id: expected_repo_id.to_string(),
+                    field: expected_field,
+                },
+                "field index {field_idx} ({expected_field}) must produce specific typed PayloadMismatch"
+            );
+
+            let payload = inventory_payload_with(vec![base.clone(), variant]);
+            let res = inventory_load_from_payload(payload);
+            assert!(
+                matches!(res, Err(InventoryError::ApiFetchFailed { .. })),
+                "field index {field_idx} must map to InventoryError::ApiFetchFailed"
+            );
+        }
+    }
+
+    #[test]
+    fn inventory_load_accepts_distinct_repositories_sharing_name_or_optional_node_metadata() {
+        let mut r1 = test_repository("shared-name");
+        r1.id = "1".to_string();
+        r1.inventory_key = "1".to_string();
+        r1.node_id = Some(String::new());
+
+        let mut r2 = test_repository("shared-name");
+        r2.id = "2".to_string();
+        r2.inventory_key = "2".to_string();
+        r2.node_id = None;
+
+        let mut r3 = test_repository("distinct-name");
+        r3.id = "3".to_string();
+        r3.inventory_key = "3".to_string();
+        r3.node_id = Some("shared-node".to_string());
+
+        let mut r4 = test_repository("another-name");
+        r4.id = "4".to_string();
+        r4.inventory_key = "4".to_string();
+        r4.node_id = Some("shared-node".to_string());
+
+        for order in [
+            vec![r1.clone(), r2.clone(), r3.clone(), r4.clone()],
+            vec![r4.clone(), r3.clone(), r2.clone(), r1.clone()],
+        ] {
+            let unique = validate_and_deduplicate_repositories(order.clone())
+                .expect("distinct repositories must be accepted");
+            assert_eq!(unique.len(), 4);
+            let payload = inventory_payload_with(order);
+            let load = inventory_load_from_payload(payload)
+                .expect("inventory load must accept distinct repositories");
+            assert_eq!(load.active_repos.len(), 4);
+        }
+    }
+
+    #[test]
+    fn inventory_load_rejects_node_id_presence_difference_for_same_identity() {
+        let mut r1 = test_repository("repo");
+        r1.id = "1".to_string();
+        r1.inventory_key = "1".to_string();
+        r1.node_id = None;
+
+        let mut r2 = test_repository("repo");
+        r2.id = "1".to_string();
+        r2.inventory_key = "1".to_string();
+        r2.node_id = Some(String::new());
+
+        let err = validate_and_deduplicate_repositories(vec![r1, r2])
+            .expect_err("None vs Some(\"\") node_id must reject for same identity");
+        assert_eq!(
+            err,
+            InventoryValidationError::PayloadMismatch {
+                repo_id: "1".to_string(),
+                field: "node_id",
+            }
+        );
+    }
+
+    #[test]
+    fn inventory_load_preserves_identical_duplicates() {
+        let r = test_repository("repo-r");
+        let r_dup = r.clone();
+        let s = test_repository("repo-s");
+
+        let payload = inventory_payload_with(vec![r.clone(), r_dup, s.clone()]);
+        let load = inventory_load_from_payload(payload)
+            .expect("fully identical duplicates must be accepted");
+
+        assert_eq!(load.active_repos.len(), 2);
+        assert!(load.complete);
+    }
+
+    #[tokio::test]
+    async fn load_active_repositories_rejects_conflicting_api_payload_before_sweep() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server_order1 = MockServer::start().await;
+        Mock::given(path("/orgs/TestOrg/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([
+                        {"id": 7, "name": "repo", "size": 0, "default_branch": "main"}
+                    ]))
+                    .insert_header(
+                        "link",
+                        format!("<{}/repos-page-2>; rel=\"next\"", server_order1.uri()),
+                    ),
+            )
+            .expect(1)
+            .mount(&server_order1)
+            .await;
+        Mock::given(path("/repos-page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 7, "name": "repo", "size": 42, "default_branch": "main"}
+            ])))
+            .expect(1)
+            .mount(&server_order1)
+            .await;
+
+        let client1 = rollback_test_client(&server_order1.uri());
+        let res1 = load_active_repositories(&client1).await;
+        assert!(
+            matches!(
+                res1,
+                Err(AppError::Inventory(InventoryError::ApiFetchFailed { .. }))
+            ),
+            "HTTP loader must reject conflicting repository payload with InventoryError::ApiFetchFailed in page order 1"
+        );
+        server_order1.verify().await;
+
+        let server_order2 = MockServer::start().await;
+        Mock::given(path("/orgs/TestOrg/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([
+                        {"id": 7, "name": "repo", "size": 42, "default_branch": "main"}
+                    ]))
+                    .insert_header(
+                        "link",
+                        format!("<{}/repos-page-2>; rel=\"next\"", server_order2.uri()),
+                    ),
+            )
+            .expect(1)
+            .mount(&server_order2)
+            .await;
+        Mock::given(path("/repos-page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 7, "name": "repo", "size": 0, "default_branch": "main"}
+            ])))
+            .expect(1)
+            .mount(&server_order2)
+            .await;
+
+        let client2 = rollback_test_client(&server_order2.uri());
+        let res2 = load_active_repositories(&client2).await;
+        assert!(
+            matches!(
+                res2,
+                Err(AppError::Inventory(InventoryError::ApiFetchFailed { .. }))
+            ),
+            "HTTP loader must reject conflicting repository payload with InventoryError::ApiFetchFailed in page order 2"
+        );
+        server_order2.verify().await;
+    }
+
+    #[tokio::test]
+    async fn load_active_repositories_accepts_identical_duplicates_across_pages() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/TestOrg/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([
+                        {"id": 7, "name": "repo", "size": 42, "default_branch": "main"}
+                    ]))
+                    .insert_header(
+                        "link",
+                        format!("<{}/repos-page-2>; rel=\"next\"", server.uri()),
+                    ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/repos-page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 7, "name": "repo", "size": 42, "default_branch": "main"}
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = rollback_test_client(&server.uri());
+        let load = load_active_repositories(&client)
+            .await
+            .expect("identical duplicates across pages must succeed");
+        server.verify().await;
+
+        assert_eq!(load.active_repos.len(), 1);
+        assert_eq!(load.active_repos[0].id, "7");
+        assert!(!load.active_repos[0].is_empty);
+    }
+
+    #[tokio::test]
+    async fn load_active_repositories_accepts_distinct_repositories_with_shared_name_and_node_metadata()
+     {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let page_repos_a = serde_json::json!([
+            {"id": 1, "name": "shared-repo", "node_id": "", "size": 10, "default_branch": "main"},
+            {"id": 2, "name": "shared-repo", "node_id": null, "size": 20, "default_branch": "main"}
+        ]);
+        let page_repos_b = serde_json::json!([
+            {"id": 3, "name": "repo-3", "node_id": "shared-node", "size": 30, "default_branch": "main"},
+            {"id": 4, "name": "repo-4", "node_id": "shared-node", "size": 40, "default_branch": "main"}
+        ]);
+
+        let server_order1 = MockServer::start().await;
+        Mock::given(path("/orgs/TestOrg/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(page_repos_a.clone())
+                    .insert_header(
+                        "link",
+                        format!("<{}/repos-page-2>; rel=\"next\"", server_order1.uri()),
+                    ),
+            )
+            .expect(1)
+            .mount(&server_order1)
+            .await;
+        Mock::given(path("/repos-page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page_repos_b.clone()))
+            .expect(1)
+            .mount(&server_order1)
+            .await;
+
+        let client1 = rollback_test_client(&server_order1.uri());
+        let load1 = load_active_repositories(&client1)
+            .await
+            .expect("distinct repos with shared/empty metadata must succeed in page order 1");
+        server_order1.verify().await;
+        assert_eq!(load1.active_repos.len(), 4);
+
+        let server_order2 = MockServer::start().await;
+        Mock::given(path("/orgs/TestOrg/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(page_repos_b)
+                    .insert_header(
+                        "link",
+                        format!("<{}/repos-page-2>; rel=\"next\"", server_order2.uri()),
+                    ),
+            )
+            .expect(1)
+            .mount(&server_order2)
+            .await;
+        Mock::given(path("/repos-page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page_repos_a))
+            .expect(1)
+            .mount(&server_order2)
+            .await;
+
+        let client2 = rollback_test_client(&server_order2.uri());
+        let load2 = load_active_repositories(&client2)
+            .await
+            .expect("distinct repos with shared/empty metadata must succeed in page order 2");
+        server_order2.verify().await;
+        assert_eq!(load2.active_repos.len(), 4);
     }
 
     #[test]
