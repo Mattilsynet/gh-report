@@ -155,6 +155,182 @@ pub struct AssessmentMetadata {
     /// rather than a fresh API collection.
     #[serde(default)]
     pub warm_start: bool,
+    /// Coverage bounds and selection status for organization repository collection.
+    #[serde(default)]
+    pub coverage: CollectionCoverage,
+}
+
+/// Coverage bounds and selection status for organization repository collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CollectionCoverage {
+    /// Coverage status is unknown.
+    #[default]
+    Unknown,
+    /// Known coverage assessment with validated bounds.
+    Known {
+        /// Total unique repositories discovered in the organization.
+        total: usize,
+        /// Maximum repository admission cap applied.
+        limit: std::num::NonZeroU64,
+    },
+}
+
+impl CollectionCoverage {
+    /// Construct a known coverage assessment.
+    #[must_use]
+    pub const fn known(total: usize, limit: std::num::NonZeroU64) -> Self {
+        Self::Known { total, limit }
+    }
+
+    /// Whether this coverage is unknown.
+    #[must_use]
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+
+    /// Whether this coverage is known.
+    #[must_use]
+    pub const fn is_known(&self) -> bool {
+        matches!(self, Self::Known { .. })
+    }
+
+    /// Number of repositories selected/admitted for evaluation after applying cap.
+    #[must_use]
+    pub fn selected(&self) -> Option<usize> {
+        match self {
+            Self::Unknown => None,
+            Self::Known { total, limit } => {
+                let limit_val = usize::try_from(limit.get()).unwrap_or(usize::MAX);
+                Some((*total).min(limit_val))
+            }
+        }
+    }
+
+    /// Whether repository collection was capped by `max_repos`.
+    #[must_use]
+    pub fn is_capped(&self) -> bool {
+        match self {
+            Self::Unknown => false,
+            Self::Known { total, limit } => {
+                let limit_val = usize::try_from(limit.get()).unwrap_or(usize::MAX);
+                *total > limit_val
+            }
+        }
+    }
+
+    /// Total number of unique repositories discovered in the organization.
+    #[must_use]
+    pub const fn total(&self) -> Option<usize> {
+        match self {
+            Self::Unknown => None,
+            Self::Known { total, .. } => Some(*total),
+        }
+    }
+
+    /// Maximum repositories cap limit applied.
+    #[must_use]
+    pub const fn limit(&self) -> Option<std::num::NonZeroU64> {
+        match self {
+            Self::Unknown => None,
+            Self::Known { limit, .. } => Some(*limit),
+        }
+    }
+}
+
+impl Serialize for CollectionCoverage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        match self {
+            Self::Unknown => {
+                let mut s = serializer.serialize_struct("CollectionCoverage", 1)?;
+                s.serialize_field("status", "unknown")?;
+                s.end()
+            }
+            Self::Known { total, limit } => {
+                let limit_val = usize::try_from(limit.get()).unwrap_or(usize::MAX);
+                let mut s = serializer.serialize_struct("CollectionCoverage", 5)?;
+                s.serialize_field("status", "known")?;
+                s.serialize_field("total", total)?;
+                s.serialize_field("limit", limit)?;
+                s.serialize_field("selected", &(*total).min(limit_val))?;
+                s.serialize_field("capped", &(*total > limit_val))?;
+                s.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CollectionCoverage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum KnownTag {
+            Known,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum UnknownTag {
+            Unknown,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawKnownCoverage {
+            #[allow(dead_code, reason = "tag validation")]
+            status: KnownTag,
+            total: usize,
+            limit: std::num::NonZeroU64,
+            selected: Option<usize>,
+            capped: Option<bool>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawUnknownCoverage {
+            #[allow(dead_code, reason = "tag validation")]
+            status: UnknownTag,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RawCoverageTagged {
+            Known(RawKnownCoverage),
+            Unknown(RawUnknownCoverage),
+        }
+
+        match RawCoverageTagged::deserialize(deserializer)? {
+            RawCoverageTagged::Unknown(_) => Ok(Self::Unknown),
+            RawCoverageTagged::Known(known) => {
+                let total = known.total;
+                let limit = known.limit;
+                let limit_val = usize::try_from(limit.get()).unwrap_or(usize::MAX);
+                let derived_selected = total.min(limit_val);
+                let derived_capped = total > limit_val;
+                if let Some(selected) = known.selected
+                    && selected != derived_selected
+                {
+                    return Err(serde::de::Error::custom(format!(
+                        "contradictory coverage selected: provided {selected}, expected min(total, limit) = {derived_selected}"
+                    )));
+                }
+                if let Some(capped) = known.capped
+                    && capped != derived_capped
+                {
+                    return Err(serde::de::Error::custom(format!(
+                        "contradictory coverage capped: provided {capped}, expected (total > limit) = {derived_capped}"
+                    )));
+                }
+                Ok(Self::Known { total, limit })
+            }
+        }
+    }
 }
 
 /// Organization-scope durable snapshot payload.
@@ -259,6 +435,7 @@ mod tests {
             unavailable_capabilities: vec![],
             inventory_fetched_at: None,
             warm_start: true,
+            coverage: super::CollectionCoverage::default(),
         };
 
         let encoded = serde_json::to_vec(&metadata).expect("serialize");
@@ -314,5 +491,109 @@ mod tests {
 
         assert_eq!(decoded.organization, "TestOrg");
         assert_eq!(decoded.run_id, "test-run-id");
+    }
+
+    #[test]
+    fn collection_coverage_known_computes_selected_and_capped() {
+        let cov = super::CollectionCoverage::known(776, std::num::NonZeroU64::new(10).unwrap());
+        assert!(!cov.is_unknown());
+        assert_eq!(cov.total(), Some(776));
+        assert_eq!(cov.limit().map(std::num::NonZero::get), Some(10));
+        assert_eq!(cov.selected(), Some(10));
+        assert!(cov.is_capped());
+
+        let uncapped = super::CollectionCoverage::known(5, std::num::NonZeroU64::new(10).unwrap());
+        assert_eq!(uncapped.selected(), Some(5));
+        assert!(!uncapped.is_capped());
+
+        let exact = super::CollectionCoverage::known(10, std::num::NonZeroU64::new(10).unwrap());
+        assert_eq!(exact.selected(), Some(10));
+        assert!(!exact.is_capped());
+
+        let unknown = super::CollectionCoverage::Unknown;
+        assert!(unknown.is_unknown());
+        assert_eq!(unknown.selected(), None);
+        assert!(!unknown.is_capped());
+        assert_eq!(unknown.total(), None);
+        assert_eq!(unknown.limit(), None);
+    }
+
+    #[test]
+    fn collection_coverage_serde_roundtrip() {
+        let cov = super::CollectionCoverage::known(100, std::num::NonZeroU64::new(20).unwrap());
+        let json = serde_json::to_string(&cov).expect("serialize");
+        let decoded: super::CollectionCoverage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, cov);
+
+        let unk = super::CollectionCoverage::Unknown;
+        let json_unk = serde_json::to_string(&unk).expect("serialize unknown");
+        let decoded_unk: super::CollectionCoverage =
+            serde_json::from_str(&json_unk).expect("deserialize unknown");
+        assert_eq!(decoded_unk, unk);
+    }
+
+    #[test]
+    fn collection_coverage_rejects_contradictory_selected_deserialize() {
+        let contradictory_json = r#"{
+            "status": "known",
+            "total": 100,
+            "limit": 20,
+            "selected": 999,
+            "capped": true
+        }"#;
+        let result: Result<super::CollectionCoverage, _> = serde_json::from_str(contradictory_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn collection_coverage_rejects_contradictory_capped_deserialize() {
+        let contradictory_json = r#"{
+            "status": "known",
+            "total": 100,
+            "limit": 20,
+            "selected": 20,
+            "capped": false
+        }"#;
+        let result: Result<super::CollectionCoverage, _> = serde_json::from_str(contradictory_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn collection_coverage_rejects_zero_limit_deserialize() {
+        let zero_limit_json = r#"{
+            "status": "known",
+            "total": 100,
+            "limit": 0
+        }"#;
+        let result: Result<super::CollectionCoverage, _> = serde_json::from_str(zero_limit_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn collection_coverage_rejects_statusless_deserialize() {
+        let json = r#"{"total": 100, "selected": 999}"#;
+        assert!(serde_json::from_str::<super::CollectionCoverage>(json).is_err());
+    }
+
+    #[test]
+    fn collection_coverage_rejects_unknown_status_with_bounds() {
+        let json = r#"{"status":"unknown","total":100,"limit":20,"selected":999,"capped":false}"#;
+        assert!(serde_json::from_str::<super::CollectionCoverage>(json).is_err());
+    }
+
+    #[test]
+    fn collection_coverage_rejects_known_missing_total_or_limit() {
+        let json = r#"{"status":"known","total":100}"#;
+        assert!(serde_json::from_str::<super::CollectionCoverage>(json).is_err());
+        let json2 = r#"{"status":"known","limit":20}"#;
+        assert!(serde_json::from_str::<super::CollectionCoverage>(json2).is_err());
+    }
+
+    #[test]
+    fn collection_coverage_rejects_extra_fields() {
+        let json = r#"{"status":"known","total":100,"limit":20,"unexpected":"field"}"#;
+        assert!(serde_json::from_str::<super::CollectionCoverage>(json).is_err());
+        let json2 = r#"{"status":"unknown","unexpected":"field"}"#;
+        assert!(serde_json::from_str::<super::CollectionCoverage>(json2).is_err());
     }
 }

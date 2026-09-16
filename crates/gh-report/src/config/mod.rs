@@ -32,13 +32,13 @@ pub const INVENTORY_SCHEMA_VERSION: &str = "1.0";
 /// new output. OPERATIONS.md § Scoring Contract → Stability and § Schema
 /// Versions → When to bump are the prose authority for this rule; this
 /// constant is the value authority — keep both in sync (COM-0027).
-pub const EVIDENCE_SCHEMA_VERSION: &str = "22.0";
+pub const EVIDENCE_SCHEMA_VERSION: &str = "23.0";
 
 /// Schema-major token embedded in `JetStream` stream identity so a
 /// schema bump provisions fresh, coexisting streams and leaves prior
 /// streams untouched. Must equal `"v" + major(EVIDENCE_SCHEMA_VERSION)`;
 /// a unit test enforces that relationship.
-pub const EVIDENCE_SCHEMA_MAJOR: &str = "v22";
+pub const EVIDENCE_SCHEMA_MAJOR: &str = "v23";
 
 /// Default page size for GitHub API list endpoints.
 pub const DEFAULT_PAGE_SIZE: u32 = 100;
@@ -373,6 +373,63 @@ impl SweepTimeout {
     }
 }
 
+/// Default maximum distinct repositories admitted per collection sweep.
+pub const DEFAULT_MAX_REPOS: usize = 1000;
+
+/// Bound on the number of distinct repositories admitted per collection sweep.
+///
+/// Guaranteed to be non-zero to ensure at least one repository can be collected.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct MaxRepos(std::num::NonZeroUsize);
+
+impl Default for MaxRepos {
+    fn default() -> Self {
+        Self(std::num::NonZeroUsize::new(DEFAULT_MAX_REPOS).expect("DEFAULT_MAX_REPOS is non-zero"))
+    }
+}
+
+impl MaxRepos {
+    /// Construct a `MaxRepos` bound from a repository count.
+    ///
+    /// Returns `None` if `val == 0`.
+    #[must_use]
+    pub const fn new(val: usize) -> Option<Self> {
+        match std::num::NonZeroUsize::new(val) {
+            Some(n) => Some(Self(n)),
+            None => None,
+        }
+    }
+
+    /// Return the maximum number of repositories as a `usize`.
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl std::fmt::Display for MaxRepos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for MaxRepos {
+    type Err = std::num::ParseIntError;
+
+    /// Parse a repository limit from a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::num::ParseIntError`] if `s` is not a valid non-zero integer.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let n: std::num::NonZeroUsize = s.parse()?;
+        Ok(Self(n))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -408,6 +465,46 @@ mod tests {
     fn team_refresh_interval_is_an_integer_multiple_of_the_collection_interval() {
         assert_eq!(TEAM_REFRESH_INTERVAL_SECS % COLLECTION_INTERVAL_SECS, 0);
         assert_eq!(TEAM_REFRESH_INTERVAL_SECS / COLLECTION_INTERVAL_SECS, 24);
+    }
+
+    #[test]
+    fn max_repos_default_is_one_thousand() {
+        assert_eq!(super::MaxRepos::default().get(), 1000);
+        assert_eq!(super::DEFAULT_MAX_REPOS, 1000);
+        assert_eq!(super::MaxRepos::default().get(), super::DEFAULT_MAX_REPOS);
+    }
+
+    #[test]
+    fn max_repos_accepts_custom_values() {
+        let max = super::MaxRepos::new(500).expect("500 is non-zero");
+        assert_eq!(max.get(), 500);
+        assert_eq!(max.to_string(), "500");
+    }
+
+    #[test]
+    fn max_repos_rejects_zero() {
+        assert!(super::MaxRepos::new(0).is_none());
+    }
+
+    #[test]
+    fn max_repos_from_str_valid_and_errors() {
+        assert_eq!("1000".parse::<super::MaxRepos>().unwrap().get(), 1000);
+        assert_eq!("42".parse::<super::MaxRepos>().unwrap().get(), 42);
+        assert!("0".parse::<super::MaxRepos>().is_err());
+        assert!("invalid".parse::<super::MaxRepos>().is_err());
+        assert!("-5".parse::<super::MaxRepos>().is_err());
+        assert!("".parse::<super::MaxRepos>().is_err());
+    }
+
+    #[test]
+    fn max_repos_serde_roundtrip() {
+        let original = super::MaxRepos::new(42).unwrap();
+        let json = serde_json::to_string(&original).expect("serialize");
+        assert_eq!(json, "42");
+        let deserialized: super::MaxRepos = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized, original);
+
+        assert!(serde_json::from_str::<super::MaxRepos>("0").is_err());
     }
 
     #[test]

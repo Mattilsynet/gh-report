@@ -523,6 +523,15 @@ conversion_pair!(se::AssessmentMetadata => AssessmentMetadata {
             v.inventory_fetched_at,
         )?,
         warm_start: v.warm_start,
+        coverage: match v.coverage {
+            se::CollectionCoverage::Unknown => super::CollectionCoverage::Unknown,
+            se::CollectionCoverage::Known { total, limit } => super::CollectionCoverage::Known {
+                total: u32::try_from(total).map_err(|_| EventConversionError::TooLong {
+                    field: "assessment_metadata.coverage.total",
+                })?,
+                limit,
+            },
+        },
     }
     from(v) {
         date: v.date.as_str().to_string(),
@@ -542,6 +551,13 @@ conversion_pair!(se::AssessmentMetadata => AssessmentMetadata {
             .collect(),
         inventory_fetched_at: v.inventory_fetched_at.as_ref().map(|s| s.as_str().to_string()),
         warm_start: v.warm_start,
+        coverage: match v.coverage {
+            super::CollectionCoverage::Unknown => se::CollectionCoverage::Unknown,
+            super::CollectionCoverage::Known { total, limit } => se::CollectionCoverage::Known {
+                total: total as usize,
+                limit,
+            },
+        },
     }
 });
 
@@ -839,5 +855,31 @@ mod tests {
                 field: "repository.updated_at"
             }
         ));
+    }
+
+    #[test]
+    fn conversion_preserves_large_u64_limit_at_and_above_u32_max() {
+        for limit_val in [
+            u64::from(u32::MAX),
+            u64::from(u32::MAX).saturating_add(1),
+            u64::MAX,
+        ] {
+            let domain_cov = crate::domain::evidence::CollectionCoverage::known(
+                100,
+                std::num::NonZeroU64::new(limit_val).unwrap(),
+            );
+            let mut domain_meta = crate::test_fixtures::make_metadata();
+            domain_meta.coverage = domain_cov;
+            let native_meta =
+                AssessmentMetadata::try_from(domain_meta.clone()).expect("conversion to native");
+            match native_meta.coverage {
+                crate::event::CollectionCoverage::Known { limit, .. } => {
+                    assert_eq!(limit.get(), limit_val);
+                }
+                crate::event::CollectionCoverage::Unknown => panic!("expected known"),
+            }
+            let roundtrip_meta = crate::domain::evidence::AssessmentMetadata::from(native_meta);
+            assert_eq!(roundtrip_meta.coverage, domain_cov);
+        }
     }
 }

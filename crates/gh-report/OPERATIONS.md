@@ -505,7 +505,7 @@ Set `--force-refresh` (or `GH_REPORT_FORCE_REFRESH=true`) to bypass baseline reu
 | Constant | Current value | Stamped on | Validated against on load? |
 |----------|---------------|-----------|----------------------------|
 | `INVENTORY_SCHEMA_VERSION` | `1.0` | `InventoryPayload` (per-run inventory snapshot) | No — informational metadata for downstream consumers; never read back by the daemon. |
-| `EVIDENCE_SCHEMA_VERSION` | `22.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
+| `EVIDENCE_SCHEMA_VERSION` | `23.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
 
 Both constants live in `crates/gh-report/src/config/mod.rs`.
 
@@ -540,6 +540,7 @@ Version history is maintained forward-only from this point. Prior versions exist
 | `EVIDENCE_SCHEMA_VERSION = 20.0` | 2026-09-11 | Schema-major cutover to fresh stream generation for Pardosa 0.5.5 migration. Discards legacy prototype in-tree dragline history; the bump provisions new `-v20` streams (stream name, subject, durable consumer carry the `EVIDENCE_SCHEMA_MAJOR` token) and leaves pre-`v20` streams untouched and isolated. Purges 10 legacy in-tree crates and enables group-commit dragline storage. |
 | `EVIDENCE_SCHEMA_VERSION = 21.0` | 2026-09-12 | Schema-major cutover to fresh stream generation for verified Pardosa 0.5.5 substrate deployment. Provisions fresh `-v21` streams (data, meta, org, team, checkpoints) with clean reseed from GitHub API, leaving `-v20` streams archived and untouched. |
 | `EVIDENCE_SCHEMA_VERSION = 22.0` | 2026-09-14 | Schema-major cutover to fresh stream generation v22. Persists exact UpdatedAt spellings and adds is_empty to event::Repository. NativeStore enforces fail-closed SchemaDescriptor identity verification on open/resync, rejecting unadmitted legacy stores or mismatched schemas. Provisions fresh `-v22` streams and leaves `-v21` streams archived and untouched. |
+| `EVIDENCE_SCHEMA_VERSION = 23.0` | 2026-09-16 | Schema-major cutover to fresh stream generation v23. Persists durable CollectionCoverage in AssessmentMetadata and OrgStateCaptured. Provisions fresh `-v23` streams and leaves `-v22` streams archived and untouched. Old incompatible stores refuse and documented rescrape required. |
 | `INVENTORY_SCHEMA_VERSION = 1.0` | (current) | Initial published version. |
 
 When bumping, append a row with the new version, the date, and a one-line note describing what shape change drove the bump. The version of `EVIDENCE_SCHEMA_VERSION` is also surfaced in the report metadata so the projected baseline's version is observable via `gh-report --dump-baseline --org <org>`.

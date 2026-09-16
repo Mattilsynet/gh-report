@@ -225,6 +225,10 @@ struct Cli {
     #[arg(long, default_value_t = config::DEFAULT_MAX_WORKERS)]
     max_workers: usize,
 
+    /// Maximum distinct repositories admitted per collection sweep.
+    #[arg(long, default_value_t = config::MaxRepos::default(), env = "GH_REPORT_MAX_REPOS")]
+    max_repos: config::MaxRepos,
+
     /// Minimum coverage percentage for the "pass" tier (green).
     #[arg(long, default_value_t = dashboard::default_pass_threshold())]
     pass_threshold: f64,
@@ -332,6 +336,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.force_refresh = cli.force_refresh;
         config.team_roster_read_from_projection = !cli.team_roster_live_fetch;
         config.nats_runtime = root_nats_guard;
+        config.max_repos = cli.max_repos;
         let nats_creds_path = config
             .nats_creds
             .as_ref()
@@ -598,5 +603,43 @@ mod tests {
         let cli =
             Cli::try_parse_from(["gh-report", "--org", "test-org", "--dump-baseline"]).unwrap();
         assert!(cli.dump_baseline);
+    }
+
+    #[test]
+    fn cli_default_max_repos_is_one_thousand() {
+        let cli = Cli::try_parse_from(["gh-report", "--org", "test-org"]).unwrap();
+        assert_eq!(cli.max_repos.get(), 1000);
+    }
+
+    #[test]
+    fn cli_parses_custom_max_repos() {
+        let cli =
+            Cli::try_parse_from(["gh-report", "--org", "test-org", "--max-repos", "250"]).unwrap();
+        assert_eq!(cli.max_repos.get(), 250);
+    }
+
+    #[test]
+    fn cli_parses_ten_max_repos() {
+        let cli =
+            Cli::try_parse_from(["gh-report", "--org", "test-org", "--max-repos", "10"]).unwrap();
+        assert_eq!(cli.max_repos.get(), 10);
+    }
+
+    #[test]
+    fn cli_rejects_zero_max_repos() {
+        let result = Cli::try_parse_from(["gh-report", "--org", "test-org", "--max-repos", "0"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_rejects_invalid_max_repos() {
+        let result = Cli::try_parse_from([
+            "gh-report",
+            "--org",
+            "test-org",
+            "--max-repos",
+            "notanumber",
+        ]);
+        assert!(result.is_err());
     }
 }

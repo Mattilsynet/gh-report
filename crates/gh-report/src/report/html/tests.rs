@@ -7679,3 +7679,40 @@ fn alert_free_card_bright_red_styling() {
         "Alert-Free Status card must have card-bright-red class when rate is None (N/A)"
     );
 }
+
+#[test]
+fn render_dashboard_renders_coverage_capped_badge_with_truthful_wording() {
+    let mut evidence = sample_evidence();
+    evidence.assessment_metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+        776,
+        std::num::NonZeroU64::new(10).unwrap(),
+    );
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+    let report = &pages["report.html"];
+
+    assert!(index.contains("class=\"coverage-capped-badge\""));
+    assert!(index.contains("10 of 776 repositories selected"));
+    assert!(!index.contains("evaluated10"));
+
+    assert!(report.contains("class=\"coverage-capped-badge\""));
+    assert!(report.contains("10 of 776 repositories selected"));
+    assert!(!report.contains("evaluated10"));
+}
+
+#[test]
+fn render_dashboard_omits_coverage_capped_badge_when_uncapped() {
+    let mut evidence = sample_evidence();
+    evidence.assessment_metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+        50,
+        std::num::NonZeroU64::new(100).unwrap(),
+    );
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+    let report = &pages["report.html"];
+
+    assert!(!index.contains("class=\"coverage-capped-badge\""));
+    assert!(!report.contains("class=\"coverage-capped-badge\""));
+}
