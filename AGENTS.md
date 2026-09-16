@@ -332,31 +332,36 @@ non-trivial consumer of that substrate, not the source of the constraints.
 
 - `graphify-out/graph.json` exists — use `graphify query/explain/affected` for
   structural questions before grepping; refresh with `graphify update .` after
-  code changes (or rely on the post-commit hook).
-- `.beads/` is an embedded-dolt store (gitignored) — bd mutations do **not**
+  code changes (or rely on the post-commit hook). Supported commands in 0.9.9:
+  `query`, `path`, `explain`, `affected`, `diagnose multigraph`, `update .`, and
+  `hook status`. Do NOT run `graphify hook install` or `graphify hook uninstall`
+  as this clobbers custom hooks (`post-commit` background rebuild / worktree guard
+  / filter tail, and `post-checkout` F7 disable).
+- `.beads/` contains tracked repository scaffold (`.gitignore`, `README.md`,
+  `config.yaml`, `metadata.json`, and `.beads/hooks/*`), while the database
+  itself (`embeddeddolt/`) and runtime files (`interactions.jsonl`, etc.) are
+  ignored by `.beads/.gitignore` and `.gitignore`. bd mutations do **not**
   produce a git commit; the audit trail is dolt history + `interactions.jsonl`.
-  Don't try to `git add` bead state.
-- Two bd stores exist for this repo's work, selected by cwd:
-  - Repo-local store: `.beads/` here (prefix `ghr`) — the CANONICAL home
-    for any mission that describes THIS repo's code.
-  - HOME store: `~/.beads` (prefix `anders_jensen`) — for cross-repo / personal
-    work with no single repo home.
-- Convention (advisory — bd has no mechanism to enforce it; see below):
-  - Run `bd` from the gh-report repo root (or any path inside it) for any
-    repo-scoped mission, so beads auto-discover the repo-local `.beads/` and
-    land with the `ghr` prefix, co-located with the code they describe.
-  - Use the HOME store only for genuinely cross-repo or personal-planning work.
-  - A `mission:<slug>` label must resolve to an epic IN THE SAME STORE. Never
-    use a bead/mission ID as a label value (`mission:anders_jensen-4gt` was such
-    a malformed label — a mission-id masquerading as a slug; stripped
-    2026-07-03).
-- Why this is advisory only: `.beads/` is gitignored and bd mutations produce no
-  git commit, so a git pre-commit hook cannot see (and therefore cannot block) a
-  bead written to the wrong store. Recurrence-prevention here rests on running
-  bd from the right cwd, not on tooling enforcement. Symptom of the failure this
-  prevents: repo-scoped evidence beads accumulating in the HOME store with
-  `mission:` labels that resolve to no epic in the repo-local store (the exact
-  mess reconciled by mission anders_jensen-t0q, 2026-07-03).
+  Don't try to `git add` bead database state.
+- Single canonical bd store with pinned discovery:
+  - Repo-local store: `.beads/` here (prefix `ghr`, embedded Dolt database
+    `gh_report`) — the only canonical store for work on THIS repo.
+  - Pinned discovery: Always run bd commands with `bd -C <repo-root>` (or set
+    `BEADS_DIR`) to target this repository's store directly. Do not rely on
+    ambient cwd discovery or upward directory walks.
+  - Store verification: An exit code of 0 alone does not prove the expected
+    store answered; defensively verify store resolution via
+    `bd -C <repo-root> where` (checking prefix `ghr` and database path) or
+    `bd -C <repo-root> --readonly context --json`.
+  - No HOME store: Fleet doctrine strictly prohibits a home-level bd store at
+    `~/.beads`. Distinguish a HOME issue store (embeddeddolt database) from bd's
+    telemetry-only directory (`~/.beads` containing only `eventsData/`); do not
+    delete either. All repository beads must reside in the repository-local store.
+  - Diagnostic support: Full `bd doctor` validation requires Dolt server mode;
+    under embedded Dolt mode running `bd doctor` without flags returns
+    `code: embedded_unsupported`. Supported embedded checks are
+    `--check=artifacts`, `--check=conventions`, `--check=pollution`, and
+    `--check-health`.
 - `cherry-pit-*` atomic-write protocol is CHE-0032 (temp → fsync → rename →
   parent-dir fsync); the production path in
   `cherry-pit-gateway/src/event_store/msgpack_file.rs::write_atomic` already

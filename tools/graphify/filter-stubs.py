@@ -38,6 +38,16 @@ limitation of this filter, not a defect: re-clustering is explicitly out of
 scope (see the graphify-improve-03 sub-mission contract) and this script
 must not attempt it.
 
+REPORT REFLECTS PRE-FILTER EXTRACTION (ADR COM-0027).
+graphify-out/GRAPH_REPORT.md records raw pre-filter extraction counts and
+Louvain community detection from the extraction stage. This script prunes
+sourceless stub nodes from graphify-out/graph.json post-extraction; it
+intentionally does not mutate GRAPH_REPORT.md or recompute communities.
+Per ADR COM-0027, the raw report and filtered graph represent explicitly
+distinct pipeline stages. When both rebuild and filter complete successfully,
+a node/link count delta reflects this stub pruning. Count discrepancies alone
+must not be assumed benign without verifying rebuild completion and filter exit.
+
 Python 3 standard library only. No third-party dependencies.
 """
 

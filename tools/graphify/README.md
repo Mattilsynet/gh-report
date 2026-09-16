@@ -50,6 +50,40 @@ install` regenerates the entire sentinel-delimited hook body, so a re-run
 clobbers the worktree guard, the F7 disable, AND the stub-filter tail
 wiring (below) simultaneously; check all three after any `hook install`.
 
+## Supported Graphify Commands (0.9.9)
+
+Use installed graphify commands directly without re-running hook installation:
+- `graphify query "<question>"`: Breadth-first traversal of `graphify-out/graph.json` for structural queries.
+- `graphify path "<A>" "<B>"`: Shortest path between symbols in `graphify-out/graph.json`.
+- `graphify explain "<symbol>"`: Plain-language explanation of a node and its immediate neighbors.
+- `graphify affected "<symbol>"`: Reverse traversal identifying blast radius / dependents.
+- `graphify diagnose multigraph`: Check for duplicate or collapsed edges in `graphify-out/graph.json`.
+- `graphify update .`: Re-extract code files and update the graph.
+- `graphify hook status`: Check whether hooks are registered.
+
+**WARNING: DO NOT RUN `graphify hook install` OR `graphify hook uninstall`.**
+Running `graphify hook install` regenerates standard sentinel-delimited hook bodies,
+clobbering repository-specific custom hook logic:
+1. Linked-worktree guard (`worktree-guard.sh`) in `post-commit` and `post-checkout`.
+2. Detached background rebuild with deterministic `PYTHONHASHSEED=0` in `post-commit`.
+3. Post-rebuild stub-filter tail execution (`filter-stubs.py`) in `post-commit`.
+4. Disabled branch-switch rebuild (F7) in `post-checkout`.
+
+## Generated Report vs. Filtered Graph (ADR COM-0027)
+
+`graphify-out/GRAPH_REPORT.md` and `graphify-out/graph.json` describe two explicitly distinct pipeline stages:
+1. **Pre-filter extraction & clustering stage**: `graphify-out/GRAPH_REPORT.md` is generated during extraction/clustering and records raw extraction statistics and Louvain community grouping.
+2. **Post-filter query graph**: `tools/graphify/filter-stubs.py` runs post-rebuild to strip sourceless stdlib/external type-stub nodes from `graphify-out/graph.json`.
+
+Per ADR COM-0027 (*Single Source of Truth Across Representations*):
+- The report reflects the raw extraction state; `graph.json` reflects the filtered query graph with stubs pruned.
+- Community assignments in `.graphify_labels.json` and `graph.json` remain as clustered during extraction (re-clustering is intentionally out of scope).
+- When extraction and filtering both complete successfully, a reduction in node and link counts between the report and `graph.json` reflects intentional stub removal.
+- **Do not assume all count discrepancies are benign**: A count mismatch does not universally prove healthy filtering. Always evaluate three distinct pipeline conditions:
+  1. *Source freshness*: Compare `git rev-parse HEAD` against the commit recorded in `GRAPH_REPORT.md`. In a dirty worktree, HEAD does not reflect working tree state.
+  2. *Detached completion*: Extraction launched by `.git/hooks/post-commit` runs as a detached background process. Immediate commit completion does not imply extraction has finished; inspect `~/.cache/graphify-rebuild.log` to confirm completion.
+  3. *Filter success*: `filter-stubs.py` executes after the detached rebuild. Because the post-commit hook does not assert `check=True` on the filter subprocess, `--dry-run` only inspects current graph state and cannot prove past filter subprocess completion or safety guard execution. Verify filter execution using matching rebuild log output plus actual exit evidence, and explicitly do not claim filter completion if unobserved.
+
 ## filter-stubs.py
 
 `python3 tools/graphify/filter-stubs.py [--dry-run] [--graph PATH]`
