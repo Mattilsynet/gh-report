@@ -24,7 +24,7 @@
                 <tr>
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
-                    <th scope="col" data-sort-type="text">{% call tooltip::header("Archived", "Whether the repository is archived on GitHub.") %}{% endcall %}</th>
+                    {% if show_archived_column %}<th scope="col" data-sort-type="text">{% call tooltip::header("Archived", "Whether the repository is archived on GitHub.") %}{% endcall %}</th>{% endif %}
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Verdict", "Met counts toward the card's numerator; Not met counts only toward its denominator.") %}{% endcall %}</th>
                 </tr>
             </thead>
@@ -34,7 +34,7 @@
                     <td>{% if row.repo_url().is_empty() %}{{ row.repo_name() }}{% else %}<a href="{{ row.repo_url() }}"
                             target="_blank" rel="noopener noreferrer">{{ row.repo_name() }}</a>{% endif %}</td>
                     <td>{{ row.visibility() }}</td>
-                    <td>{% if row.archived() %}Yes{% else %}No{% endif %}</td>
+                    {% if show_archived_column %}<td>{% if row.archived() %}Yes{% else %}No{% endif %}</td>{% endif %}
                     <td class="{{ row.outcome_css_class() }}">{{ row.outcome_label() }}</td>
                 </tr>
                 {% endfor %}
@@ -58,7 +58,7 @@
                 <tr>
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
-                    <th scope="col" data-sort-type="text">{% call tooltip::header("Archived", "Whether the repository is archived on GitHub.") %}{% endcall %}</th>
+                    {% if show_archived_column %}<th scope="col" data-sort-type="text">{% call tooltip::header("Archived", "Whether the repository is archived on GitHub.") %}{% endcall %}</th>{% endif %}
                     <th scope="col" data-sort-type="text">{% call tooltip::header("Why not measured", "Permission denied, Unknown, or Not applicable — never a compliance verdict.") %}{% endcall %}</th>
                 </tr>
             </thead>
@@ -68,7 +68,7 @@
                     <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
                             target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}</td>
                     <td>{{ row.visibility }}</td>
-                    <td>{% if row.archived %}Yes{% else %}No{% endif %}</td>
+                    {% if show_archived_column %}<td>{% if row.archived %}Yes{% else %}No{% endif %}</td>{% endif %}
                     <td>{{ row.reason_label }}</td>
                 </tr>
                 {% endfor %}
