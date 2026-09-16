@@ -153,6 +153,7 @@ macro_rules! denominator_template {
             nav: TopNav,
             title: String,
             warm_start: bool,
+            show_archived_column: bool,
         }
     };
 }
@@ -162,6 +163,17 @@ denominator_template!(SecretScanningDenominatorTemplate, "secret_scanning.html")
 denominator_template!(DependabotDenominatorTemplate, "dependabot_status.html");
 denominator_template!(CodeownersDenominatorTemplate, "codeowners.html");
 denominator_template!(AlertFreeDenominatorTemplate, "alert_free.html");
+
+const fn show_archived_column(page: DrillDownPage) -> bool {
+    match page {
+        DrillDownPage::Codeowners | DrillDownPage::DependabotStatus => false,
+        DrillDownPage::SecurityPolicy
+        | DrillDownPage::SecretScanning
+        | DrillDownPage::AlertFree
+        | DrillDownPage::BranchProtection
+        | DrillDownPage::LifecycleRetirement => true,
+    }
+}
 
 #[derive(Template)]
 #[template(path = "lifecycle_retirement.html")]
@@ -666,6 +678,7 @@ fn render_secondary_pages(
         vm: alert_free_vm,
         nav: nav.clone(),
         warm_start,
+        show_archived_column: show_archived_column(DrillDownPage::AlertFree),
     })?;
     sink(
         DrillDownPage::AlertFree.file_name().to_string(),
@@ -704,6 +717,7 @@ fn render_denominator_pages(
     for entry in DENOMINATOR_DRILL_DOWNS {
         let vm = build_control_denominator_view_model(evidence, entry);
         let title = format!("{} Coverage — {org}", entry.display_name);
+        let show_archived_column = show_archived_column(entry.page);
         let html = match entry.control {
             CoverageControl::SecurityPolicy => {
                 render_template(&SecurityPolicyDenominatorTemplate {
@@ -711,6 +725,7 @@ fn render_denominator_pages(
                     nav: nav.clone(),
                     title,
                     warm_start,
+                    show_archived_column,
                 })
             }
             CoverageControl::SecretScanning => {
@@ -719,6 +734,7 @@ fn render_denominator_pages(
                     nav: nav.clone(),
                     title,
                     warm_start,
+                    show_archived_column,
                 })
             }
             CoverageControl::Dependabot => render_template(&DependabotDenominatorTemplate {
@@ -726,12 +742,14 @@ fn render_denominator_pages(
                 nav: nav.clone(),
                 title,
                 warm_start,
+                show_archived_column,
             }),
             CoverageControl::Codeowners => render_template(&CodeownersDenominatorTemplate {
                 vm,
                 nav: nav.clone(),
                 title,
                 warm_start,
+                show_archived_column,
             }),
         }?;
         sink(entry.page.file_name().to_string(), html);

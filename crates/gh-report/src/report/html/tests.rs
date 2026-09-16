@@ -7716,3 +7716,70 @@ fn render_dashboard_omits_coverage_capped_badge_when_uncapped() {
     assert!(!index.contains("class=\"coverage-capped-badge\""));
     assert!(!report.contains("class=\"coverage-capped-badge\""));
 }
+
+#[test]
+fn archived_columns_are_control_specific() {
+    let evidence = evidence_with_mixed_denominator_population();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    let without_archived = [
+        DrillDownPage::Codeowners.file_name(),
+        DrillDownPage::DependabotStatus.file_name(),
+    ];
+    let with_archived = [
+        DrillDownPage::SecurityPolicy.file_name(),
+        DrillDownPage::SecretScanning.file_name(),
+        DrillDownPage::AlertFree.file_name(),
+    ];
+    assert_eq!(
+        without_archived.len() + with_archived.len(),
+        5,
+        "every control rendered through the shared denominator template must be \
+         classified by this test"
+    );
+
+    for file_name in without_archived {
+        let page = pages
+            .get(file_name)
+            .unwrap_or_else(|| panic!("{file_name} was not rendered"));
+        assert!(
+            !page.contains("Archived"),
+            "{file_name} still renders an Archived column, which is a constant \
+             for this control and informs nothing"
+        );
+        assert_table_widths_agree(page, file_name, 3);
+    }
+
+    for file_name in with_archived {
+        let page = pages
+            .get(file_name)
+            .unwrap_or_else(|| panic!("{file_name} was not rendered"));
+        assert!(
+            page.contains("Archived"),
+            "{file_name} lost its Archived column; this slice removes the column \
+             from CODEOWNERS and Dependabot Status only"
+        );
+        assert_table_widths_agree(page, file_name, 4);
+    }
+}
+
+fn assert_table_widths_agree(page: &str, file_name: &str, expected_columns: usize) {
+    let header_count = page.matches("<th scope=\"col\"").count();
+    assert_eq!(
+        header_count,
+        expected_columns * 2,
+        "{file_name} should carry {expected_columns} headers in each of its two tables"
+    );
+
+    for marker in ["data-denominator-row", "data-unmeasured-row"] {
+        for row in page.split(marker).skip(1) {
+            let row = row.split("</tr>").next().unwrap_or_default();
+            assert_eq!(
+                row.matches("<td").count(),
+                expected_columns,
+                "{file_name} has a {marker} whose cell count disagrees with its \
+                 {expected_columns} headers"
+            );
+        }
+    }
+}
