@@ -42,12 +42,13 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
 ARG APP_VERSION
+ARG APP_GIT_SHA
 
 # Cache mounts: Cargo registry + target dir survive across builds.
 # The final binary is copied out so the cache mount is not in the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    APP_VERSION="$APP_VERSION" cargo build --release --locked -p gh-report \
+    APP_VERSION="$APP_VERSION" APP_GIT_SHA="$APP_GIT_SHA" cargo build --release --locked -p gh-report \
  && cp target/release/gh-report /usr/local/bin/gh-report
 
 # ── Stage 2: Runtime ────────────────────────────────────────────

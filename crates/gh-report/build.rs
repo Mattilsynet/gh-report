@@ -1,10 +1,19 @@
 use std::env;
 use std::process::Command;
 
+include!("build_env.rs");
+
 fn main() {
     let version = resolve_version();
     println!("cargo:rustc-env=GH_REPORT_VERSION={version}");
     println!("cargo:rerun-if-env-changed=APP_VERSION");
+
+    let raw_git_sha = env::var("APP_GIT_SHA").unwrap_or_default();
+    let git_sha = sanitize_git_sha(&raw_git_sha);
+    println!("cargo:rustc-env=GH_REPORT_GIT_SHA={git_sha}");
+    println!("cargo:rerun-if-env-changed=APP_GIT_SHA");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build_env.rs");
 }
 
 fn resolve_version() -> String {

@@ -1,6 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
-expression: "&pages[\"index.html\"]"
+expression: "normalize_build_footer(&pages[\"index.html\"])"
 ---
 <!DOCTYPE html>
 <html lang="en">
@@ -105,6 +105,10 @@ expression: "&pages[\"index.html\"]"
     </div>
 
     
+
+    <footer class="build-footer">
+        <p class="meta">gh-report v[BUILD] · build [SHA]</p>
+    </footer>
 
 </body>
 
