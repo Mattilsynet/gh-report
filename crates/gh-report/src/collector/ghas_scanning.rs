@@ -106,34 +106,41 @@ fn build_failure_summary(result: &ApiOutcome) -> OrgAlertSummary {
     }
 }
 
-/// Process a single alert item and update the summary in place.
-fn process_alert(
+enum AlertCorrelation<'a> {
+    Matched(&'a Arc<Repository>),
+    OutOfScope,
+    Conflicting,
+    Unidentifiable,
+}
+
+fn correlate_alert<'a>(
     alert: &serde_json::Value,
-    known_scope: &HashMap<String, &Arc<Repository>>,
-    summary: &mut OrgAlertSummary,
-    now: Timestamp,
-) {
+    known_scope: &HashMap<String, &'a Arc<Repository>>,
+) -> AlertCorrelation<'a> {
     let Some(repository) = alert
         .get("repository")
         .and_then(serde_json::Value::as_object)
     else {
-        trace!("skipping alert with no repository object");
-        return;
+        return AlertCorrelation::Unidentifiable;
     };
 
-    let num_id = repository.get("id").and_then(|v| {
-        v.as_u64()
-            .map(|n| n.to_string())
-            .or_else(|| v.as_str().map(String::from))
-    });
+    let num_id = repository
+        .get("id")
+        .and_then(|v| {
+            v.as_u64()
+                .map(|n| n.to_string())
+                .or_else(|| v.as_str().map(String::from))
+        })
+        .filter(|id| !id.is_empty());
     let node_id = repository
         .get("node_id")
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+        .filter(|nid| !nid.is_empty());
 
     let numeric_match = num_id.as_ref().and_then(|id| known_scope.get(id));
     let node_match = node_id.and_then(|nid| known_scope.get(nid));
 
-    let repo = match (numeric_match, node_match) {
+    match (numeric_match, node_match) {
         (Some(repo_num), Some(repo_node)) if repo_num.id != repo_node.id => {
             warn!(
                 num_id = ?num_id,
@@ -142,17 +149,42 @@ fn process_alert(
                 repo_node_id = %repo_node.id,
                 "conflicting repository correlation between numeric id and node_id; degrading summary to prevent false alert-free classification"
             );
-            summary.collection_status = CollectionStatus::Unavailable;
-            summary.collection_reason = Some("alert_coordinate_conflict".to_string());
-            return;
+            AlertCorrelation::Conflicting
         }
-        (Some(repo), _) | (_, Some(repo)) => repo,
+        (Some(repo), _) | (_, Some(repo)) => AlertCorrelation::Matched(repo),
+        (None, None) if num_id.is_none() && node_id.is_none() => AlertCorrelation::Unidentifiable,
         (None, None) => {
             trace!(
                 num_id = ?num_id,
                 node_id = ?node_id,
                 "skipping alert for repository outside inventory scope"
             );
+            AlertCorrelation::OutOfScope
+        }
+    }
+}
+
+/// Process a single alert item and update the summary in place.
+fn process_alert(
+    alert: &serde_json::Value,
+    known_scope: &HashMap<String, &Arc<Repository>>,
+    summary: &mut OrgAlertSummary,
+    now: Timestamp,
+) {
+    let repo = match correlate_alert(alert, known_scope) {
+        AlertCorrelation::Matched(repo) => repo,
+        AlertCorrelation::OutOfScope => return,
+        AlertCorrelation::Conflicting => {
+            summary.collection_status = CollectionStatus::Unavailable;
+            summary.collection_reason = Some("alert_coordinate_conflict".to_string());
+            return;
+        }
+        AlertCorrelation::Unidentifiable => {
+            warn!(
+                "alert item carries no usable repository correlation; degrading summary rather than treating an absent per-repo entry as an authoritative zero"
+            );
+            summary.collection_status = CollectionStatus::Unavailable;
+            summary.collection_reason = Some("alert_correlation_unidentifiable".to_string());
             return;
         }
     };
@@ -935,6 +967,176 @@ mod tests {
         let repo_summary = summary.per_repo.get(&scope_key(&repo));
         assert!(repo_summary.is_some());
         assert_eq!(repo_summary.unwrap().open_alert_count, 1);
+    }
+
+    fn success_summary() -> OrgAlertSummary {
+        OrgAlertSummary {
+            collection_status: CollectionStatus::Success,
+            collection_reason: None,
+            per_repo: HashMap::new(),
+            open_secret_alert_age_buckets: empty_age_buckets(),
+            total_open_secret_alerts: 0,
+            oldest_open_secret_alert_created_at: None,
+            newest_open_secret_alert_created_at: None,
+        }
+    }
+
+    #[test]
+    fn process_alert_degrades_on_unidentifiable_repository_correlation() {
+        let repo = sample_repo("11111", Some("R_node_AAA"), "repo-a");
+        let mut known_scope = HashMap::new();
+        known_scope.insert(scope_key(&repo), &repo);
+        if let Some(ref node_id) = repo.node_id {
+            known_scope.insert(node_id.clone(), &repo);
+        }
+        let now = Timestamp::now();
+
+        for (label, alert) in [
+            ("empty item", serde_json::json!({})),
+            (
+                "repository not an object",
+                serde_json::json!({"repository": "octo/repo"}),
+            ),
+            (
+                "repository without usable coordinates",
+                serde_json::json!({"repository": {"full_name": "octo/repo"}}),
+            ),
+            (
+                "repository with unusable coordinate types",
+                serde_json::json!({"repository": {"id": null, "node_id": 7}}),
+            ),
+            (
+                "empty numeric id",
+                serde_json::json!({"repository": {"id": ""}}),
+            ),
+            (
+                "empty node id",
+                serde_json::json!({"repository": {"node_id": ""}}),
+            ),
+            (
+                "both coordinates empty",
+                serde_json::json!({"repository": {"id": "", "node_id": ""}}),
+            ),
+        ] {
+            let mut summary = success_summary();
+            process_alert(&alert, &known_scope, &mut summary, now);
+
+            assert_eq!(
+                summary.collection_status,
+                CollectionStatus::Unavailable,
+                "{label}: an uncorrelatable alert must degrade the summary"
+            );
+            assert_eq!(
+                summary.collection_reason.as_deref(),
+                Some("alert_correlation_unidentifiable"),
+                "{label}: degraded reason must name the correlation gap"
+            );
+            assert_eq!(summary.total_open_secret_alerts, 0, "{label}");
+            assert!(summary.per_repo.is_empty(), "{label}");
+
+            let eval = evaluate_with_org_summary(
+                &repo,
+                "2026-06-15T15:00:00Z",
+                &summary,
+                Some(SecretScanningStatus::Enabled),
+            );
+            assert_eq!(
+                eval.has_open_alerts, None,
+                "{label}: degraded summary must not claim alert-free"
+            );
+            assert!(!eval.alerts_observable, "{label}");
+        }
+    }
+
+    #[test]
+    fn process_alert_correlates_when_one_coordinate_is_empty_but_the_other_is_usable() {
+        let repo = sample_repo("11111", Some("R_node_AAA"), "repo-a");
+        let mut known_scope = HashMap::new();
+        known_scope.insert(scope_key(&repo), &repo);
+        if let Some(ref node_id) = repo.node_id {
+            known_scope.insert(node_id.clone(), &repo);
+        }
+        let now = Timestamp::now();
+
+        for (label, alert) in [
+            (
+                "empty numeric id, usable node id",
+                serde_json::json!({"repository": {"id": "", "node_id": "R_node_AAA"}}),
+            ),
+            (
+                "usable numeric id, empty node id",
+                serde_json::json!({"repository": {"id": 11111, "node_id": ""}}),
+            ),
+            (
+                "usable string numeric id, empty node id",
+                serde_json::json!({"repository": {"id": "11111", "node_id": ""}}),
+            ),
+        ] {
+            let mut summary = success_summary();
+            process_alert(&alert, &known_scope, &mut summary, now);
+
+            assert_eq!(
+                summary.collection_status,
+                CollectionStatus::Success,
+                "{label}: a usable alternate coordinate must still correlate"
+            );
+            assert_eq!(summary.collection_reason, None, "{label}");
+            assert_eq!(summary.total_open_secret_alerts, 1, "{label}");
+            assert_eq!(
+                summary
+                    .per_repo
+                    .get(&scope_key(&repo))
+                    .map(|r| r.open_alert_count),
+                Some(1),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn process_alert_skips_valid_out_of_scope_repository_without_degrading() {
+        let repo = sample_repo("11111", Some("R_node_AAA"), "repo-a");
+        let mut known_scope = HashMap::new();
+        known_scope.insert(scope_key(&repo), &repo);
+        if let Some(ref node_id) = repo.node_id {
+            known_scope.insert(node_id.clone(), &repo);
+        }
+        let now = Timestamp::now();
+
+        for (label, alert) in [
+            (
+                "numeric identity out of scope",
+                serde_json::json!({"repository": {"id": 99999}}),
+            ),
+            (
+                "node identity out of scope",
+                serde_json::json!({"repository": {"node_id": "R_node_ZZZ"}}),
+            ),
+            (
+                "both identities out of scope",
+                serde_json::json!({"repository": {"id": 99999, "node_id": "R_node_ZZZ"}}),
+            ),
+            (
+                "empty numeric id with usable out-of-scope node id",
+                serde_json::json!({"repository": {"id": "", "node_id": "R_node_ZZZ"}}),
+            ),
+            (
+                "usable out-of-scope numeric id with empty node id",
+                serde_json::json!({"repository": {"id": 99999, "node_id": ""}}),
+            ),
+        ] {
+            let mut summary = success_summary();
+            process_alert(&alert, &known_scope, &mut summary, now);
+
+            assert_eq!(
+                summary.collection_status,
+                CollectionStatus::Success,
+                "{label}: a valid out-of-scope identity must not degrade"
+            );
+            assert_eq!(summary.collection_reason, None, "{label}");
+            assert_eq!(summary.total_open_secret_alerts, 0, "{label}");
+            assert!(summary.per_repo.is_empty(), "{label}");
+        }
     }
 
     #[test]
