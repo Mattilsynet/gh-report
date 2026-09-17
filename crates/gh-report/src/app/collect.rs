@@ -6153,17 +6153,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn saga_starts_in_init_phase() {
-        let config = sample_config();
+    #[tokio::test]
+    async fn saga_starts_in_init_phase() {
         let run_meta = RunMetadata::new(
             "TestOrg".to_string(),
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+        let snapshot = serde_json::json!({"repo-1": "sha-1", "run_timestamp": "ignored"});
+        let expected_signature = cherry_pit_storage::build_snapshot_signature(Some(&snapshot));
+        let mut summary = test_org_summary();
+        summary.total_open_secret_alerts = 7;
+        let org_alert = OrgAlertContext {
+            summary,
+            snapshot: Some(snapshot),
+        };
 
-        let saga = make_test_saga(&config, &run_meta);
+        let saga = SweepSaga::new(&run_meta, &ctx, org_alert, &state);
 
         assert_eq!(*saga.phase(), SweepPhase::Init);
+        assert_eq!(saga.run_timestamp, run_meta.timestamp());
+        assert_eq!(saga.snapshot_signature, expected_signature);
+        assert_eq!(saga.org_summary.total_open_secret_alerts, 7);
+        assert!(saga.completed.is_empty());
+        assert!(saga.baseline_cache.is_empty());
+        assert_eq!(saga.resumed_count, 0);
+        assert_eq!(saga.baseline_reused, 0);
+
+        let published = state
+            .org_alert_summary()
+            .expect("production constructor publishes the org alert summary to shared state");
+        assert!(Arc::ptr_eq(&published, &saga.org_summary));
     }
 
     #[tokio::test]
@@ -7368,10 +7389,15 @@ mod tests {
             .await
             .unwrap();
 
+        let SweepPhase::Failed { error } = saga.phase() else {
+            panic!(
+                "expected Failed phase after worker panic, got {:?}",
+                saga.phase()
+            )
+        };
         assert!(
-            matches!(saga.phase(), SweepPhase::Failed { .. }),
-            "expected Failed phase after worker panic, got {:?}",
-            saga.phase()
+            !error.is_empty(),
+            "Failed phase must carry a non-empty diagnostic message"
         );
 
         state.work_queue.close();

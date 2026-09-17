@@ -482,6 +482,12 @@ impl AppState {
 
     #[must_use]
     #[cfg(test)]
+    pub(crate) fn org_alert_summary(&self) -> Option<Arc<crate::domain::metrics::OrgAlertSummary>> {
+        self.evidence.org_summary.load_full().as_ref().clone()
+    }
+
+    #[must_use]
+    #[cfg(test)]
     pub(crate) fn ws_subscribe(&self) -> tokio::sync::broadcast::Receiver<PageUpdateEvent> {
         self.evidence.ws_broadcast.subscribe()
     }
