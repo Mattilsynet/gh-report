@@ -66,6 +66,42 @@ struct IndexTemplate<'a> {
     title: String,
     warm_start: bool,
     ascended_count: usize,
+    build_footer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BuildSha {
+    Known(String),
+    Unknown,
+}
+
+impl BuildSha {
+    fn parse(raw: &str) -> Self {
+        let candidate = raw.trim();
+        let provisioned = candidate.len() >= 7
+            && candidate.len() <= 40
+            && candidate.bytes().all(|b| b.is_ascii_hexdigit());
+        if provisioned {
+            Self::Known(candidate[..7].to_ascii_lowercase())
+        } else {
+            Self::Unknown
+        }
+    }
+
+    fn label(&self) -> &str {
+        match self {
+            Self::Known(sha) => sha,
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+fn build_footer_text() -> String {
+    format!(
+        "gh-report v{} · build {}",
+        env!("GH_REPORT_VERSION"),
+        BuildSha::parse(env!("GH_REPORT_GIT_SHA")).label()
+    )
 }
 
 /// Askama template for the admin diagnostics page.
@@ -578,6 +614,7 @@ pub(crate) fn render_publication_streaming(
         title: format!("{} Security Dashboard", vm.organization),
         warm_start,
         ascended_count: owners_vm.as_ref().map_or(0, count_ascended_teams),
+        build_footer: build_footer_text(),
     })?;
     let admin = render_template(&AdminTemplate {
         vm: &vm,

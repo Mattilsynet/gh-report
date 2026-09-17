@@ -303,7 +303,7 @@ fn render_dashboard_index_snapshot() {
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
     insta::with_settings!({snapshot_path => "../snapshots"}, {
-    insta::assert_snapshot!("dashboard_index", &pages["index.html"]);
+    insta::assert_snapshot!("dashboard_index", normalize_build_footer(&pages["index.html"]));
     });
 }
 
@@ -348,7 +348,7 @@ fn render_dashboard_index_badge_snapshot() {
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
     insta::with_settings!({snapshot_path => "../snapshots"}, {
-    insta::assert_snapshot!("dashboard_index_badge", &pages["index.html"]);
+    insta::assert_snapshot!("dashboard_index_badge", normalize_build_footer(&pages["index.html"]));
     });
 }
 
@@ -358,7 +358,7 @@ fn render_dashboard_index_zero_badge_snapshot() {
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
     insta::with_settings!({snapshot_path => "../snapshots"}, {
-    insta::assert_snapshot!("dashboard_index_zero_badge", &pages["index.html"]);
+    insta::assert_snapshot!("dashboard_index_zero_badge", normalize_build_footer(&pages["index.html"]));
     });
 }
 
@@ -401,7 +401,7 @@ fn projection_current_state_renders_stable_html() {
     );
 
     insta::with_settings!({snapshot_path => "../snapshots"}, {
-    insta::assert_snapshot!("projection_current_state_index", &pages["index.html"]);
+    insta::assert_snapshot!("projection_current_state_index", normalize_build_footer(&pages["index.html"]));
     insta::assert_snapshot!("projection_current_state_orphans", &pages["orphans.html"]);
     insta::assert_snapshot!("projection_current_state_report", &pages["report.html"]);
     });
@@ -7972,4 +7972,123 @@ fn assert_table_widths_agree(page: &str, file_name: &str, expected_columns: usiz
             );
         }
     }
+}
+
+#[test]
+fn build_sha_parses_provisioned_hex_as_known_short_sha() {
+    assert_eq!(
+        BuildSha::parse("21B32E3DEADBEEF0123456789ABCDEF012345678"),
+        BuildSha::Known("21b32e3".to_string())
+    );
+    assert_eq!(
+        BuildSha::parse("21b32e3"),
+        BuildSha::Known("21b32e3".to_string())
+    );
+}
+
+#[test]
+fn build_sha_parses_absent_or_invalid_provisioning_as_unknown() {
+    for raw in ["", "   ", "not-a-sha", "21b32e", "zzzzzzz", &"a".repeat(41)] {
+        assert_eq!(
+            BuildSha::parse(raw),
+            BuildSha::Unknown,
+            "unprovisioned or invalid input must not fabricate build identity: {raw:?}"
+        );
+    }
+}
+
+#[test]
+fn build_sha_label_reports_unknown_without_fabricating_identity() {
+    assert_eq!(BuildSha::Unknown.label(), "unknown");
+    assert_eq!(BuildSha::Known("21b32e3".to_string()).label(), "21b32e3");
+}
+
+#[test]
+fn dashboard_index_footer_renders_build_version_and_sha() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("<footer class=\"build-footer\">"),
+        "index.html should carry the build provenance footer"
+    );
+    assert!(
+        index.contains(&build_footer_text()),
+        "footer must display the actual build facts: {}",
+        build_footer_text()
+    );
+    assert!(
+        build_footer_text().starts_with(&format!("gh-report v{}", env!("GH_REPORT_VERSION"))),
+        "existing version authority must be unchanged"
+    );
+}
+
+mod build_script_protocol {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_env.rs"));
+
+    #[test]
+    fn sanitize_git_sha_rejects_multiline_and_malformed_input() {
+        let rejected = [
+            "",
+            "   ",
+            "not-a-sha",
+            "21b32e",
+            &"a".repeat(41),
+            "abcdef0\ncargo:warning=INJECTED",
+            "abcdef0\rcargo:rustc-env=GH_REPORT_VERSION=injected",
+            "abcdef0\ncargo:rustc-env=GH_REPORT_GIT_SHA=deadbee",
+        ];
+        for raw in rejected {
+            assert_eq!(
+                sanitize_git_sha(raw),
+                "",
+                "malformed build input must not reach the Cargo protocol: {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_git_sha_preserves_provisioned_hex_without_extra_records() {
+        for raw in [
+            "21b32e3",
+            "  21b32e3  ",
+            "21B32E3DEADBEEF0123456789ABCDEF012345678",
+        ] {
+            let emitted = format!(
+                "cargo:rustc-env=GH_REPORT_GIT_SHA={}",
+                sanitize_git_sha(raw)
+            );
+            assert_eq!(
+                emitted.lines().count(),
+                1,
+                "emitted directive must stay a single Cargo record: {raw:?}"
+            );
+            assert_eq!(
+                emitted.matches("cargo:").count(),
+                1,
+                "emitted directive must not introduce a second Cargo record: {raw:?}"
+            );
+        }
+        assert_eq!(sanitize_git_sha("  21b32e3  "), "21b32e3");
+    }
+}
+
+#[test]
+fn dashboard_index_footer_matches_independently_supplied_build_sha() {
+    let Some(expected_sha) = option_env!("GH_REPORT_EXPECTED_SHA") else {
+        return;
+    };
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains(&format!("\u{b7} build {expected_sha}<")),
+        "rendered footer must carry the independently supplied build sha {expected_sha}"
+    );
+}
+
+fn normalize_build_footer(page: &str) -> String {
+    page.replace(&build_footer_text(), "gh-report v[BUILD] · build [SHA]")
 }
