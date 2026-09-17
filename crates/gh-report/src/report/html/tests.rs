@@ -7882,13 +7882,34 @@ fn render_dashboard_renders_coverage_capped_badge_with_truthful_wording() {
     let index = &pages["index.html"];
     let report = &pages["report.html"];
 
-    assert!(index.contains("class=\"coverage-capped-badge\""));
-    assert!(index.contains("10 of 776 repositories selected"));
-    assert!(!index.contains("evaluated10"));
-
-    assert!(report.contains("class=\"coverage-capped-badge\""));
-    assert!(report.contains("10 of 776 repositories selected"));
-    assert!(!report.contains("evaluated10"));
+    for (name, page) in [("index.html", index), ("report.html", report)] {
+        assert!(
+            page.contains("class=\"coverage-capped-badge\""),
+            "{name} must carry the capped badge"
+        );
+        assert!(
+            page.contains("<strong>Coverage:</strong> Capped 10 of 776 repositories<"),
+            "{name} visible badge text must be the short dynamic form"
+        );
+        assert!(
+            page.matches("10 of 776 repositories selected for sweep; max_repos")
+                .count()
+                == 1,
+            "{name} must carry the long caveat only once, inside the accessible detail"
+        );
+        assert!(
+            page.contains("title=\"10 of 776 repositories selected for sweep; max_repos=10;"),
+            "{name} must retain the selection basis as accessible escaped detail"
+        );
+        assert!(
+            page.contains("non-archived report rows (may include unread and retained evidence)\""),
+            "{name} must retain the report-row caveat as accessible escaped detail"
+        );
+        assert!(
+            !page.contains("evaluated10"),
+            "{name} must not mislabel as evaluated"
+        );
+    }
 }
 
 #[test]

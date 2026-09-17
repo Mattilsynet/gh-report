@@ -1614,6 +1614,19 @@ pub fn strip_org_prefix(owner: &str) -> String {
     }
 }
 
+/// Capped-coverage disclosure split into the short visible badge text and
+/// the full caveat kept as accessible detail.
+///
+/// Both fields are plain text; the template escapes them, so no raw HTML
+/// can reach the page through this seam.
+#[derive(Debug, Clone)]
+pub struct CoverageNotice {
+    /// Visible badge text, e.g. `Capped 10 of 776 repositories`.
+    pub summary: String,
+    /// Full caveat: selection basis, `max_repos`, and report-row scope.
+    pub detail: String,
+}
+
 /// Pre-computed display values for the HTML report template.
 ///
 /// All formatting is done here so the Askama template only interpolates
@@ -1634,8 +1647,9 @@ pub struct ReportViewModel {
     pub total_all_repos: u32,
     /// Accessible label for non-archived repositories in the scope header.
     pub scope_non_archived_label: &'static str,
-    /// HTML disclosure notice if repository collection was capped by `max_repos`.
-    pub coverage_notice: Option<String>,
+    /// Dynamic capped-coverage disclosure if repository collection was
+    /// capped by `max_repos`.
+    pub coverage_notice: Option<CoverageNotice>,
 
     /// Prose precision (1 decimal), used by the report.html metric
     /// paragraphs and index.html cards.
@@ -2054,9 +2068,12 @@ impl ReportViewModel {
                     .limit()
                     .map_or(selected as u64, std::num::NonZero::get);
                 let report_rows = stats.total_repos;
-                Some(format!(
-                    "<strong>Coverage:</strong> Capped ({selected} of {total} repositories selected for sweep; max_repos={limit}; {report_rows} non-archived report rows (may include unread and retained evidence))"
-                ))
+                Some(CoverageNotice {
+                    summary: format!("Capped {selected} of {total} repositories"),
+                    detail: format!(
+                        "{selected} of {total} repositories selected for sweep; max_repos={limit}; {report_rows} non-archived report rows (may include unread and retained evidence)"
+                    ),
+                })
             } else {
                 None
             },
@@ -4771,11 +4788,13 @@ mod tests {
         let notice = vm
             .coverage_notice
             .expect("capped coverage must have notice");
-        assert!(notice.contains(
+        assert_eq!(notice.summary, "Capped 10 of 776 repositories");
+        assert_eq!(
+            notice.detail,
             "10 of 776 repositories selected for sweep; max_repos=10; 10 non-archived report rows (may include unread and retained evidence)"
-        ));
-        assert!(!notice.contains("evaluated"));
-        assert!(!notice.contains("evaluated10"));
+        );
+        assert!(!notice.summary.contains("evaluated"));
+        assert!(!notice.detail.contains("evaluated"));
     }
 
     #[test]
