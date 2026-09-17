@@ -727,6 +727,124 @@ fn render_dashboard_stylesheet_has_reduced_motion_media_query() {
     assert!(css.contains("transition: none"));
 }
 
+fn css_rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
+    let needle = format!("\n{selector} {{");
+    let start = css
+        .find(&needle)
+        .unwrap_or_else(|| panic!("stylesheet must define a `{selector}` rule"));
+    let body = &css[start + needle.len()..];
+    let end = body
+        .find('}')
+        .unwrap_or_else(|| panic!("`{selector}` rule must be terminated"));
+    &body[..end]
+}
+
+fn css_declaration<'a>(rule_body: &'a str, property: &str) -> Option<&'a str> {
+    rule_body.split(';').find_map(|declaration| {
+        let (name, value) = declaration.split_once(':')?;
+        (name.trim() == property).then_some(value.trim())
+    })
+}
+
+fn assert_bubble_is_not_clipped(rule_body: &str, selector: &str) {
+    assert_ne!(
+        css_declaration(rule_body, "overflow"),
+        Some("hidden"),
+        "`{selector}` must not be made to fit by clipping its explanation"
+    );
+    assert_eq!(
+        css_declaration(rule_body, "text-overflow"),
+        None,
+        "`{selector}` must not be made to fit by truncating its explanation"
+    );
+    let height = css_declaration(rule_body, "height");
+    assert!(
+        matches!(height, None | Some("auto")),
+        "`{selector}` must stay auto-height so wrapped explanation lines remain visible, found `height: {}`",
+        height.unwrap_or("auto")
+    );
+}
+
+#[test]
+fn render_dashboard_stylesheet_contains_card_tooltip_bubble_within_its_card() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let css = &pages["style.css"];
+
+    let label = css_rule_body(css, ".card-label");
+    assert_eq!(
+        css_declaration(label, "position"),
+        Some("relative"),
+        "the card label must be the tooltip bubble's containing block, or the absolutely positioned bubble widens the page at idle"
+    );
+
+    let trigger = css_rule_body(css, ".card-label .tooltip-trigger");
+    assert_eq!(
+        css_declaration(trigger, "position"),
+        Some("static"),
+        "the card tooltip trigger must not be the bubble's containing block, or bounding the bubble by 100% squeezes it to the trigger's width"
+    );
+
+    let bubble = css_rule_body(css, ".card-label .tooltip-trigger::after");
+    assert_eq!(
+        css_declaration(bubble, "max-width"),
+        Some("min(18em, 100%)"),
+        "the card tooltip bubble must be bounded by its card as well as by the 18em prose cap"
+    );
+    assert_bubble_is_not_clipped(bubble, ".card-label .tooltip-trigger::after");
+    assert_bubble_is_not_clipped(
+        css_rule_body(css, ".tooltip-trigger::after"),
+        ".tooltip-trigger::after",
+    );
+}
+
+#[test]
+fn render_dashboard_stylesheet_reflows_page_header_within_narrow_viewports() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let css = &pages["style.css"];
+
+    let meta = css_rule_body(css, ".page-header .meta");
+    assert!(
+        !meta.contains("white-space: nowrap"),
+        "page header meta must wrap so the capped badge cannot force horizontal overflow at 1024px"
+    );
+
+    let badge = css_rule_body(css, ".coverage-capped-badge");
+    assert!(
+        badge.contains("white-space: nowrap"),
+        "the short badge text must stay on one line"
+    );
+    assert!(
+        badge.contains("max-width: 100%"),
+        "the badge must not exceed its container width"
+    );
+}
+
+#[test]
+fn render_dashboard_stylesheet_keeps_revealed_coverage_detail_inside_viewport() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let css = &pages["style.css"];
+
+    let revealed = css_rule_body(
+        css,
+        ".coverage-capped-badge:hover + .coverage-capped-detail",
+    );
+    assert!(
+        revealed.contains("white-space: normal"),
+        "the revealed caveat must wrap"
+    );
+    assert!(
+        revealed.contains("max-width: 100%"),
+        "the revealed caveat must be bounded by its container"
+    );
+    assert!(
+        revealed.contains("overflow-wrap: anywhere"),
+        "long unbroken detail tokens must not overflow the viewport"
+    );
+}
+
 #[test]
 fn render_dashboard_report_column_headers_have_scope_col() {
     let evidence = sample_evidence();
