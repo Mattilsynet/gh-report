@@ -5,7 +5,7 @@ include!("build_env.rs");
 
 fn main() {
     let version = resolve_version();
-    println!("cargo:rustc-env=GH_REPORT_VERSION={version}");
+    println!("cargo:rustc-env=GH_REPORT_VERSION={}", version.as_str());
     println!("cargo:rerun-if-env-changed=APP_VERSION");
 
     let raw_git_sha = env::var("APP_GIT_SHA").unwrap_or_default();
@@ -16,16 +16,29 @@ fn main() {
     println!("cargo:rerun-if-changed=build_env.rs");
 }
 
-fn resolve_version() -> String {
+fn resolve_version() -> EmittableVersion {
     if let Ok(app_version) = env::var("APP_VERSION")
         && !app_version.is_empty()
     {
-        return strip_v_prefix(&app_version).to_string();
+        match EmittableVersion::new(&app_version) {
+            Ok(accepted) => return accepted,
+            Err(rejection) => {
+                println!("{}", version_rejection_diagnostic("APP_VERSION", rejection));
+            }
+        }
     }
     if let Some(described) = git_describe() {
-        return strip_v_prefix(&described).to_string();
+        match EmittableVersion::new(&described) {
+            Ok(accepted) => return accepted,
+            Err(rejection) => {
+                println!(
+                    "{}",
+                    version_rejection_diagnostic("git-describe", rejection)
+                );
+            }
+        }
     }
-    env!("CARGO_PKG_VERSION").to_string()
+    EmittableVersion::package_fallback()
 }
 
 fn git_describe() -> Option<String> {
@@ -44,8 +57,4 @@ fn git_describe() -> Option<String> {
         }
         _ => None,
     }
-}
-
-fn strip_v_prefix(s: &str) -> &str {
-    s.strip_prefix('v').unwrap_or(s)
 }

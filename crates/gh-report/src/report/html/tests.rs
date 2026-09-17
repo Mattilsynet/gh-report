@@ -8028,6 +8028,66 @@ mod build_script_protocol {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_env.rs"));
 
     #[test]
+    fn emittable_version_accepts_legitimate_spellings_and_strips_exactly_one_v() {
+        let cases = [
+            ("v0.1.83", "0.1.83"),
+            ("0.1.83", "0.1.83"),
+            ("vv1", "v1"),
+            ("pr-77", "pr-77"),
+            ("pr-4549a1f", "pr-4549a1f"),
+            ("v0.1.83-2-g4549a1f-dirty", "0.1.83-2-g4549a1f-dirty"),
+            ("  spaced  ", "  spaced  "),
+        ];
+        for (raw, expected) in cases {
+            let accepted = EmittableVersion::new(raw)
+                .unwrap_or_else(|_| panic!("legitimate spelling must be accepted: {raw:?}"));
+            assert_eq!(accepted.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn emittable_version_rejects_record_separators_and_empty_after_prefix() {
+        for raw in [
+            "v1.2.3\ncargo:rustc-env=GHR_FRAME_PROBE=1",
+            "v1.2.3\r\ncargo:rustc-env=GHR_FRAME_PROBE=1",
+            "v1.2.3\rcargo:rustc-env=GHR_FRAME_PROBE=1",
+        ] {
+            assert_eq!(
+                EmittableVersion::new(raw).unwrap_err(),
+                build_version::VersionRejection::RecordSeparator,
+                "record separator must not reach the Cargo protocol: {raw:?}"
+            );
+        }
+        for raw in ["v", ""] {
+            assert_eq!(
+                EmittableVersion::new(raw).unwrap_err(),
+                build_version::VersionRejection::EmptyAfterPrefix
+            );
+        }
+    }
+
+    #[test]
+    fn package_fallback_is_a_validated_version() {
+        let fallback = EmittableVersion::package_fallback();
+        assert_eq!(fallback.as_str(), env!("CARGO_PKG_VERSION"));
+        assert!(EmittableVersion::new(fallback.as_str()).is_ok());
+    }
+
+    #[test]
+    fn version_rejection_diagnostic_is_fixed_and_never_echoes_the_candidate() {
+        let diagnostic = version_rejection_diagnostic(
+            "APP_VERSION",
+            build_version::VersionRejection::RecordSeparator,
+        );
+        assert_eq!(
+            diagnostic,
+            "cargo:warning=gh-report build: rejected APP_VERSION version candidate: contains a record separator"
+        );
+        assert!(!diagnostic.contains('\n'));
+        assert!(!diagnostic.contains('\r'));
+    }
+
+    #[test]
     fn sanitize_git_sha_rejects_multiline_and_malformed_input() {
         let rejected = [
             "",

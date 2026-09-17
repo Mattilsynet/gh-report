@@ -849,9 +849,13 @@ cargo test
 
 **How the binary reports its version.** At build time, `build.rs` stamps the compile-time `GH_REPORT_VERSION` value with this precedence:
 
-1. `APP_VERSION` environment variable, if set and non-empty (CI/Docker sets this from the git tag; a leading `v` is stripped).
-2. `git describe --tags --always --dirty`, if `APP_VERSION` is unset (local dev builds).
-3. `CARGO_PKG_VERSION`, as a final fallback (a source tarball with no git and no `APP_VERSION`).
+1. `APP_VERSION` environment variable, if set, non-empty **and valid** (CI/Docker sets this from the git tag).
+2. `git describe --tags --always --dirty`, if `APP_VERSION` is unset, empty or rejected (local dev builds); the described value must itself be valid.
+3. `CARGO_PKG_VERSION`, as a final fallback (a source tarball with no git, or with no valid candidate from steps 1-2).
+
+**What "valid" means.** Each candidate is normalized by removing **exactly one** leading lowercase `v` (`v0.1.83` -> `0.1.83`, `vv1` -> `v1`, `0.1.83` unchanged), then rejected if the result is empty or contains a CR or LF byte. Everything else is preserved verbatim, including whitespace and the non-semver spellings CI produces (`pr-77`, `pr-4549a1f`, `0.1.83-2-g4549a1f-dirty`). `APP_VERSION=v` normalizes to empty and is therefore rejected.
+
+A rejected candidate does **not** fail the build: the build script emits a `cargo:warning` naming the source (`APP_VERSION` or `git-describe`) and the fixed reason (`contains a record separator`, or `is empty after version prefix normalization`), then falls through to the next step in the precedence list. The warning never reproduces the offending value. An operator seeing an unexpected fallback identity should look for that warning in the build log.
 
 `gh-report --version` and the GitHub API `User-Agent` header both report this stamped value — neither reads `CARGO_PKG_VERSION` directly.
 
@@ -869,7 +873,7 @@ git push origin vX.Y.Z
 
 Pushing the tag triggers `.github/workflows/build.yml` (on `v*` tags): it runs CI, builds the `linux/amd64` image with `APP_VERSION=<tag>`, pushes `:latest` and `:<tag>` to GAR, and deploys the pinned digest to Cloud Run. No other release step is needed.
 
-**Local build staleness.** `build.rs`'s only rebuild trigger is `cargo:rerun-if-env-changed=APP_VERSION` — there is intentionally no rerun-on-git-HEAD trigger, to keep incremental builds fast. A local `--version` can therefore show a stale `git describe` string after a new commit that changes no source file and no `APP_VERSION`. Force a refresh with `cargo clean -p gh-report` (or touch `build.rs`, or set `APP_VERSION`). This does not affect CI or production: the Docker builder stage is fresh on every build and always sets `APP_VERSION` from the tag, so the deployed version is always exact.
+**Local build staleness.** `build.rs` declares exactly four rebuild triggers: `cargo:rerun-if-env-changed` on `APP_VERSION` and on `APP_GIT_SHA`, plus `cargo:rerun-if-changed` on `build.rs` and `build_env.rs`. There is intentionally no rerun-on-git-HEAD trigger, to keep incremental builds fast. A local `--version` can therefore show a stale `git describe` string after a new commit that changes no source file and no `APP_VERSION`. Force a refresh with `cargo clean -p gh-report` (or touch `build.rs`, or set `APP_VERSION`). This does not affect CI or production: the Docker builder stage is fresh on every build and always sets `APP_VERSION` from the tag, so the deployed version is always exact.
 
 ## WebSocket Push Notifications
 
