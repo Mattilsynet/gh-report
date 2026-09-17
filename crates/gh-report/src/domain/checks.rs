@@ -1588,9 +1588,9 @@ mod tests {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "test-only signal constructor mirroring BranchTierSignals's field count; fires only under --all-targets clippy, not the default lib build"
+        reason = "test-only public-boundary constructor mirroring BranchProtectionDetails's field count; fires only under --all-targets clippy, not the default lib build"
     )]
-    fn bpr_signals(
+    fn bpr_result(
         status: BranchProtectionStatus,
         reason_kind: Option<CollectionFailureReason>,
         has_pr: Option<bool>,
@@ -1600,23 +1600,49 @@ mod tests {
         has_broad_bypass: Option<bool>,
         force_push_blocked: Option<bool>,
         deletion_blocked: Option<bool>,
-    ) -> BranchTierSignals {
-        BranchTierSignals {
+    ) -> BranchProtectionResult {
+        BranchProtectionResult {
             status,
-            reason_kind,
-            has_pr,
-            required_reviewers,
-            has_status_checks,
-            admin_equivalent,
-            has_broad_bypass,
-            force_push_blocked,
-            deletion_blocked,
+            details: BranchProtectionDetails {
+                default_branch: "main".to_string(),
+                has_pr,
+                required_reviewers,
+                has_status_checks,
+                admin_equivalent,
+                has_broad_bypass,
+                reason: None,
+                reason_kind,
+                http_status: None,
+                force_push_blocked,
+                deletion_blocked,
+            },
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
         }
+    }
+
+    type BprFieldCase = (
+        &'static str,
+        fn(&mut BranchProtectionDetails),
+        BranchProtectionRegime,
+    );
+
+    fn bpr_hardened_baseline() -> BranchProtectionResult {
+        bpr_result(
+            BranchProtectionStatus::Pass,
+            None,
+            Some(true),
+            Some(2),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(true),
+            Some(true),
+        )
     }
 
     #[test]
     fn bpr_unmeasured_when_status_unknown() {
-        let signals = bpr_signals(
+        let result = bpr_result(
             BranchProtectionStatus::Unknown,
             None,
             None,
@@ -1627,15 +1653,12 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(
-            classify_branch_protection_regime(signals),
-            BranchProtectionRegime::Unmeasured
-        );
+        assert_eq!(result.regime(), BranchProtectionRegime::Unmeasured);
     }
 
     #[test]
     fn bpr_unmeasured_when_reason_kind_excluded() {
-        let signals = bpr_signals(
+        let result = bpr_result(
             BranchProtectionStatus::Partial,
             Some(CollectionFailureReason::PermissionDenied),
             Some(true),
@@ -1646,15 +1669,12 @@ mod tests {
             Some(true),
             Some(true),
         );
-        assert_eq!(
-            classify_branch_protection_regime(signals),
-            BranchProtectionRegime::Unmeasured
-        );
+        assert_eq!(result.regime(), BranchProtectionRegime::Unmeasured);
     }
 
     #[test]
     fn bpr_not_excluded_when_reason_kind_not_found_absent() {
-        let signals = bpr_signals(
+        let result = bpr_result(
             BranchProtectionStatus::Fail,
             Some(CollectionFailureReason::NotFoundAbsent),
             None,
@@ -1665,15 +1685,12 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(
-            classify_branch_protection_regime(signals),
-            BranchProtectionRegime::Unprotected
-        );
+        assert_eq!(result.regime(), BranchProtectionRegime::Unprotected);
     }
 
     #[test]
     fn bpr_unprotected_when_nothing_configured() {
-        let signals = bpr_signals(
+        let result = bpr_result(
             BranchProtectionStatus::Fail,
             None,
             None,
@@ -1684,15 +1701,12 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(
-            classify_branch_protection_regime(signals),
-            BranchProtectionRegime::Unprotected
-        );
+        assert_eq!(result.regime(), BranchProtectionRegime::Unprotected);
     }
 
     #[test]
     fn bpr_unprotected_when_protected_but_integrity_not_held() {
-        let signals = bpr_signals(
+        let result = bpr_result(
             BranchProtectionStatus::Partial,
             None,
             Some(true),
@@ -1703,15 +1717,12 @@ mod tests {
             Some(true),
             Some(false),
         );
-        assert_eq!(
-            classify_branch_protection_regime(signals),
-            BranchProtectionRegime::Unprotected
-        );
+        assert_eq!(result.regime(), BranchProtectionRegime::Unprotected);
     }
 
     #[test]
     fn bpr_integrity_only_when_no_review_gate() {
-        let signals = bpr_signals(
+        let result = bpr_result(
             BranchProtectionStatus::Partial,
             None,
             Some(false),
@@ -1722,15 +1733,12 @@ mod tests {
             Some(true),
             Some(true),
         );
-        assert_eq!(
-            classify_branch_protection_regime(signals),
-            BranchProtectionRegime::IntegrityOnly
-        );
+        assert_eq!(result.regime(), BranchProtectionRegime::IntegrityOnly);
     }
 
     #[test]
     fn bpr_reviewed_with_bypass_when_bypass_present() {
-        let signals = bpr_signals(
+        let result = bpr_result(
             BranchProtectionStatus::Pass,
             None,
             Some(true),
@@ -1741,15 +1749,12 @@ mod tests {
             Some(true),
             Some(true),
         );
-        assert_eq!(
-            classify_branch_protection_regime(signals),
-            BranchProtectionRegime::ReviewedWithBypass
-        );
+        assert_eq!(result.regime(), BranchProtectionRegime::ReviewedWithBypass);
     }
 
     #[test]
     fn bpr_reviewed_gated_when_no_status_checks() {
-        let signals = bpr_signals(
+        let result = bpr_result(
             BranchProtectionStatus::Pass,
             None,
             Some(true),
@@ -1760,29 +1765,104 @@ mod tests {
             Some(true),
             Some(true),
         );
-        assert_eq!(
-            classify_branch_protection_regime(signals),
-            BranchProtectionRegime::ReviewedGated
-        );
+        assert_eq!(result.regime(), BranchProtectionRegime::ReviewedGated);
     }
 
     #[test]
     fn bpr_hardened_catch_all() {
-        let signals = bpr_signals(
-            BranchProtectionStatus::Pass,
-            None,
-            Some(true),
-            Some(2),
-            Some(true),
-            Some(true),
-            Some(false),
-            Some(true),
-            Some(true),
-        );
         assert_eq!(
-            classify_branch_protection_regime(signals),
+            bpr_hardened_baseline().regime(),
             BranchProtectionRegime::Hardened
         );
+    }
+
+    #[test]
+    fn bpr_public_fields_route_to_their_own_band_decision() {
+        let cases: [BprFieldCase; 6] = [
+            (
+                "has_status_checks",
+                |d| d.has_status_checks = Some(false),
+                BranchProtectionRegime::ReviewedGated,
+            ),
+            (
+                "has_broad_bypass",
+                |d| d.has_broad_bypass = Some(true),
+                BranchProtectionRegime::ReviewedWithBypass,
+            ),
+            (
+                "required_reviewers",
+                |d| d.required_reviewers = Some(0),
+                BranchProtectionRegime::IntegrityOnly,
+            ),
+            (
+                "has_pr",
+                |d| d.has_pr = Some(false),
+                BranchProtectionRegime::IntegrityOnly,
+            ),
+            (
+                "force_push_blocked",
+                |d| d.force_push_blocked = Some(false),
+                BranchProtectionRegime::Unprotected,
+            ),
+            (
+                "deletion_blocked",
+                |d| d.deletion_blocked = Some(false),
+                BranchProtectionRegime::Unprotected,
+            ),
+        ];
+        for (field, mutate, expected) in cases {
+            let mut result = bpr_hardened_baseline();
+            assert_eq!(
+                result.regime(),
+                BranchProtectionRegime::Hardened,
+                "baseline for {field}"
+            );
+            mutate(&mut result.details);
+            assert_eq!(result.regime(), expected, "public field {field} routing");
+        }
+    }
+
+    #[test]
+    fn bpr_unknown_status_outranks_every_configured_control() {
+        let mut result = bpr_hardened_baseline();
+        result.status = BranchProtectionStatus::Unknown;
+        assert_eq!(result.regime(), BranchProtectionRegime::Unmeasured);
+        assert_eq!(result.tier(), BranchProtectionTier::Excluded);
+    }
+
+    #[test]
+    fn bpr_all_none_controls_are_unprotected_not_unmeasured() {
+        let result = bpr_result(
+            BranchProtectionStatus::Partial,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result.regime(), BranchProtectionRegime::Unprotected);
+        assert_eq!(result.tier(), BranchProtectionTier::BelowBaseline);
+    }
+
+    #[test]
+    fn bpr_max_required_reviewers_is_a_positive_review_gate() {
+        let mut gated = bpr_hardened_baseline();
+        gated.details.required_reviewers = Some(u32::MAX);
+        assert_eq!(gated.regime(), BranchProtectionRegime::Hardened);
+
+        let mut without_integrity = gated.clone();
+        without_integrity.details.force_push_blocked = Some(false);
+        assert_eq!(
+            without_integrity.regime(),
+            BranchProtectionRegime::Unprotected
+        );
+
+        let mut without_pr = gated;
+        without_pr.details.has_pr = Some(false);
+        assert_eq!(without_pr.regime(), BranchProtectionRegime::IntegrityOnly);
     }
 
     #[test]
@@ -1831,11 +1911,13 @@ mod tests {
         /// combination, cross-checking against the `excluded`/`expected`
         /// bindings computed inline below from the same signal domain.
         #[test]
-        fn bpr_cascade_is_total_and_mutually_exclusive(
+        fn bpr_public_regime_matches_published_band_semantics(
             status_idx in 0u8..4,
             reason_kind_idx in 0u8..7,
             has_pr in proptest::option::of(proptest::bool::ANY),
-            required_reviewers in proptest::option::of(0u32..3),
+            required_reviewers in proptest::option::of(
+                proptest::prop_oneof![0u32..3, proptest::strategy::Just(u32::MAX)]
+            ),
             has_status_checks in proptest::option::of(proptest::bool::ANY),
             admin_equivalent in proptest::option::of(proptest::bool::ANY),
             has_broad_bypass in proptest::option::of(proptest::bool::ANY),
@@ -1857,7 +1939,7 @@ mod tests {
                 5 => Some(CollectionFailureReason::RateLimited),
                 _ => Some(CollectionFailureReason::Invalid),
             };
-            let signals = bpr_signals(
+            let result = bpr_result(
                 status,
                 reason_kind,
                 has_pr,
@@ -1869,10 +1951,10 @@ mod tests {
                 deletion_blocked,
             );
 
-            let regime = classify_branch_protection_regime(signals);
+            let regime = result.regime();
 
-            let excluded = status == BranchProtectionStatus::Unknown
-                || matches!(
+            let measurable = status != BranchProtectionStatus::Unknown
+                && !matches!(
                     reason_kind,
                     Some(
                         CollectionFailureReason::PermissionDenied
@@ -1882,30 +1964,33 @@ mod tests {
                             | CollectionFailureReason::Invalid
                     )
                 );
-            let protected = has_pr == Some(true)
-                || required_reviewers.is_some_and(|count| count > 0)
-                || has_status_checks == Some(true)
-                || admin_equivalent == Some(true)
-                || force_push_blocked == Some(true)
-                || deletion_blocked == Some(true);
-            let integrity_blocked =
+            let integrity_floor =
                 force_push_blocked == Some(true) && deletion_blocked == Some(true);
+            let review_gate = has_pr == Some(true)
+                && required_reviewers.is_some_and(|count| count > 0);
+            let broad_bypass = has_broad_bypass == Some(true);
+            let status_checks = has_status_checks == Some(true);
 
-            let expected = if excluded {
-                BranchProtectionRegime::Unmeasured
-            } else if !protected || !integrity_blocked {
-                BranchProtectionRegime::Unprotected
-            } else if has_pr != Some(true) || required_reviewers.unwrap_or(0) == 0 {
-                BranchProtectionRegime::IntegrityOnly
-            } else if has_broad_bypass == Some(true) {
-                BranchProtectionRegime::ReviewedWithBypass
-            } else if has_status_checks != Some(true) {
-                BranchProtectionRegime::ReviewedGated
-            } else {
-                BranchProtectionRegime::Hardened
+            let expected = match (
+                measurable,
+                integrity_floor,
+                review_gate,
+                broad_bypass,
+                status_checks,
+            ) {
+                (false, _, _, _, _) => BranchProtectionRegime::Unmeasured,
+                (true, false, _, _, _) => BranchProtectionRegime::Unprotected,
+                (true, true, false, _, _) => BranchProtectionRegime::IntegrityOnly,
+                (true, true, true, true, _) => BranchProtectionRegime::ReviewedWithBypass,
+                (true, true, true, false, false) => BranchProtectionRegime::ReviewedGated,
+                (true, true, true, false, true) => BranchProtectionRegime::Hardened,
             };
 
             proptest::prop_assert_eq!(regime, expected);
+            proptest::prop_assert_eq!(
+                result.tier(),
+                BranchProtectionTier::from(expected)
+            );
         }
     }
 }
