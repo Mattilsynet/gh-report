@@ -842,6 +842,7 @@ impl SweepSaga {
             &self.run_timestamp,
             sweep.state,
             sweep.config.force_refresh,
+            &self.org_summary,
         );
         self.baseline_reused = self.baseline_cache.len();
 
@@ -2773,6 +2774,7 @@ fn reuse_from_baseline(
     run_timestamp: &str,
     state: &Arc<AppState>,
     force_refresh: bool,
+    org_summary: &OrgAlertSummary,
 ) -> HashMap<String, Arc<RepositoryEvidence>> {
     if force_refresh {
         info!(
@@ -2818,6 +2820,18 @@ fn reuse_from_baseline(
             );
             continue;
         }
+        if org_alerts_contradict_baseline(&evidence, repo, org_summary) {
+            debug!(
+                repo = %repo.name,
+                baseline_open = ?evidence.checks.secret_scanning.has_open_alerts,
+                fresh_open = org_summary
+                    .per_repo
+                    .get(&ghas_scanning::scope_key(repo))
+                    .is_some_and(|s| s.open_alert_count > 0),
+                "skipping baseline reuse: conflicting baseline alert evidence versus fresh successful org alert summary"
+            );
+            continue;
+        }
 
         debug!(
             repo = %repo.name,
@@ -2836,6 +2850,24 @@ fn reuse_from_baseline(
     }
 
     baseline_cache
+}
+
+fn org_alerts_contradict_baseline(
+    evidence: &RepositoryEvidence,
+    repo: &Repository,
+    org_summary: &OrgAlertSummary,
+) -> bool {
+    if org_summary.collection_status != crate::domain::status::CollectionStatus::Success {
+        return false;
+    }
+    let Some(baseline_open) = evidence.checks.secret_scanning.has_open_alerts else {
+        return false;
+    };
+    let fresh_open = org_summary
+        .per_repo
+        .get(&ghas_scanning::scope_key(repo))
+        .is_some_and(|summary| summary.open_alert_count > 0);
+    baseline_open != fresh_open
 }
 
 /// Configuration for the partial publisher task.
@@ -6695,6 +6727,384 @@ mod tests {
         );
     }
 
+    struct AlertBaselineFixture {
+        inventory: InventoryLoad,
+        repo: Arc<Repository>,
+        org_summary: Arc<OrgAlertSummary>,
+    }
+
+    fn org_summary_with_open_alerts(repo_id: &str, open_alert_count: u64) -> OrgAlertSummary {
+        let mut summary = test_org_summary();
+        if open_alert_count > 0 {
+            summary.per_repo.insert(
+                repo_id.to_string(),
+                crate::domain::metrics::RepoAlertSummary {
+                    open_alert_count,
+                    ..Default::default()
+                },
+            );
+            summary.total_open_secret_alerts = open_alert_count;
+        }
+        summary
+    }
+
+    fn seed_alert_baseline(
+        state: &Arc<AppState>,
+        dir: &std::path::Path,
+        run: &RunMetadata,
+        age_secs: i64,
+        has_open_alerts: Option<bool>,
+        secret_status: SecretScanningStatus,
+    ) -> AlertBaselineFixture {
+        let old_updated_at = "2020-01-01T00:00:00Z";
+        let observed_at = (crate::domain::time::parse_iso8601(&run.timestamp()).unwrap()
+            - jiff::SignedDuration::from_secs(age_secs))
+        .to_string();
+        let repo = test_fixtures::make_repository("repo-1", false, Visibility::Public);
+        let mut evidence = test_fixtures::evidence_from_repository(&repo, &observed_at);
+        evidence.repository.updated_at = crate::domain::repository::UpdatedAt::new(old_updated_at);
+        evidence.checks.secret_scanning.status = secret_status;
+        evidence.checks.secret_scanning.has_open_alerts = has_open_alerts;
+        evidence.checks.secret_scanning.alerts_observable = has_open_alerts.is_some();
+        evidence.checks.codeowners = test_fixtures::codeowners_with_owners(&["@org/sec-team"]);
+        seed_baseline(dir, state, vec![("repo-1", old_updated_at, evidence)]);
+
+        let repo = arc_repo_with_updated_at("repo-1", Some(old_updated_at));
+        let inventory = AdmittedInventory::from_test_repos(vec![Arc::clone(&repo)], true);
+        AlertBaselineFixture {
+            inventory,
+            repo,
+            org_summary: Arc::new(test_org_summary()),
+        }
+    }
+
+    async fn reused_count_for(
+        age_secs: i64,
+        has_open_alerts: Option<bool>,
+        secret_status: SecretScanningStatus,
+        fresh_open_alerts: u64,
+    ) -> usize {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta_at("2026-04-10T12:00:00+00:00");
+        let state = AppState::new_with_cache_capacity(10).await;
+        let mut saga = make_test_saga(&config, &run);
+        let fixture = seed_alert_baseline(
+            &state,
+            dir.path(),
+            &run,
+            age_secs,
+            has_open_alerts,
+            secret_status,
+        );
+        saga.org_summary = Arc::new(org_summary_with_open_alerts(
+            &fixture.repo.id,
+            fresh_open_alerts,
+        ));
+        saga_run_resume_and_baseline(&mut saga, &fixture.inventory, &config, &run, &state);
+        saga.baseline_reused
+    }
+
+    #[tokio::test]
+    async fn saga_recollects_baseline_when_fresh_org_summary_contradicts_stale_open_alert() {
+        assert_eq!(
+            reused_count_for(43_200, Some(true), SecretScanningStatus::Enabled, 0).await,
+            0,
+            "a stale open-alert baseline must be recollected when a fresh successful org summary reports none"
+        );
+    }
+
+    #[tokio::test]
+    async fn saga_recollects_baseline_when_fresh_org_summary_contradicts_stale_alert_free() {
+        assert_eq!(
+            reused_count_for(43_200, Some(false), SecretScanningStatus::Enabled, 3).await,
+            0,
+            "a stale alert-free baseline must be recollected when a fresh successful org summary reports open alerts"
+        );
+    }
+
+    #[tokio::test]
+    async fn saga_reuses_baseline_when_fresh_org_summary_agrees() {
+        assert_eq!(
+            reused_count_for(43_200, Some(false), SecretScanningStatus::Enabled, 0).await,
+            1,
+            "matching alert-free baseline evidence must remain reusable"
+        );
+        assert_eq!(
+            reused_count_for(43_200, Some(true), SecretScanningStatus::Enabled, 2).await,
+            1,
+            "matching open-alert baseline evidence must remain reusable"
+        );
+    }
+
+    #[tokio::test]
+    async fn saga_reuses_baseline_without_an_alert_claim_regardless_of_fresh_org_alerts() {
+        for status in [
+            SecretScanningStatus::Disabled,
+            SecretScanningStatus::Unknown,
+            SecretScanningStatus::PermissionDenied,
+        ] {
+            for fresh in [0, 4] {
+                assert_eq!(
+                    reused_count_for(43_200, None, status, fresh).await,
+                    1,
+                    "{status:?} baseline carries no alert claim to contradict (fresh open alerts: {fresh})"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn saga_reuses_open_alert_baseline_when_org_summary_is_not_successful() {
+        for status in [
+            crate::domain::status::CollectionStatus::PermissionDenied,
+            crate::domain::status::CollectionStatus::TransientError,
+            crate::domain::status::CollectionStatus::Unavailable,
+            crate::domain::status::CollectionStatus::NotCollected,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = config_with_dir(dir.path());
+            let run = test_run_meta_at("2026-04-10T12:00:00+00:00");
+            let state = AppState::new_with_cache_capacity(10).await;
+
+            let mut saga = make_test_saga(&config, &run);
+            let fixture = seed_alert_baseline(
+                &state,
+                dir.path(),
+                &run,
+                43_200,
+                Some(true),
+                SecretScanningStatus::Enabled,
+            );
+            let mut summary = test_org_summary();
+            summary.collection_status = status;
+            saga.org_summary = Arc::new(summary);
+
+            saga_run_resume_and_baseline(&mut saga, &fixture.inventory, &config, &run, &state);
+
+            assert_eq!(
+                saga.baseline_reused, 1,
+                "{status:?} org summary must not invalidate an open-alert baseline"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn alert_conflict_does_not_move_the_baseline_age_boundary() {
+        let max_age = i64::try_from(config::BASELINE_MAX_AGE_SECS).unwrap();
+
+        assert_eq!(
+            reused_count_for(max_age, Some(false), SecretScanningStatus::Enabled, 0).await,
+            1,
+            "agreeing evidence exactly at BASELINE_MAX_AGE_SECS stays fresh"
+        );
+        assert_eq!(
+            reused_count_for(max_age + 1, Some(false), SecretScanningStatus::Enabled, 0).await,
+            0,
+            "agreeing evidence one second past BASELINE_MAX_AGE_SECS is stale"
+        );
+        assert_eq!(
+            reused_count_for(max_age, Some(true), SecretScanningStatus::Enabled, 0).await,
+            0,
+            "conflicting evidence exactly at BASELINE_MAX_AGE_SECS is invalidated by the conflict"
+        );
+    }
+
+    struct OrgSummaryEvaluator {
+        client: Arc<GitHubClient>,
+        org_summary: Arc<OrgAlertSummary>,
+    }
+
+    impl RepoEvaluator for OrgSummaryEvaluator {
+        async fn evaluate<'a>(
+            &'a self,
+            repo: Arc<Repository>,
+            ts: &'a str,
+        ) -> Result<RepositoryEvidence, String> {
+            let secret_scanning =
+                ghas_scanning::evaluate(&self.client, &repo, ts, Some(self.org_summary.as_ref()))
+                    .await;
+            let mut evidence = test_fixtures::evidence_from_repository(&repo, ts);
+            evidence.checks.codeowners = test_fixtures::codeowners_with_owners(&["@org/sec-team"]);
+            if secret_scanning.status == SecretScanningStatus::Unknown {
+                evidence.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+            }
+            evidence.checks.secret_scanning = secret_scanning;
+            Ok(evidence)
+        }
+    }
+
+    impl crate::app::worker_pool::JobExecutor for OrgSummaryEvaluator {
+        type Context = JobContext;
+        type Result = RepositoryEvidence;
+
+        async fn execute<'a>(
+            &'a self,
+            _domain_key: &'a crate::app::work_queue::DomainKey,
+            context: &'a Self::Context,
+        ) -> Result<Self::Result, String> {
+            self.evaluate(Arc::clone(&context.repo), &context.run_timestamp)
+                .await
+        }
+    }
+
+    async fn repo_details_mock_server(status_code: u16) -> wiremock::MockServer {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let response = if status_code == 200 {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1,
+                "name": "repo-1",
+                "default_branch": "main",
+                "security_and_analysis": {
+                    "secret_scanning": {"status": "enabled"}
+                }
+            }))
+        } else {
+            ResponseTemplate::new(status_code)
+        };
+        Mock::given(path("/repos/TestOrg/repo-1"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    struct SnapshotOutcome {
+        baseline_reused: usize,
+        phase: SweepPhase,
+        snapshot_alerts: Option<bool>,
+        owner_alert_free: (u32, u32),
+        org_total_open_alerts: u32,
+    }
+
+    async fn run_reevaluation_to_snapshot(repo_details_status: u16) -> SnapshotOutcome {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta_at("2026-04-10T12:00:00+00:00");
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+
+        let mut saga = make_test_saga(&config, &run);
+        let fixture = seed_alert_baseline(
+            &state,
+            dir.path(),
+            &run,
+            43_200,
+            Some(true),
+            SecretScanningStatus::Enabled,
+        );
+
+        let server = repo_details_mock_server(repo_details_status).await;
+        let evaluator = Arc::new(OrgSummaryEvaluator {
+            client: rollback_test_client(&server.uri()),
+            org_summary: Arc::clone(&fixture.org_summary),
+        });
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        saga_run_resume_and_baseline(&mut saga, &fixture.inventory, &config, &run, &state);
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &fixture.inventory, &state)
+            .await
+            .unwrap();
+        state.work_queue.close();
+
+        let snapshot = state
+            .projection_render_snapshot()
+            .expect("projection snapshot must exist after admission");
+        let repositories = snapshot.repositories();
+        let snapshot_alerts = repositories[0].checks.secret_scanning.has_open_alerts;
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories,
+            deleted: vec![],
+            org_state: None,
+            config: &config,
+            run: &run,
+            inventory_fetched_at: None,
+            org_alert_summary: Some(&fixture.org_summary),
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        });
+
+        let alert_free = evidence
+            .metrics
+            .owner_metrics
+            .iter()
+            .find(|o| o.owner.contains("sec-team"))
+            .and_then(|o| o.per_control_coverage.get("alert_free").cloned())
+            .expect("owner alert_free coverage must exist");
+
+        SnapshotOutcome {
+            baseline_reused: saga.baseline_reused,
+            phase: saga.phase().clone(),
+            snapshot_alerts,
+            owner_alert_free: (alert_free.numerator, alert_free.denominator),
+            org_total_open_alerts: evidence
+                .secret_scanning_observability
+                .total_open_secret_alerts,
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_alert_free_metric_clears_after_stale_open_alert_baseline_is_invalidated() {
+        let outcome = run_reevaluation_to_snapshot(200).await;
+
+        assert_eq!(
+            outcome.snapshot_alerts,
+            Some(false),
+            "the recorded and folded projection snapshot must carry the reevaluated alert state"
+        );
+        assert_eq!(
+            outcome.owner_alert_free,
+            (1, 1),
+            "owner alert_free must follow the final projected checks"
+        );
+        assert_eq!(
+            outcome.org_total_open_alerts, 0,
+            "org total must agree with the owner metric and the snapshot"
+        );
+        assert_eq!(
+            outcome.baseline_reused, 0,
+            "the conflicting baseline must not be reused"
+        );
+        assert_eq!(
+            outcome.phase,
+            SweepPhase::BatchDrained,
+            "the invalidated repo must be admitted through the ordinary reevaluation path"
+        );
+    }
+
+    #[tokio::test]
+    async fn degraded_reevaluation_does_not_downgrade_complete_open_alert_baseline_evidence() {
+        let outcome = run_reevaluation_to_snapshot(500).await;
+
+        assert_eq!(
+            outcome.baseline_reused, 0,
+            "invalidation still routes the repo to reevaluation"
+        );
+        assert_eq!(
+            outcome.phase,
+            SweepPhase::BatchDrained,
+            "the degraded reevaluation still completes the batch"
+        );
+        assert_eq!(
+            outcome.snapshot_alerts,
+            Some(true),
+            "a degraded full evaluation must not overwrite complete open-alert evidence"
+        );
+        assert_eq!(
+            outcome.owner_alert_free,
+            (0, 1),
+            "the owner metric must not be falsely cleared by a degraded reevaluation"
+        );
+    }
+
     /// Test 11: Changed `updated_at` forces re-evaluation (no baseline reuse).
     #[tokio::test]
     async fn saga_reevaluates_when_baseline_updated_at_changes() {
@@ -6779,6 +7189,7 @@ mod tests {
             "2026-04-09T13:00:00+00:00",
             &state,
             false,
+            &test_org_summary(),
         );
 
         assert!(
@@ -6804,8 +7215,14 @@ mod tests {
         let repo = arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z"));
         let completed = HashMap::new();
 
-        let baseline_cache =
-            reuse_from_baseline(&[repo], &completed, "2026-04-10T00:00:00Z", &state, true);
+        let baseline_cache = reuse_from_baseline(
+            &[repo],
+            &completed,
+            "2026-04-10T00:00:00Z",
+            &state,
+            true,
+            &test_org_summary(),
+        );
 
         assert!(
             baseline_cache.is_empty(),
