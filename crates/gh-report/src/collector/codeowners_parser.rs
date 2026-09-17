@@ -97,16 +97,17 @@ pub fn parse_codeowners(content: &str) -> ParsedCodeowners {
 
 /// Strip an inline comment from a CODEOWNERS line.
 ///
-/// Looks for ` #` or `\t#` (hash preceded by whitespace) and returns
-/// everything before it.
+/// Looks for the earliest ` #` or `\t#` (hash preceded by whitespace) and
+/// returns everything before it.
 fn strip_inline_comment(line: &str) -> &str {
-    if let Some(pos) = line.find(" #") {
-        return line[..pos].trim_end();
+    match [line.find(" #"), line.find("\t#")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
+        Some(pos) => line[..pos].trim_end(),
+        None => line,
     }
-    if let Some(pos) = line.find("\t#") {
-        return line[..pos].trim_end();
-    }
-    line
 }
 
 #[cfg(test)]
@@ -174,6 +175,35 @@ mod tests {
         let result = parse_codeowners(content);
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].owners, vec!["@org/team"]);
+    }
+
+    #[test]
+    fn tab_delimiter_before_space_delimiter_strips_from_earliest() {
+        let content = "* @real\t# @ghost # tail\n";
+        let result = parse_codeowners(content);
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].pattern, "*");
+        assert_eq!(result.entries[0].owners, vec!["@real"]);
+        assert_eq!(result.unique_owners, vec!["@real"]);
+    }
+
+    #[test]
+    fn space_delimiter_before_tab_delimiter_strips_from_earliest() {
+        let content = "* @real # @ghost\t# tail\n";
+        let result = parse_codeowners(content);
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].pattern, "*");
+        assert_eq!(result.entries[0].owners, vec!["@real"]);
+        assert_eq!(result.unique_owners, vec!["@real"]);
+    }
+
+    #[test]
+    fn non_whitespace_hash_is_not_a_comment_delimiter() {
+        let content = "/src/file#frag @al#ice\n";
+        let result = parse_codeowners(content);
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].pattern, "/src/file#frag");
+        assert_eq!(result.entries[0].owners, vec!["@al#ice"]);
     }
 
     #[test]
