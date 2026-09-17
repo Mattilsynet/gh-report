@@ -127,7 +127,9 @@ h1 {
 
 .page-header .meta {
    margin: 0;
-   white-space: nowrap;
+   min-width: 0;
+   max-width: 100%;
+   white-space: normal;
 }
 
 .warm-start-badge {
@@ -152,6 +154,8 @@ h1 {
    padding: .1em .5em;
    margin-left: .5em;
    vertical-align: middle;
+   max-width: 100%;
+   white-space: nowrap;
 }
 
 .coverage-capped-badge:focus-visible {
@@ -162,12 +166,15 @@ h1 {
 .coverage-capped-badge:focus-visible + .coverage-capped-detail,
 .coverage-capped-badge:hover + .coverage-capped-detail {
    position: static;
+   display: inline-block;
    width: auto;
    height: auto;
+   max-width: 100%;
    margin: 0 0 0 .4em;
    overflow: visible;
    clip: auto;
    white-space: normal;
+   overflow-wrap: anywhere;
    font-size: 0.8em;
    color: var(--tier-warn-border);
 }
@@ -323,9 +330,18 @@ code {
 }
 
 .card-label {
+   position: relative;
    color: var(--text-muted);
    font-size: 0.85em;
    margin: 0 0 .3em;
+}
+
+.card-label .tooltip-trigger {
+   position: static;
+}
+
+.card-label .tooltip-trigger::after {
+   max-width: min(18em, 100%);
 }
 
 .card-value {
@@ -895,10 +911,6 @@ details>*:not(summary) {
 
    .page-header {
       flex-direction: column;
-   }
-
-   .page-header .meta {
-      white-space: normal;
    }
 }
 
