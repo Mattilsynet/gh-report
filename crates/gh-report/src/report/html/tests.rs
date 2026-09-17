@@ -7872,43 +7872,65 @@ fn alert_free_card_bright_red_styling() {
 
 #[test]
 fn render_dashboard_renders_coverage_capped_badge_with_truthful_wording() {
-    let mut evidence = sample_evidence();
-    evidence.assessment_metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
-        776,
-        std::num::NonZeroU64::new(10).unwrap(),
-    );
+    for (total, limit, selected) in [(776_usize, 10_u64, 10_usize), (17, 3, 3)] {
+        let mut evidence = sample_evidence();
+        evidence.assessment_metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+            total,
+            std::num::NonZeroU64::new(limit).unwrap(),
+        );
+        let report_rows = evidence.collection_statistics.total_repos;
+        assert_ne!(
+            report_rows as usize, selected,
+            "fixture must keep report rows distinct from selected"
+        );
+        assert_ne!(
+            report_rows as usize, total,
+            "fixture must keep report rows distinct from total"
+        );
 
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let index = &pages["index.html"];
-    let report = &pages["report.html"];
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail = format!(
+            "{selected} of {total} repositories selected for sweep; max_repos={limit}; {report_rows} non-archived report rows (may include unread and retained evidence)"
+        );
 
-    for (name, page) in [("index.html", index), ("report.html", report)] {
-        assert!(
-            page.contains("class=\"coverage-capped-badge\""),
-            "{name} must carry the capped badge"
-        );
-        assert!(
-            page.contains("<strong>Coverage:</strong> Capped 10 of 776 repositories<"),
-            "{name} visible badge text must be the short dynamic form"
-        );
-        assert!(
-            page.matches("10 of 776 repositories selected for sweep; max_repos")
-                .count()
-                == 1,
-            "{name} must carry the long caveat only once, inside the accessible detail"
-        );
-        assert!(
-            page.contains("title=\"10 of 776 repositories selected for sweep; max_repos=10;"),
-            "{name} must retain the selection basis as accessible escaped detail"
-        );
-        assert!(
-            page.contains("non-archived report rows (may include unread and retained evidence)\""),
-            "{name} must retain the report-row caveat as accessible escaped detail"
-        );
-        assert!(
-            !page.contains("evaluated10"),
-            "{name} must not mislabel as evaluated"
-        );
+        for (name, anchor) in [
+            ("index.html", "coverage-capped-detail-index"),
+            ("report.html", "coverage-capped-detail-report"),
+        ] {
+            let page = &pages[name];
+            assert!(
+                page.contains("class=\"coverage-capped-badge\""),
+                "{name} must carry the capped badge"
+            );
+            assert!(
+                page.contains(&format!(
+                    "<strong>Coverage:</strong> Capped {selected} of {total} repositories</span>"
+                )),
+                "{name} visible badge text must be the short dynamic form"
+            );
+            assert!(
+                page.contains(&format!("aria-describedby=\"{anchor}\"")),
+                "{name} badge must reference an accessible description"
+            );
+            assert!(
+                page.contains(&format!(
+                    "<span id=\"{anchor}\" class=\"sr-only coverage-capped-detail\">{detail}</span>"
+                )),
+                "{name} must expose the full caveat as an associated, keyboard-revealable detail"
+            );
+            assert!(
+                page.contains("class=\"coverage-capped-badge\" tabindex=\"0\""),
+                "{name} badge must be keyboard focusable"
+            );
+            assert!(
+                page.contains(&format!("title=\"{detail}\"")),
+                "{name} must retain the caveat as pointer-hover detail"
+            );
+            assert!(
+                !page.contains("evaluated"),
+                "{name} must not mislabel selection as evaluated"
+            );
+        }
     }
 }
 
@@ -7921,11 +7943,58 @@ fn render_dashboard_omits_coverage_capped_badge_when_uncapped() {
     );
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let index = &pages["index.html"];
-    let report = &pages["report.html"];
 
-    assert!(!index.contains("class=\"coverage-capped-badge\""));
-    assert!(!report.contains("class=\"coverage-capped-badge\""));
+    for name in ["index.html", "report.html"] {
+        assert!(!pages[name].contains("class=\"coverage-capped-badge\""));
+        assert!(!pages[name].contains("coverage-capped-detail"));
+    }
+}
+
+#[test]
+fn render_dashboard_omits_coverage_capped_badge_when_coverage_unknown() {
+    let mut evidence = sample_evidence();
+    evidence.assessment_metadata.coverage = crate::domain::evidence::CollectionCoverage::Unknown;
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    for name in ["index.html", "report.html"] {
+        assert!(
+            !pages[name].contains("class=\"coverage-capped-badge\""),
+            "{name} must omit the badge when coverage is Unknown"
+        );
+        assert!(
+            !pages[name].contains("coverage-capped-detail"),
+            "{name} must omit the accessible detail when coverage is Unknown"
+        );
+    }
+}
+
+#[test]
+fn render_dashboard_escapes_scope_header_organization_next_to_capped_badge() {
+    let mut evidence = sample_evidence();
+    evidence.assessment_metadata.organization = "ev<il>&\"org".to_string();
+    evidence.assessment_metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+        776,
+        std::num::NonZeroU64::new(10).unwrap(),
+    );
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    for name in ["index.html", "report.html"] {
+        let page = &pages[name];
+        assert!(
+            !page.contains("ev<il>"),
+            "{name} must not emit raw markup from the organization name"
+        );
+        assert!(
+            page.contains("ev&#60;il&#62;&#38;&#34;org"),
+            "{name} must escape the organization name in the scope header"
+        );
+        assert!(
+            page.contains("class=\"coverage-capped-badge\""),
+            "{name} must still render the badge alongside escaped scope text"
+        );
+    }
 }
 
 #[test]

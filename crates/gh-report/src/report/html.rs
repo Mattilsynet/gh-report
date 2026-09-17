@@ -30,14 +30,14 @@ use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
-    ControlDenominatorViewModel, CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel,
-    DenominatorRepoRow, DotState, DrillDownPage, GhostTeamRow, LifecycleRetirementViewModel,
-    OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
-    OwnerRepoRow, OwnersViewModel, ReportViewModel, RosterFreshness, RosterSection, StatusDot,
-    SummaryCard, TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, UnmeasuredRepoRow,
-    WildcardOwnerRow, bpr_band_metadata, compute_health_score, coverage_control_column_tooltip,
-    coverage_control_how_to_fix, format_exclusion, generate_slug, rate_to_width_class,
-    strip_org_prefix,
+    ControlDenominatorViewModel, CoverageNotice, CoverageTier, DashboardHref, DeletedRepoRow,
+    DeletedViewModel, DenominatorRepoRow, DotState, DrillDownPage, GhostTeamRow,
+    LifecycleRetirementViewModel, OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel,
+    OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel, ReportViewModel,
+    RosterFreshness, RosterSection, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
+    TopNav, TopSecurityTeam, UnmeasuredRepoRow, WildcardOwnerRow, bpr_band_metadata,
+    compute_health_score, coverage_control_column_tooltip, coverage_control_how_to_fix,
+    format_exclusion, generate_slug, rate_to_width_class, strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -53,6 +53,7 @@ struct ReportTemplate<'a> {
     nav: TopNav,
     title: String,
     warm_start: bool,
+    coverage_badge: Option<CoverageNotice>,
 }
 
 /// Askama template for the dashboard index page.
@@ -67,6 +68,7 @@ struct IndexTemplate<'a> {
     warm_start: bool,
     ascended_count: usize,
     build_footer: String,
+    coverage_badge: Option<CoverageNotice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -602,11 +604,17 @@ pub(crate) fn render_publication_streaming(
         technical_issues_total: vm.admin_diagnostics.technical_issues_total,
     };
 
+    let coverage_badge = CoverageNotice::derive(
+        &evidence.assessment_metadata.coverage,
+        evidence.collection_statistics.total_repos,
+    );
+
     let report = render_template(&ReportTemplate {
         vm: &vm,
         nav: nav.clone(),
         title: format!("{} GitHub Governance Overview", vm.organization),
         warm_start,
+        coverage_badge: coverage_badge.clone(),
     })?;
     let index = render_template(&IndexTemplate {
         vm: &vm,
@@ -615,6 +623,7 @@ pub(crate) fn render_publication_streaming(
         warm_start,
         ascended_count: owners_vm.as_ref().map_or(0, count_ascended_teams),
         build_footer: build_footer_text(),
+        coverage_badge,
     })?;
     let admin = render_template(&AdminTemplate {
         vm: &vm,

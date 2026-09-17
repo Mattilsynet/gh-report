@@ -154,6 +154,24 @@ h1 {
    vertical-align: middle;
 }
 
+.coverage-capped-badge:focus-visible {
+   outline: 2px solid var(--tier-warn-border);
+   outline-offset: 2px;
+}
+
+.coverage-capped-badge:focus-visible + .coverage-capped-detail,
+.coverage-capped-badge:hover + .coverage-capped-detail {
+   position: static;
+   width: auto;
+   height: auto;
+   margin: 0 0 0 .4em;
+   overflow: visible;
+   clip: auto;
+   white-space: normal;
+   font-size: 0.8em;
+   color: var(--tier-warn-border);
+}
+
 h2 {
    border-bottom: 1px solid var(--border-default);
    padding-bottom: .3em;

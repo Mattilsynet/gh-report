@@ -1617,14 +1617,42 @@ pub fn strip_org_prefix(owner: &str) -> String {
 /// Capped-coverage disclosure split into the short visible badge text and
 /// the full caveat kept as accessible detail.
 ///
-/// Both fields are plain text; the template escapes them, so no raw HTML
-/// can reach the page through this seam.
+/// Crate-private presentation adapter: the single formatting authority for
+/// the capped-coverage caveat. The public [`ReportViewModel::coverage_notice`]
+/// HTML string and the template badge are both derived from it, so neither
+/// parses the other.
 #[derive(Debug, Clone)]
-pub struct CoverageNotice {
-    /// Visible badge text, e.g. `Capped 10 of 776 repositories`.
-    pub summary: String,
-    /// Full caveat: selection basis, `max_repos`, and report-row scope.
-    pub detail: String,
+pub(crate) struct CoverageNotice {
+    pub(crate) summary: String,
+    pub(crate) detail: String,
+}
+
+impl CoverageNotice {
+    pub(crate) fn derive(
+        coverage: &crate::domain::evidence::CollectionCoverage,
+        report_rows: u32,
+    ) -> Option<Self> {
+        use crate::domain::evidence::CollectionCoverage;
+        match coverage {
+            CollectionCoverage::Known { total, limit }
+                if *total > usize::try_from(limit.get()).unwrap_or(usize::MAX) =>
+            {
+                let selected = usize::try_from(limit.get()).unwrap_or(usize::MAX);
+                let limit_value = limit.get();
+                Some(Self {
+                    summary: format!("Capped {selected} of {total} repositories"),
+                    detail: format!(
+                        "{selected} of {total} repositories selected for sweep; max_repos={limit_value}; {report_rows} non-archived report rows (may include unread and retained evidence)"
+                    ),
+                })
+            }
+            CollectionCoverage::Known { .. } | CollectionCoverage::Unknown => None,
+        }
+    }
+
+    fn to_html(&self) -> String {
+        format!("<strong>Coverage:</strong> Capped ({})", self.detail)
+    }
 }
 
 /// Pre-computed display values for the HTML report template.
@@ -1647,9 +1675,8 @@ pub struct ReportViewModel {
     pub total_all_repos: u32,
     /// Accessible label for non-archived repositories in the scope header.
     pub scope_non_archived_label: &'static str,
-    /// Dynamic capped-coverage disclosure if repository collection was
-    /// capped by `max_repos`.
-    pub coverage_notice: Option<CoverageNotice>,
+    /// HTML disclosure notice if repository collection was capped by `max_repos`.
+    pub coverage_notice: Option<String>,
 
     /// Prose precision (1 decimal), used by the report.html metric
     /// paragraphs and index.html cards.
@@ -2057,26 +2084,9 @@ impl ReportViewModel {
             } else {
                 "non-archived"
             },
-            coverage_notice: if metadata.coverage.is_capped() {
-                let selected = metadata
-                    .coverage
-                    .selected()
-                    .unwrap_or(stats.total_repos as usize);
-                let total = metadata.coverage.total().unwrap_or(selected);
-                let limit = metadata
-                    .coverage
-                    .limit()
-                    .map_or(selected as u64, std::num::NonZero::get);
-                let report_rows = stats.total_repos;
-                Some(CoverageNotice {
-                    summary: format!("Capped {selected} of {total} repositories"),
-                    detail: format!(
-                        "{selected} of {total} repositories selected for sweep; max_repos={limit}; {report_rows} non-archived report rows (may include unread and retained evidence)"
-                    ),
-                })
-            } else {
-                None
-            },
+            coverage_notice: CoverageNotice::derive(&metadata.coverage, stats.total_repos)
+                .as_ref()
+                .map(CoverageNotice::to_html),
             policy_coverage_formatted: m.security_policy_coverage.to_string(),
             dependabot_coverage_formatted: m.dependabot_security_updates_coverage.to_string(),
             secret_scanning_coverage_formatted: m.secret_scanning_coverage.to_string(),
@@ -4771,30 +4781,51 @@ mod tests {
 
     #[test]
     fn view_model_coverage_notice_when_capped_labels_selected_not_evaluated() {
+        for (total, limit, selected, report_rows) in
+            [(776_usize, 10_u64, 10_usize, 4_u32), (17, 3, 3, 9)]
+        {
+            let mut metadata = test_fixtures::make_metadata();
+            metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
+                total,
+                std::num::NonZeroU64::new(limit).unwrap(),
+            );
+            let evidence = test_fixtures::make_full_evidence(
+                metadata,
+                test_fixtures::make_collection_statistics(report_rows, report_rows, 0, 0),
+                crate::aggregate::metrics::aggregate_metrics(&[]),
+                test_fixtures::make_observability(),
+                vec![],
+            );
+
+            let vm = ReportViewModel::from_evidence(&evidence, &super::CoverageTiers::default());
+            let notice = vm
+                .coverage_notice
+                .expect("capped coverage must have notice");
+            assert_eq!(
+                notice,
+                format!(
+                    "<strong>Coverage:</strong> Capped ({selected} of {total} repositories selected for sweep; max_repos={limit}; {report_rows} non-archived report rows (may include unread and retained evidence))"
+                ),
+                "public coverage_notice must keep its documented HTML contract"
+            );
+            assert!(!notice.contains("evaluated"));
+        }
+    }
+
+    #[test]
+    fn view_model_coverage_notice_when_coverage_unknown_is_none() {
         let mut metadata = test_fixtures::make_metadata();
-        metadata.coverage = crate::domain::evidence::CollectionCoverage::known(
-            776,
-            std::num::NonZeroU64::new(10).unwrap(),
-        );
+        metadata.coverage = crate::domain::evidence::CollectionCoverage::Unknown;
         let evidence = test_fixtures::make_full_evidence(
             metadata,
-            test_fixtures::make_collection_statistics(10, 10, 0, 0),
+            test_fixtures::make_collection_statistics(5, 5, 0, 0),
             crate::aggregate::metrics::aggregate_metrics(&[]),
             test_fixtures::make_observability(),
             vec![],
         );
 
         let vm = ReportViewModel::from_evidence(&evidence, &super::CoverageTiers::default());
-        let notice = vm
-            .coverage_notice
-            .expect("capped coverage must have notice");
-        assert_eq!(notice.summary, "Capped 10 of 776 repositories");
-        assert_eq!(
-            notice.detail,
-            "10 of 776 repositories selected for sweep; max_repos=10; 10 non-archived report rows (may include unread and retained evidence)"
-        );
-        assert!(!notice.summary.contains("evaluated"));
-        assert!(!notice.detail.contains("evaluated"));
+        assert!(vm.coverage_notice.is_none());
     }
 
     #[test]
