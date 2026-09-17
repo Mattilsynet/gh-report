@@ -6,7 +6,7 @@ global `~/.config/opencode/AGENTS.md` (auto-loaded) — not repeated here.
 
 ## What this repo is
 
-Rust workspace (edition 2024, MSRV 1.98, resolver 3, 25 crates) shipping two
+Rust workspace (edition 2024, MSRV 1.98, resolver 3, 13 member crates) shipping two
 binaries plus an ADR-governed library family and a large ADR corpus.
 
 - Binaries (real entrypoints): `adr-srv` (axum GraphQL service over an
@@ -19,8 +19,15 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   here and therefore no workspace-dependency pin.
 - `cherry-pit-*` — event-sourcing substrate consumed by `gh-report`.
 - `pardosa*` — `.pgno` event-store substrate + a NATS/JetStream backend
-  (`pardosa-nats`). `cherry-pit` does **not** depend on `pardosa` (severed per
-  CHE-0010); don't reintroduce that edge.
+  (`pardosa-nats`). **External, not workspace members**: consumed as git
+  dependencies from `acje/pardosa` at the rev pinned in
+  `[workspace.dependencies]` (`Cargo.toml:148-149`). The only `pardosa`-named
+  member built here is `crates/pardosa-cherry-pit-test-support`. `cherry-pit`
+  does **not** depend on `pardosa` (severed per CHE-0010); don't reintroduce
+  that edge. Because `pardosa` / `pardosa-nats` are dependencies rather than
+  members, their **test targets are not part of this workspace's test set** —
+  `cargo test -p pardosa` and `cargo test -p pardosa-nats` have no test target
+  to run here.
 
 ## Build / test / verify (local cadence; boundary mirrors CI)
 
@@ -141,22 +148,43 @@ adr-fmt-xdlw9 O3).
   `--no-fail-fast` is mandatory on the BOUNDARY test line: plain `cargo test`
   stops at the first failing test binary, so a failing BOUNDARY silently
   verifies only a fraction of the workspace (measured: ~40% covered before
-  abort) — violating the coverage-parity intent of this tier. BOUNDARY stays
+  abort) — violating the coverage-parity intent of this tier. Note the
+  direction of the mirror: CI's test step
+  (`.github/workflows/ci-reusable.yml:138`) carries **neither**
+  `--no-fail-fast` nor a `timeout` wrapper — it is bounded by the job's
+  `timeout-minutes: 30` instead. BOUNDARY mirrors CI's *scope*, not its exact
+  flags; the two local flags are deliberate local additions, not a claim about
+  CI. Changing CI's cadence is out of scope for documentation work. BOUNDARY stays
   on `cargo test` rather than `nextest`: nextest measured slower at workspace
-  scope (262s vs ~120s) and does not run doctests. `cargo test --doc
-  --workspace` is retained here for agent-local parity with CI's dedicated
-  doctest step (see coverage-parity below).
+  scope (262s vs ~120s) and does not run doctests. Doctests therefore ride the
+  BOUNDARY `cargo test --workspace` line above; there is no separate
+  `cargo test --doc` command in this tier.
 
   Coverage parity (non-negotiable, and free here): CI's C1 doctest
   condition (adr-fmt-cus9e) is a CI/pre-merge gate ONLY — adr-fmt-8whg7 Q2
   already adjudicated that C1 does not obligate `cargo test --doc` in the
-  local inner loop. CI is untouched by this tiering change: the 6 required
+  local inner loop. **CI has no dedicated doctest step**: doctests are covered
+  by the single `cargo test --workspace --all-features --locked` step at
+  `.github/workflows/ci-reusable.yml:138`, exactly as locally. CI is untouched
+  by this tiering change: the 6 required
   contexts and stabsec code-owner review still run full verification
   pre-merge. Nothing is deleted, `#[ignore]`d, or feature-gated by moving
   BOUNDARY to epic granularity; coverage is relocated to where it earns its
   cost, never dropped.
 - **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
   tripwire jobs. No agent tier runs these — not INNER, not MID, not BOUNDARY.
+- **Not covered by the four BOUNDARY commands** (additional CI steps, *not* an
+  added prohibition): the `gh-report-web-client` steps inside the
+  `build-test-lint` job (`.github/workflows/ci-reusable.yml:16-46`). They split
+  two ways. Host-side: `python3.12 -B tools/verify_web_client.py status --ci`,
+  `... compiler --ci`, and the guard-regression harness `python3.12 -B
+  tools/test_web_client_verify.py` — these need no wasm target and no browser.
+  wasm/browser-side: the `--target wasm32-unknown-unknown ... --no-run`
+  precompile and `python3.12 -B tools/verify_web_client.py browser --ci`, which
+  needs headless Chrome. A green BOUNDARY says nothing about either group; that
+  is a coverage fact, not a ban. Local invocation is explicitly fine — the
+  regression harness is already documented as a local command at
+  `crates/gh-report-web-client/src/sort.rs:148-149`.
   A green BOUNDARY is therefore NOT a proxy for a green CI; the residual
   defect class that reaches a PR unnoticed by every agent tier is exactly
   "violates a CI-only invariant" — a supply-chain advisory, or a tripwire
@@ -174,12 +202,16 @@ adr-fmt-xdlw9 O3).
 
 ## Live-NATS tests need a pinned `nats-server` (common CI/local gotcha)
 
-`crates/pardosa-nats/src/test_support.rs` spawns a real `nats-server` and
+`pardosa-nats`'s `src/test_support.rs` (in the external `acje/pardosa` repo,
+consumed at the pinned rev) spawns a real `nats-server` and
 checks its `--version` against `tools/.nats-server-version` (currently
-2.14.5). Affected tests include `pardosa`'s
-`dragline::runtime::tests::*jetstream*`. To run them for real, install
-`nats-server` v2.14.5 onto `PATH`. CI installs it in the `test` job
-(checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
+2.14.5). Affected tests live in the external `pardosa` crate
+(`dragline::runtime::tests::*jetstream*`) and are therefore **not part of this
+workspace's test set** — no local tier reaches them. To run them
+for real, install
+`nats-server` v2.14.5 onto `PATH`. CI installs it as a step in the
+`build-test-lint` job (`.github/workflows/ci-reusable.yml:126-137`,
+checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
 
 **Skip semantics (since PR #58, `ba331a8`) — absence skips, only a broken
@@ -217,7 +249,9 @@ matching bead.
 
 A second, unrelated known-red: `cargo test -p pardosa --test trybuild` is a
 false red on **incremental** builds only (reproduced on `main` @ `d7270f5`);
-it passes on a clean rebuild. Not a regression.
+it passes on a clean rebuild. Not a regression. Historical note only — since
+`pardosa` is an external git dependency rather than a workspace member, that
+test target is not part of this workspace's test set.
 
 ## CI specifics (`.github/workflows/ci.yml`)
 
