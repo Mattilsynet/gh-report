@@ -1899,17 +1899,6 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// COM-0024:R2 — the BPR cascade is total (every input reaches
-        /// exactly one band) and mutually exclusive (no input reaches two
-        /// bands) over the full signal domain. Since the cascade always
-        /// returns from its first matching step, totality/exclusivity
-        /// reduce to: `classify_branch_protection_regime` never panics
-        /// (totality) and always returns a single `BranchProtectionRegime`
-        /// value per input (exclusivity is structural — a function returns
-        /// one value). This test enumerates the option/bool domain named in
-        /// the mission contract to demonstrate coverage over every reachable
-        /// combination, cross-checking against the `excluded`/`expected`
-        /// bindings computed inline below from the same signal domain.
         #[test]
         fn bpr_public_regime_matches_published_band_semantics(
             status_idx in 0u8..4,
