@@ -178,39 +178,255 @@ async fn check_policy_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::repository::Visibility;
+    use crate::github::auth::GitHubCredential;
+    use crate::github::budget::BudgetGate;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    #[test]
-    fn result_displays_correctly() {
-        let result = SecurityPolicyResult {
-            status: SecurityPolicyStatus::Pass,
-            evidence: SecurityPolicyEvidence::Setting,
-            path: None,
-            timestamp: "2026-01-01T00:00:00+00:00".to_string(),
+    const TS: &str = "2026-01-01T00:00:00+00:00";
+
+    fn test_client(base_url: &str) -> GitHubClient {
+        let credential = GitHubCredential {
+            mode: crate::domain::auth::AuthMode::Pat,
+            token: secrecy::SecretString::from("test-token"),
+            expires_at: None,
         };
-        assert_eq!(result.status, SecurityPolicyStatus::Pass);
+        let budget = Arc::new(BudgetGate::new(
+            config::API_BUDGET_LIMIT,
+            Duration::from_secs(config::API_BUDGET_WAIT_SECS),
+        ));
+        let rate_limit = Arc::new(crate::github::rate_limit::new_default());
+        GitHubClient::new(credential, base_url, "test-org", None, budget, rate_limit)
+            .expect("test client construction should succeed")
     }
 
-    #[test]
-    fn result_via_file() {
-        let result = SecurityPolicyResult {
-            status: SecurityPolicyStatus::Pass,
-            evidence: SecurityPolicyEvidence::File,
-            path: Some("SECURITY.md".to_string()),
-            timestamp: "2026-01-01T00:00:00+00:00".to_string(),
-        };
-        assert_eq!(result.status, SecurityPolicyStatus::Pass);
-        assert_eq!(result.path.as_deref(), Some("SECURITY.md"));
+    fn public_repo(name: &str) -> Repository {
+        crate::test_fixtures::make_repository(name, false, Visibility::Public)
     }
 
-    #[test]
-    fn result_unknown_permission_denied() {
-        let result = SecurityPolicyResult {
-            status: SecurityPolicyStatus::Unknown,
-            evidence: SecurityPolicyEvidence::PermissionDenied,
-            path: None,
-            timestamp: "2026-01-01T00:00:00+00:00".to_string(),
-        };
+    fn status(code: u16) -> ResponseTemplate {
+        ResponseTemplate::new(code).set_body_json(serde_json::json!({"message": "err"}))
+    }
+
+    async fn mount_details(server: &MockServer, repo: &str, template: ResponseTemplate) {
+        Mock::given(path(format!("/repos/test-org/{repo}")))
+            .respond_with(template)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_policy_path(
+        server: &MockServer,
+        repo: &str,
+        file_path: &str,
+        template: ResponseTemplate,
+    ) {
+        Mock::given(path(format!("/repos/test-org/{repo}/contents/{file_path}")))
+            .respond_with(template)
+            .mount(server)
+            .await;
+    }
+
+    fn setting(enabled: bool) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "default_branch": "main",
+            "is_security_policy_enabled": enabled,
+        }))
+    }
+
+    fn file_response() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({"type": "file"}))
+    }
+
+    async fn mount_policy_paths_with_one_failing(server: &MockServer, repo: &str, code: u16) {
+        for (index, &file_path) in config::SECURITY_POLICY_PATHS.iter().enumerate() {
+            let template = if index == 0 {
+                status(code)
+            } else {
+                status(404)
+            };
+            mount_policy_path(server, repo, file_path, template).await;
+        }
+    }
+
+    async fn requested_paths(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .expect("mock server should record requests")
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn evaluator_passes_on_github_setting_without_probing_files() {
+        let server = MockServer::start().await;
+        mount_details(&server, "setting-repo", setting(true)).await;
+
+        let result = evaluate(
+            &test_client(&server.uri()),
+            &public_repo("setting-repo"),
+            TS,
+        )
+        .await;
+
+        assert_eq!(result.status, SecurityPolicyStatus::Pass);
+        assert_eq!(result.evidence, SecurityPolicyEvidence::Setting);
+        assert!(result.path.is_none());
+        assert_eq!(
+            requested_paths(&server).await,
+            vec!["/repos/test-org/setting-repo".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluator_falls_back_to_a_later_policy_file_location() {
+        let server = MockServer::start().await;
+        mount_details(&server, "fallback-repo", setting(false)).await;
+        mount_policy_path(&server, "fallback-repo", "SECURITY.md", status(404)).await;
+        mount_policy_path(
+            &server,
+            "fallback-repo",
+            ".github/SECURITY.md",
+            file_response(),
+        )
+        .await;
+
+        let result = evaluate(
+            &test_client(&server.uri()),
+            &public_repo("fallback-repo"),
+            TS,
+        )
+        .await;
+
+        assert_eq!(result.status, SecurityPolicyStatus::Pass);
+        assert_eq!(result.evidence, SecurityPolicyEvidence::File);
+        assert_eq!(result.path.as_deref(), Some(".github/SECURITY.md"));
+    }
+
+    #[tokio::test]
+    async fn evaluator_fails_absent_when_setting_off_and_no_file_exists() {
+        let server = MockServer::start().await;
+        mount_details(&server, "absent-repo", setting(false)).await;
+        for &file_path in config::SECURITY_POLICY_PATHS {
+            mount_policy_path(&server, "absent-repo", file_path, status(404)).await;
+        }
+
+        let result = evaluate(&test_client(&server.uri()), &public_repo("absent-repo"), TS).await;
+
+        assert_eq!(result.status, SecurityPolicyStatus::Fail);
+        assert_eq!(result.evidence, SecurityPolicyEvidence::Absent);
+        assert!(result.path.is_none());
+    }
+
+    #[tokio::test]
+    async fn evaluator_reports_permission_denied_rather_than_absent() {
+        let server = MockServer::start().await;
+        mount_details(&server, "denied-repo", status(403)).await;
+        for &file_path in config::SECURITY_POLICY_PATHS {
+            mount_policy_path(&server, "denied-repo", file_path, status(403)).await;
+        }
+
+        let result = evaluate(&test_client(&server.uri()), &public_repo("denied-repo"), TS).await;
+
         assert_eq!(result.status, SecurityPolicyStatus::Unknown);
         assert_eq!(result.evidence, SecurityPolicyEvidence::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn evaluator_reports_transient_error_rather_than_absent() {
+        let server = MockServer::start().await;
+        mount_details(&server, "transient-repo", status(503)).await;
+        for &file_path in config::SECURITY_POLICY_PATHS {
+            mount_policy_path(&server, "transient-repo", file_path, status(404)).await;
+        }
+
+        let result = evaluate(
+            &test_client(&server.uri()),
+            &public_repo("transient-repo"),
+            TS,
+        )
+        .await;
+
+        assert_eq!(result.status, SecurityPolicyStatus::Unknown);
+        assert_eq!(result.evidence, SecurityPolicyEvidence::TransientError);
+    }
+
+    #[tokio::test]
+    async fn evaluator_reports_not_applicable_for_a_private_repo() {
+        let server = MockServer::start().await;
+        let repo =
+            crate::test_fixtures::make_repository("private-repo", false, Visibility::Private);
+
+        let result = evaluate(&test_client(&server.uri()), &repo, TS).await;
+
+        assert_eq!(result.status, SecurityPolicyStatus::NotApplicable);
+        assert_eq!(result.evidence, SecurityPolicyEvidence::NotApplicable);
+        assert!(requested_paths(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn evaluator_reports_permission_denied_seen_only_while_probing_files() {
+        let server = MockServer::start().await;
+        mount_details(&server, "file-denied-repo", setting(false)).await;
+        mount_policy_paths_with_one_failing(&server, "file-denied-repo", 403).await;
+
+        let result = evaluate(
+            &test_client(&server.uri()),
+            &public_repo("file-denied-repo"),
+            TS,
+        )
+        .await;
+
+        assert_eq!(result.status, SecurityPolicyStatus::Unknown);
+        assert_eq!(result.evidence, SecurityPolicyEvidence::PermissionDenied);
+        assert!(result.path.is_none());
+    }
+
+    #[tokio::test]
+    async fn evaluator_reports_transient_error_seen_only_while_probing_files() {
+        let server = MockServer::start().await;
+        mount_details(&server, "file-transient-repo", setting(false)).await;
+        mount_policy_paths_with_one_failing(&server, "file-transient-repo", 503).await;
+
+        let result = evaluate(
+            &test_client(&server.uri()),
+            &public_repo("file-transient-repo"),
+            TS,
+        )
+        .await;
+
+        assert_eq!(result.status, SecurityPolicyStatus::Unknown);
+        assert_eq!(result.evidence, SecurityPolicyEvidence::TransientError);
+        assert!(result.path.is_none());
+    }
+
+    #[tokio::test]
+    async fn evaluator_prefers_a_found_policy_file_over_a_failed_details_lookup() {
+        let server = MockServer::start().await;
+        mount_details(&server, "denied-details-repo", status(403)).await;
+        mount_policy_path(&server, "denied-details-repo", "SECURITY.md", status(404)).await;
+        mount_policy_path(
+            &server,
+            "denied-details-repo",
+            ".github/SECURITY.md",
+            file_response(),
+        )
+        .await;
+
+        let result = evaluate(
+            &test_client(&server.uri()),
+            &public_repo("denied-details-repo"),
+            TS,
+        )
+        .await;
+
+        assert_eq!(result.status, SecurityPolicyStatus::Pass);
+        assert_eq!(result.evidence, SecurityPolicyEvidence::File);
+        assert_eq!(result.path.as_deref(), Some(".github/SECURITY.md"));
     }
 }

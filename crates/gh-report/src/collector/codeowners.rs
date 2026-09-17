@@ -266,6 +266,58 @@ mod tests {
         ResponseTemplate::new(404).set_body_json(serde_json::json!({"message": "Not Found"}))
     }
 
+    fn error_status(code: u16) -> ResponseTemplate {
+        ResponseTemplate::new(code).set_body_json(serde_json::json!({"message": "err"}))
+    }
+
+    fn candidate_paths() -> [&'static str; 3] {
+        [
+            config::CONFORMING_CODEOWNERS_PATH,
+            config::NON_CONFORMING_CODEOWNERS_PATH,
+            config::DOCS_CODEOWNERS_PATH,
+        ]
+    }
+
+    fn file_with(content: &str) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "type": "file",
+            "encoding": "base64",
+            "content": base64::engine::general_purpose::STANDARD.encode(content),
+        }))
+    }
+
+    async fn mount_candidate(
+        server: &MockServer,
+        repo: &str,
+        candidate: &str,
+        template: ResponseTemplate,
+    ) {
+        Mock::given(path(format!("/repos/test-org/{repo}/contents/{candidate}")))
+            .respond_with(template)
+            .mount(server)
+            .await;
+    }
+
+    async fn requested_paths(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .expect("mock server should record requests")
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect()
+    }
+
+    async fn evaluate_repo(server: &MockServer, repo: &str) -> CodeownersResult {
+        let client = test_client(&server.uri());
+        let repository = crate::test_fixtures::make_repository(
+            repo,
+            false,
+            crate::domain::repository::Visibility::Public,
+        );
+        evaluate(&client, &repository, "2026-01-01T00:00:00+00:00").await
+    }
+
     /// A repo whose only CODEOWNERS lives at `docs/CODEOWNERS` (GitHub's
     /// third search location) must still be classified `non_conforming`
     /// and parsed — not silently treated as `absent`.
@@ -313,62 +365,176 @@ mod tests {
         assert_eq!(parsed.entries[0].owners, vec!["@org/security"]);
     }
 
-    #[test]
-    fn conforming_result_structure() {
-        let result = CodeownersResult {
-            status: CodeownersStatus::Conforming,
-            path: Some(config::CONFORMING_CODEOWNERS_PATH.to_string()),
-            timestamp: "2026-01-01T00:00:00+00:00".to_string(),
-            parsed: None,
-            truncation: None,
-        };
+    #[tokio::test]
+    async fn evaluator_classifies_github_location_as_conforming() {
+        let server = MockServer::start().await;
+        mount_candidate(
+            &server,
+            "conforming",
+            config::CONFORMING_CODEOWNERS_PATH,
+            file_with("* @org/security\n"),
+        )
+        .await;
+
+        let result = evaluate_repo(&server, "conforming").await;
+
         assert_eq!(result.status, CodeownersStatus::Conforming);
         assert_eq!(
             result.path.as_deref(),
             Some(config::CONFORMING_CODEOWNERS_PATH)
         );
+        let parsed = result.parsed.expect(".github/CODEOWNERS should parse");
+        assert_eq!(parsed.entries[0].owners, vec!["@org/security"]);
     }
 
-    #[test]
-    fn non_conforming_result_structure() {
-        let result = CodeownersResult {
-            status: CodeownersStatus::NonConforming,
-            path: Some(config::NON_CONFORMING_CODEOWNERS_PATH.to_string()),
-            timestamp: "2026-01-01T00:00:00+00:00".to_string(),
-            parsed: None,
-            truncation: None,
-        };
+    #[tokio::test]
+    async fn evaluator_falls_back_to_root_location_as_non_conforming() {
+        let server = MockServer::start().await;
+        mount_candidate(
+            &server,
+            "root-only",
+            config::CONFORMING_CODEOWNERS_PATH,
+            not_found(),
+        )
+        .await;
+        mount_candidate(
+            &server,
+            "root-only",
+            config::NON_CONFORMING_CODEOWNERS_PATH,
+            file_with("* @org/platform\n"),
+        )
+        .await;
+
+        let result = evaluate_repo(&server, "root-only").await;
+
         assert_eq!(result.status, CodeownersStatus::NonConforming);
         assert_eq!(
             result.path.as_deref(),
             Some(config::NON_CONFORMING_CODEOWNERS_PATH)
         );
+        let parsed = result.parsed.expect("root CODEOWNERS should parse");
+        assert_eq!(parsed.entries[0].owners, vec!["@org/platform"]);
     }
 
-    #[test]
-    fn absent_result_structure() {
-        let result = CodeownersResult {
-            status: CodeownersStatus::Absent,
-            path: None,
-            timestamp: "2026-01-01T00:00:00+00:00".to_string(),
-            parsed: None,
-            truncation: None,
-        };
+    #[tokio::test]
+    async fn evaluator_reports_absent_when_no_candidate_exists() {
+        let server = MockServer::start().await;
+        for candidate in candidate_paths() {
+            mount_candidate(&server, "no-owners", candidate, not_found()).await;
+        }
+
+        let result = evaluate_repo(&server, "no-owners").await;
+
         assert_eq!(result.status, CodeownersStatus::Absent);
         assert!(result.path.is_none());
+        assert!(result.parsed.is_none());
     }
 
-    #[test]
-    fn unknown_result_structure() {
-        let result = CodeownersResult {
-            status: CodeownersStatus::Unknown,
-            path: None,
-            timestamp: "2026-01-01T00:00:00+00:00".to_string(),
-            parsed: None,
-            truncation: None,
-        };
+    #[tokio::test]
+    async fn evaluator_reports_unknown_on_permission_denied_rather_than_absent() {
+        let server = MockServer::start().await;
+        for candidate in candidate_paths() {
+            mount_candidate(&server, "denied", candidate, error_status(403)).await;
+        }
+
+        let result = evaluate_repo(&server, "denied").await;
+
         assert_eq!(result.status, CodeownersStatus::Unknown);
         assert!(result.path.is_none());
+        assert_eq!(
+            requested_paths(&server).await,
+            vec![format!(
+                "/repos/test-org/denied/contents/{}",
+                config::CONFORMING_CODEOWNERS_PATH
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluator_stops_at_the_first_failing_candidate() {
+        let server = MockServer::start().await;
+        mount_candidate(
+            &server,
+            "denied-then-file",
+            config::CONFORMING_CODEOWNERS_PATH,
+            error_status(403),
+        )
+        .await;
+        mount_candidate(
+            &server,
+            "denied-then-file",
+            config::NON_CONFORMING_CODEOWNERS_PATH,
+            file_with("* @org/platform\n"),
+        )
+        .await;
+
+        let result = evaluate_repo(&server, "denied-then-file").await;
+
+        assert_eq!(result.status, CodeownersStatus::Unknown);
+        assert!(result.parsed.is_none());
+        assert_eq!(
+            requested_paths(&server).await,
+            vec![format!(
+                "/repos/test-org/denied-then-file/contents/{}",
+                config::CONFORMING_CODEOWNERS_PATH
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluator_reports_unknown_on_transient_error_rather_than_absent() {
+        let server = MockServer::start().await;
+        for candidate in candidate_paths() {
+            mount_candidate(&server, "flaky", candidate, error_status(503)).await;
+        }
+
+        let result = evaluate_repo(&server, "flaky").await;
+
+        assert_eq!(result.status, CodeownersStatus::Unknown);
+        assert!(result.path.is_none());
+        let first_candidate = format!(
+            "/repos/test-org/flaky/contents/{}",
+            config::CONFORMING_CODEOWNERS_PATH
+        );
+        let requested = requested_paths(&server).await;
+        assert!(requested.iter().all(|p| *p == first_candidate));
+        assert!(requested.len() <= usize::try_from(config::DEFAULT_MAX_RETRIES).unwrap() + 1);
+    }
+
+    #[tokio::test]
+    async fn evaluator_prefers_a_found_later_candidate_over_an_earlier_absence() {
+        let server = MockServer::start().await;
+        mount_candidate(
+            &server,
+            "absent-then-file",
+            config::CONFORMING_CODEOWNERS_PATH,
+            not_found(),
+        )
+        .await;
+        mount_candidate(
+            &server,
+            "absent-then-file",
+            config::NON_CONFORMING_CODEOWNERS_PATH,
+            error_status(403),
+        )
+        .await;
+
+        let result = evaluate_repo(&server, "absent-then-file").await;
+
+        assert_eq!(result.status, CodeownersStatus::Unknown);
+        assert_eq!(
+            requested_paths(&server).await,
+            vec![
+                format!(
+                    "/repos/test-org/absent-then-file/contents/{}",
+                    config::CONFORMING_CODEOWNERS_PATH
+                ),
+                format!(
+                    "/repos/test-org/absent-then-file/contents/{}",
+                    config::NON_CONFORMING_CODEOWNERS_PATH
+                ),
+            ]
+        );
     }
 
     #[test]
