@@ -10,7 +10,7 @@
     {% include "partials/nav.html" %}
 
     <div class="page-header">
-        <p class="meta"><strong>Date:</strong> {{ vm.date_time }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} {{ vm.scope_non_archived_label }} · {{ vm.archived_repos }} archived repositories in <code>{{ vm.organization }}</code>{% if let Some(notice) = vm.coverage_notice %} <span class="coverage-capped-badge">{{ notice|safe }}</span>{% endif %}{% if vm.warm_start %} <span class="warm-start-badge">Cached · next update in progress</span>{% endif %}</p>
+        <p class="meta"><strong>Date:</strong> {{ vm.date_time }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} {{ vm.scope_non_archived_label }} · {{ vm.archived_repos }} archived repositories in <code>{{ vm.organization }}</code>{% if let Some(notice) = coverage_badge %} <span class="coverage-capped-badge" tabindex="0" aria-describedby="coverage-capped-detail-index" title="{{ notice.detail }}"><strong>Coverage:</strong> {{ notice.summary }}</span><span id="coverage-capped-detail-index" class="sr-only coverage-capped-detail">{{ notice.detail }}</span>{% endif %}{% if vm.warm_start %} <span class="warm-start-badge">Cached · next update in progress</span>{% endif %}</p>
     </div>
 
     <div class="scorecard">

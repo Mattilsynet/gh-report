@@ -8395,6 +8395,89 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admission_admits_poorer_successor_after_warm_start_previous() {
+        let config = sample_config();
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let inventory = AdmittedInventory::from_test_repos(vec![arc_repo("repo-1")], true);
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: vec![crate::test_fixtures::all_passing_evidence(
+                "warm-start-repo",
+            )],
+            deleted: Vec::new(),
+            org_state: None,
+            config: &config,
+            run: &run,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &AuthMetadata {
+                token_tier: crate::domain::auth::TokenTier::Unknown,
+                token_scopes: String::new(),
+                auth_mode: crate::domain::auth::AuthMode::Unknown,
+            },
+            capabilities: &CapabilitySet::default(),
+            rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
+            org_members: None,
+        });
+        let warm_start = build_publication_pages(
+            &config,
+            &evidence,
+            PublicationStage::WarmStart,
+            Some(&inventory),
+        )
+        .await
+        .unwrap();
+        let mut rx = state.ws_subscribe();
+        commit_cached_pages(&state, &run, warm_start);
+        rx.try_recv().unwrap();
+
+        let mut poorer = Evidence {
+            repositories: Vec::new(),
+            ..evidence
+        };
+        poorer.assessment_metadata.run_timestamp = "2026-09-17T10:00:00Z".to_owned();
+        let pages = build_publication_pages(
+            &config,
+            &poorer,
+            PublicationStage::Intermediate,
+            Some(&inventory),
+        )
+        .await
+        .unwrap();
+        commit_cached_pages(&state, &run, pages);
+
+        let publication = state
+            .evidence()
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            matches!(
+                publication.as_ref().expect("publication must exist"),
+                AdmittedPublication::Current(_)
+            ),
+            "a previous WarmStart publication is deliberately unprotected: the poorer \
+             successor must be admitted as Current"
+        );
+        drop(publication);
+
+        let cache = state.html_cache().load_full();
+        let pages = cache.as_ref().as_ref().expect("cache must be populated");
+        assert!(
+            !pages.values().any(|page| {
+                page.body
+                    .identity_bytes()
+                    .is_some_and(|body| String::from_utf8_lossy(&body).contains("warm-start-repo"))
+            }),
+            "warm-start content must be replaced by the admitted poorer successor"
+        );
+        rx.try_recv()
+            .expect("admitting a successor must broadcast a page update");
+    }
+
     fn admission_evidence(repositories: Vec<RepositoryEvidence>) -> Evidence {
         crate::test_fixtures::make_full_evidence(
             crate::test_fixtures::make_metadata(),
