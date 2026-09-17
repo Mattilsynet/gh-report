@@ -994,8 +994,120 @@ pub(crate) mod tests {
         _tempdir: tempfile::TempDir,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum TestPortChoice {
+        Ephemeral,
+        LoopbackSentinelPrefix,
+    }
+
+    const SENTINEL_PREFIX_FIRST_PORT: u16 = 10000;
+    const SENTINEL_PREFIX_LAST_PORT: u16 = 19999;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum PortSelectionFault {
+        Exhausted { first: u16, last: u16 },
+        BindFailed { port: u16, kind: std::io::ErrorKind },
+    }
+
+    fn select_sentinel_prefixed_port<F>(mut bind: F) -> Result<u16, PortSelectionFault>
+    where
+        F: FnMut(u16) -> std::io::Result<()>,
+    {
+        for port in SENTINEL_PREFIX_FIRST_PORT..=SENTINEL_PREFIX_LAST_PORT {
+            match bind(port) {
+                Ok(()) => return Ok(port),
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {}
+                Err(err) => {
+                    return Err(PortSelectionFault::BindFailed {
+                        port,
+                        kind: err.kind(),
+                    });
+                }
+            }
+        }
+        Err(PortSelectionFault::Exhausted {
+            first: SENTINEL_PREFIX_FIRST_PORT,
+            last: SENTINEL_PREFIX_LAST_PORT,
+        })
+    }
+
+    fn reserve_test_port(choice: TestPortChoice) -> u16 {
+        match choice {
+            TestPortChoice::Ephemeral => {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
+                let port = listener.local_addr().expect("local addr").port();
+                drop(listener);
+                port
+            }
+            TestPortChoice::LoopbackSentinelPrefix => {
+                match select_sentinel_prefixed_port(|port| {
+                    std::net::TcpListener::bind(("127.0.0.1", port)).map(drop)
+                }) {
+                    Ok(port) => port,
+                    Err(fault) => {
+                        panic!("fatal harness failure: sentinel-prefixed port selection: {fault:?}")
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sentinel_port_selection_exhaustion_is_fatal_not_skip() {
+        let fault = select_sentinel_prefixed_port(|_| {
+            Err(std::io::Error::from(std::io::ErrorKind::AddrInUse))
+        })
+        .expect_err("all candidates occupied must not yield a port");
+
+        assert_eq!(
+            fault,
+            PortSelectionFault::Exhausted {
+                first: SENTINEL_PREFIX_FIRST_PORT,
+                last: SENTINEL_PREFIX_LAST_PORT,
+            }
+        );
+    }
+
+    #[test]
+    fn sentinel_port_selection_non_addr_in_use_bind_failure_is_fatal() {
+        let fault = select_sentinel_prefixed_port(|port| {
+            if port == SENTINEL_PREFIX_FIRST_PORT {
+                Err(std::io::Error::from(std::io::ErrorKind::AddrInUse))
+            } else {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            }
+        })
+        .expect_err("a non-AddrInUse bind failure must not be treated as an occupied port");
+
+        assert_eq!(
+            fault,
+            PortSelectionFault::BindFailed {
+                port: SENTINEL_PREFIX_FIRST_PORT + 1,
+                kind: std::io::ErrorKind::PermissionDenied,
+            }
+        );
+    }
+
+    #[test]
+    fn sentinel_port_selection_skips_occupied_candidates_until_one_binds() {
+        let port = select_sentinel_prefixed_port(|port| {
+            if port < SENTINEL_PREFIX_FIRST_PORT + 3 {
+                Err(std::io::Error::from(std::io::ErrorKind::AddrInUse))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("a bindable candidate must be selected");
+
+        assert_eq!(port, SENTINEL_PREFIX_FIRST_PORT + 3);
+    }
+
     impl TestNatsServer {
         fn spawn_internal(custom_config: Option<&str>) -> Option<Self> {
+            Self::spawn_internal_on(custom_config, TestPortChoice::Ephemeral)
+        }
+
+        fn spawn_internal_on(custom_config: Option<&str>, choice: TestPortChoice) -> Option<Self> {
             let bin_path = match resolve_pinned_nats_server() {
                 Ok(path) => path,
                 Err(reason) => {
@@ -1004,9 +1116,7 @@ pub(crate) mod tests {
                 }
             };
 
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
-            let port = listener.local_addr().expect("local addr").port();
-            drop(listener);
+            let port = reserve_test_port(choice);
 
             let tempdir = tempfile::TempDir::new().expect("tempdir");
             let mut cmd = std::process::Command::new(bin_path);
@@ -1046,6 +1156,10 @@ pub(crate) mod tests {
 
         pub(crate) fn spawn() -> Option<Self> {
             Self::spawn_internal(None)
+        }
+
+        pub(crate) fn spawn_on_sentinel_prefixed_port() -> Option<Self> {
+            Self::spawn_internal_on(None, TestPortChoice::LoopbackSentinelPrefix)
         }
 
         pub(crate) fn spawn_with_auth_config(config_content: &str) -> Option<Self> {
