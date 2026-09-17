@@ -5910,6 +5910,196 @@ fn team_row(owner: &str, sec_score: f64) -> OwnerOverviewRow {
 }
 
 #[test]
+fn ascended_count_matches_teams_at_exactly_100_percent() {
+    let mut user_at_100 = team_row("perfect-user", 100.0);
+    user_at_100.owner_type = OwnerType::User;
+    let mut unknown_score = team_row("unmeasured-team", 0.0);
+    unknown_score.sec_score = None;
+
+    let owners_vm = OwnersViewModel {
+        rows: vec![
+            team_row("perfect-team", 100.0),
+            team_row("almost-team", 99.9),
+            team_row("climbing-team", 92.0),
+            user_at_100,
+            unknown_score,
+        ],
+        control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
+    };
+
+    assert_eq!(
+        count_ascended_teams(&owners_vm),
+        1,
+        "only teams with sec_score exactly 100.0 count as ascended"
+    );
+    assert!(
+        build_top_security_teams(&owners_vm)
+            .iter()
+            .all(|t| t.owner_short != "perfect-team"),
+        "podium filtering must remain unchanged"
+    );
+}
+
+#[test]
+fn ascended_count_is_zero_when_no_team_is_perfect() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![team_row("almost-team", 99.9)],
+        control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
+    };
+
+    assert_eq!(count_ascended_teams(&owners_vm), 0);
+}
+
+#[test]
+fn ascended_count_counts_every_team_when_all_perfect() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![team_row("team-a", 100.0), team_row("team-b", 100.0)],
+        control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
+    };
+
+    assert_eq!(count_ascended_teams(&owners_vm), 2);
+}
+
+#[test]
+fn rendered_index_heading_shows_zero_ascended_for_imperfect_owner() {
+    let evidence = evidence_with_owner_repos();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("CODEOWNERS Summary <span class=\"ascended-count\">Ascended (0)</span>"),
+        "index heading must render the exact ascended count"
+    );
+}
+
+#[test]
+fn rendered_index_heading_shows_ascended_team_at_full_score() {
+    let evidence = evidence_from_repos(vec![test_fixtures::make_repository_evidence(
+        "beta-repo",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_with_owners(&["@org/team-a"]),
+        ),
+    )]);
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("CODEOWNERS Summary <span class=\"ascended-count\">Ascended (1)</span>"),
+        "a team scoring exactly 100 must be counted in the rendered heading"
+    );
+}
+
+#[test]
+fn rendered_index_heading_counts_only_perfect_team_in_mixed_owners() {
+    let evidence = evidence_from_repos(vec![
+        test_fixtures::make_repository_evidence(
+            "beta-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/team-a"]),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "alpha-repo",
+            Visibility::Private,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_fail(),
+                test_fixtures::secret_disabled(),
+                test_fixtures::dependabot_disabled(),
+                test_fixtures::branch_fail(),
+                test_fixtures::codeowners_with_owners(&["@org/team-b"]),
+            ),
+        ),
+    ]);
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("CODEOWNERS Summary <span class=\"ascended-count\">Ascended (1)</span>"),
+        "mixed owners must render only the perfect team in the heading count"
+    );
+}
+
+#[test]
+fn rendered_index_heading_counts_every_team_when_all_perfect() {
+    let evidence = evidence_from_repos(vec![
+        test_fixtures::make_repository_evidence(
+            "beta-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/team-a"]),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "gamma-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/team-b"]),
+            ),
+        ),
+    ]);
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("CODEOWNERS Summary <span class=\"ascended-count\">Ascended (2)</span>"),
+        "every perfect team must be counted in the rendered heading"
+    );
+}
+
+#[test]
+fn rendered_index_without_owners_keeps_absent_summary() {
+    let evidence = evidence_from_repos(vec![test_fixtures::make_repository_evidence(
+        "orphan-repo",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_absent(),
+        ),
+    )]);
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        !index.contains("Ascended ("),
+        "absent owners must not render an ascended heading"
+    );
+    assert!(
+        !index.contains("CODEOWNERS Summary"),
+        "absent owners must preserve the unchanged absent summary"
+    );
+}
+
+#[test]
 fn podium_excludes_team_at_exactly_100_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![

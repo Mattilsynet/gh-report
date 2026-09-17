@@ -65,6 +65,7 @@ struct IndexTemplate<'a> {
     nav: TopNav,
     title: String,
     warm_start: bool,
+    ascended_count: usize,
 }
 
 /// Askama template for the admin diagnostics page.
@@ -576,6 +577,7 @@ pub(crate) fn render_publication_streaming(
         nav: nav.clone(),
         title: format!("{} Security Dashboard", vm.organization),
         warm_start,
+        ascended_count: owners_vm.as_ref().map_or(0, count_ascended_teams),
     })?;
     let admin = render_template(&AdminTemplate {
         vm: &vm,
@@ -986,6 +988,14 @@ fn render_owner_pages(
         sink(format!("owners/{slug}.html"), detail_html);
     }
     Ok(())
+}
+
+fn count_ascended_teams(owners: &OwnersViewModel) -> usize {
+    owners
+        .rows
+        .iter()
+        .filter(|r| r.owner_type == OwnerType::Team && r.sec_score == Some(100.0))
+        .count()
 }
 
 /// Build the top-3 security team podium from owner overview data.
