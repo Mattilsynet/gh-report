@@ -7,10 +7,26 @@
 //! over exactly one `DomainEvent` impl, never erased through a
 //! `Box<dyn EventStore>` indirection.
 //!
+//! The associated `Event` is specified concretely so the rejection is
+//! the dyn-incompatibility of the `impl Future` returns (E0038), not a
+//! missing-associated-type diagnostic (E0191).
+//!
 //! If this test ever passes-compile, the trait has become dyn-safe and
 //! the one-event-type-per-store contract is silently broken.
-use cherry_pit_core::EventStore;
+use cherry_pit_core::{DomainEvent, EventStore};
+use serde::{Deserialize, Serialize};
 
-fn _erase(_s: Box<dyn EventStore>) {}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum CounterEvent {
+    Counted,
+}
+
+impl DomainEvent for CounterEvent {
+    fn event_type(&self) -> &'static str {
+        "counter.counted"
+    }
+}
+
+fn _erase(_s: Box<dyn EventStore<Event = CounterEvent>>) {}
 
 fn main() {}
