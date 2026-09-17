@@ -333,13 +333,66 @@ fn render_dashboard_branch_protection_status_dots_have_non_colour_cue() {
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let page = &pages["branch_protection.html"];
 
-    let dot_count = page.matches("class=\"status-dot").count();
-    assert!(dot_count > 0, "expected at least one status-dot span");
-    let sr_only_count = page.matches("class=\"sr-only\"").count();
+    let dot_offsets: Vec<usize> = page
+        .match_indices("<span class=\"status-dot")
+        .map(|(offset, _)| offset)
+        .collect();
     assert!(
-        sr_only_count >= dot_count,
-        "every status-dot span should be paired with a sr-only accessible-name span"
+        !dot_offsets.is_empty(),
+        "expected at least one status-dot span"
     );
+
+    for (index, &offset) in dot_offsets.iter().enumerate() {
+        let element = span_element_at(page, offset);
+        let Some(cue_start) = element.find("<span class=\"sr-only\">") else {
+            panic!(
+                "status-dot span {index} carries no sr-only accessible name of its own, so its \
+                 state is conveyed by colour alone: {element}"
+            )
+        };
+        let cue_body = &element[cue_start + "<span class=\"sr-only\">".len()..];
+        let Some(cue_end) = cue_body.find("</span>") else {
+            panic!("status-dot span {index} has an unterminated sr-only span")
+        };
+        let cue_text = &cue_body[..cue_end];
+        assert!(
+            !cue_text.trim().is_empty(),
+            "status-dot span {index} pairs with an empty sr-only span, which announces nothing"
+        );
+    }
+}
+
+fn span_element_at(page: &str, start: usize) -> &str {
+    let mut depth = 0usize;
+    let mut cursor = start;
+    while cursor < page.len() {
+        let rest = &page[cursor..];
+        let open = rest.find("<span").map(|at| (at, true));
+        let close = rest.find("</span>").map(|at| (at, false));
+        let (at, is_open) = match (open, close) {
+            (Some(o), Some(c)) => {
+                if o.0 <= c.0 {
+                    o
+                } else {
+                    c
+                }
+            }
+            (Some(o), None) => o,
+            (None, Some(c)) => c,
+            (None, None) => break,
+        };
+        if is_open {
+            depth += 1;
+            cursor += at + "<span".len();
+            continue;
+        }
+        depth -= 1;
+        cursor += at + "</span>".len();
+        if depth == 0 {
+            return &page[start..cursor];
+        }
+    }
+    panic!("status-dot span starting at byte {start} is never closed")
 }
 
 #[test]
@@ -454,21 +507,89 @@ fn render_dashboard_produces_all_pages() {
 }
 
 #[test]
-fn render_dashboard_streaming_produces_same_key_set_as_render_dashboard() {
+fn render_dashboard_streaming_emits_same_pages_exactly_once() {
     let evidence = evidence_with_owner_repos();
     let via_map = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
-    let mut via_sink = std::collections::HashSet::new();
-    render_dashboard_streaming(&evidence, &DashboardConfig::default(), |path, _content| {
-        via_sink.insert(path);
+    let mut via_sink: Vec<(String, String)> = Vec::new();
+    render_dashboard_streaming(&evidence, &DashboardConfig::default(), |path, content| {
+        via_sink.push((path, content));
     })
     .unwrap();
 
+    assert_eq!(
+        via_sink.len(),
+        via_map.len(),
+        "streaming sink must emit exactly one item per page; a duplicate or dropped emission \
+         is invisible to a key-set comparison"
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for (path, content) in &via_sink {
+        assert!(
+            seen.insert(path.clone()),
+            "streaming sink emitted page \"{path}\" more than once"
+        );
+        let expected = via_map.get(path).unwrap_or_else(|| {
+            panic!("streaming sink emitted page \"{path}\" that the HashMap wrapper never produced")
+        });
+        assert_eq!(
+            content, expected,
+            "streaming sink content for \"{path}\" differs from the HashMap-collecting wrapper"
+        );
+        if std::path::Path::new(path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        {
+            assert!(
+                content.trim_start().starts_with("<!DOCTYPE html>")
+                    && content.trim_end().ends_with("</html>"),
+                "streaming sink emitted a truncated or empty document for \"{path}\"; the \
+                 page-key set cannot distinguish a whole page from a fragment"
+            );
+        }
+    }
+
     let map_keys: std::collections::HashSet<String> = via_map.keys().cloned().collect();
     assert_eq!(
-        via_sink, map_keys,
+        seen, map_keys,
         "streaming sink page-key set must match the HashMap-collecting wrapper"
     );
+
+    let mut manifest: Vec<String> = via_sink
+        .iter()
+        .map(|(path, content)| {
+            format!(
+                "{path}\t{}\th2={} table={} a={}",
+                page_identity(content),
+                content.matches("<h2").count(),
+                content.matches("<table").count(),
+                content.matches("<a ").count()
+            )
+        })
+        .collect();
+    manifest.sort();
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+    insta::assert_snapshot!("dashboard_streaming_manifest", manifest.join("\n"));
+    });
+}
+
+fn page_identity(content: &str) -> String {
+    let Some(open) = content.find("<h1") else {
+        return "[no-h1]".to_string();
+    };
+    let after_tag = &content[open..];
+    let Some(tag_end) = after_tag.find('>') else {
+        return "[unterminated-h1]".to_string();
+    };
+    let body = &after_tag[tag_end + 1..];
+    let Some(close) = body.find("</h1>") else {
+        return "[unterminated-h1]".to_string();
+    };
+    body[..close]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[test]

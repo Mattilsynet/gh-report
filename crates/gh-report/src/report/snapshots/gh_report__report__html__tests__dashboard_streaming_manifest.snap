@@ -1,0 +1,24 @@
+---
+source: crates/gh-report/src/report/html/tests.rs
+expression: "manifest.join(\"\\n\")"
+---
+admin.html	Admin Diagnostics	h2=3 table=0 a=7
+alert_free.html	Alert-Free Status Coverage	h2=2 table=2 a=9
+branch_protection.html	Branch Protection Regimes	h2=6 table=2 a=9
+codeowners.html	CODEOWNERS Coverage	h2=2 table=1 a=9
+deleted.html	Deleted Repositories	h2=0 table=0 a=7
+dependabot_status.html	Dependabot Status Coverage	h2=2 table=1 a=9
+favicon.svg	[no-h1]	h2=0 table=0 a=0
+gh-report-web-client.js	[no-h1]	h2=0 table=0 a=0
+gh-report-web-client_bg.wasm	[no-h1]	h2=0 table=0 a=0
+index.html	[no-h1]	h2=0 table=0 a=15
+lifecycle_retirement.html	Lifecycle: Retirement	h2=1 table=0 a=7
+orphans.html	Orphan Repositories	h2=0 table=0 a=7
+owners.html	Owner Coverage Breakdown	h2=0 table=1 a=8
+owners/org-team-a.html	<a href="https://github.com/orgs/TestOrg/teams/team-a" target="_blank" rel="noopener noreferrer">team-a</a>	h2=1 table=1 a=13
+report.html	TestOrg GitHub Governance Overview	h2=4 table=6 a=7
+secret_scanning.html	Secret Scanning Coverage	h2=2 table=1 a=9
+security_policy.html	Security Policy Coverage	h2=2 table=1 a=8
+sort-init.js	[no-h1]	h2=0 table=0 a=0
+style.css	[no-h1]	h2=0 table=0 a=0
+ws.js	[no-h1]	h2=0 table=0 a=0
