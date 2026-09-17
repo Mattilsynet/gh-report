@@ -252,7 +252,7 @@ impl Fixture {
             root.join("Cargo.toml"),
             format!(
                 "[package]\nname = \"framing-fixture\"\nversion = \"{FIXTURE_PACKAGE_VERSION}\"\n\
-                 edition = \"2024\"\n\n[workspace]\n"
+                 edition = \"2024\"\n\n[workspace]\n\n[profile.dev]\ndebug = false\n"
             ),
         )
         .expect("write fixture manifest");
