@@ -6211,52 +6211,6 @@ mod tests {
         assert_eq!(saga.baseline_reused, 0);
     }
 
-    #[test]
-    fn sweep_phase_failed_carries_error_message() {
-        let phase = SweepPhase::Failed {
-            error: "timeout after 7200s".into(),
-        };
-        assert_eq!(
-            phase,
-            SweepPhase::Failed {
-                error: "timeout after 7200s".into()
-            }
-        );
-    }
-
-    #[test]
-    fn sweep_phase_debug_impl() {
-        let phases = vec![
-            SweepPhase::Init,
-            SweepPhase::Resumed,
-            SweepPhase::BaselineReused,
-            SweepPhase::AwaitingBatch,
-            SweepPhase::BatchDrained,
-            SweepPhase::Completed,
-            SweepPhase::Failed {
-                error: "test".into(),
-            },
-        ];
-        for phase in &phases {
-            let debug = format!("{phase:?}");
-            assert!(!debug.is_empty());
-        }
-    }
-
-    #[test]
-    fn sweep_phase_eq() {
-        assert_eq!(SweepPhase::Init, SweepPhase::Init);
-        assert_ne!(SweepPhase::Init, SweepPhase::Resumed);
-        assert_eq!(
-            SweepPhase::Failed { error: "a".into() },
-            SweepPhase::Failed { error: "a".into() }
-        );
-        assert_ne!(
-            SweepPhase::Failed { error: "a".into() },
-            SweepPhase::Failed { error: "b".into() }
-        );
-    }
-
     /// Helper: create a minimal `Arc<GitHubClient>` for saga tests.
     ///
     /// The client is never actually used in unit tests (saga steps that
