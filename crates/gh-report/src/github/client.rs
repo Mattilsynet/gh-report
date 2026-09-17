@@ -3440,8 +3440,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_credential_refresh_deduplicates() {
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const REFRESHED_TOKEN: &str = "ghs_new_test_token_from_refresh";
+        const PROTECTED_REQUESTS: usize = 10;
+        const JOIN_DEADLINE: Duration = Duration::from_secs(20);
 
         let server = MockServer::start().await;
 
@@ -3449,15 +3453,18 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/app/installations/12345/access_tokens"))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-                "token": "ghs_new_test_token_from_refresh",
+                "token": REFRESHED_TOKEN,
                 "expires_at": future_expiry
             })))
             .expect(1)
             .mount(&server)
             .await;
 
-        Mock::given(path("/test/concurrent"))
+        Mock::given(method("GET"))
+            .and(path("/test/concurrent"))
+            .and(header("authorization", format!("Bearer {REFRESHED_TOKEN}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .expect(u64::try_from(PROTECTED_REQUESTS).expect("caller count fits u64"))
             .mount(&server)
             .await;
 
@@ -3489,17 +3496,23 @@ mod tests {
             "test credential should trigger refresh (within 5-min buffer)"
         );
 
-        let n = 10;
-        let mut handles = Vec::new();
-        for _ in 0..n {
-            let c = Arc::clone(&client);
-            handles.push(tokio::spawn(async move {
-                c.request("/test/concurrent", false, 0, 10).await
-            }));
-        }
+        let callers = (0..PROTECTED_REQUESTS)
+            .map(|_| client.request("/test/concurrent", false, 0, 10))
+            .collect::<Vec<_>>();
 
-        for handle in handles {
-            let result = handle.await.expect("task should not panic");
+        let joined =
+            tokio::time::timeout(JOIN_DEADLINE, futures_util::future::join_all(callers)).await;
+
+        let Ok(results) = joined else {
+            panic!("concurrent callers exceeded the {JOIN_DEADLINE:?} test deadline");
+        };
+
+        assert_eq!(
+            results.len(),
+            PROTECTED_REQUESTS,
+            "every concurrent caller should be joined"
+        );
+        for result in results {
             assert!(
                 result.is_ok(),
                 "concurrent request should succeed: {:?}",
