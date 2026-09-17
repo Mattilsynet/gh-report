@@ -812,20 +812,10 @@ pub fn sanitize_nats_url(raw_url: &str) -> String {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "comprehensive credentials parsing, TLS configuration, and connection error logging"
-)]
 fn connect_nats_sync(
     handle: &tokio::runtime::Handle,
     nats: &crate::config::runtime::NatsStoreConfig,
 ) -> Result<async_nats::Client, std::io::Error> {
-    if nats.nats_url.contains("127.0.0.1:1") {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            "NATS connect refused: connection to 127.0.0.1:1 refused",
-        ));
-    }
     let sanitized_url = sanitize_nats_url(&nats.nats_url);
     tracing::info!(
         target: "gh_report",
@@ -3096,6 +3086,33 @@ mod tests {
             sanitize_nats_url("nats:/alice:secret@host:4222"),
             "invalid-nats-endpoint"
         );
+    }
+
+    #[test]
+    fn connect_nats_sync_reaches_live_server_on_port_sharing_dead_port_prefix() {
+        let Some(server) = crate::store::tests::TestNatsServer::spawn_on_sentinel_prefixed_port()
+        else {
+            return;
+        };
+        assert!(
+            server.url.starts_with("nats://127.0.0.1:1"),
+            "regression requires a reachable endpoint whose address shares the dead-port prefix, got {}",
+            server.url
+        );
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let config = NatsStoreConfig::for_org("sentinel-prefix", &server.url).unwrap();
+
+        let client = connect_nats_sync(rt.handle(), &config)
+            .expect("live loopback NATS endpoint must be reachable through a real connection");
+
+        assert_eq!(
+            client.connection_state(),
+            async_nats::connection::State::Connected
+        );
+        drop(client);
     }
 
     #[test]
