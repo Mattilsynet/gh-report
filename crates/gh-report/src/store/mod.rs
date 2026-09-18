@@ -45,6 +45,12 @@ impl From<OperationFailure> for StoreError {
     fn from(err: OperationFailure) -> Self {
         if err.is_already_exists() {
             StoreError::AlreadyExists(err.to_string())
+        } else if err.is_concurrency_conflict() {
+            StoreError::ConcurrencyConflict {
+                expected_seq: None,
+                actual_seq: None,
+                source: Box::new(err),
+            }
         } else {
             StoreError::Infrastructure(err.to_string())
         }
@@ -673,6 +679,53 @@ pub(crate) mod tests {
             timestamp: Timestamp::new(i + 1).expect("timestamp fits"),
             evidence: None,
         }
+    }
+
+    #[test]
+    fn typed_concurrency_conflict_maps_to_conflict_variant_without_inventing_sequences() {
+        let failure = OperationFailure::new(
+            FailureCondition::ConcurrencyConflict,
+            "two-writer concurrency collision: expected sequence mismatch",
+        );
+
+        match StoreError::from(failure) {
+            StoreError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                source,
+            } => {
+                assert_eq!(
+                    expected_seq, None,
+                    "no typed expected sequence is available"
+                );
+                assert_eq!(actual_seq, None, "no typed actual sequence is available");
+                assert!(
+                    source
+                        .downcast_ref::<OperationFailure>()
+                        .is_some_and(OperationFailure::is_concurrency_conflict),
+                    "the typed pardosa failure must survive as the error source"
+                );
+            }
+            other => panic!("expected ConcurrencyConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn already_exists_condition_still_maps_to_already_exists() {
+        let failure = OperationFailure::new(FailureCondition::StoreAlreadyExists, "already there");
+
+        assert!(StoreError::from(failure).is_already_exists());
+    }
+
+    #[test]
+    fn ordinary_infrastructure_condition_still_maps_to_infrastructure() {
+        let failure =
+            OperationFailure::new(FailureCondition::TransportUnavailable, "connection refused");
+
+        assert!(
+            matches!(StoreError::from(failure), StoreError::Infrastructure(_)),
+            "genuine transport outages keep their bounded-retry classification"
+        );
     }
 
     #[test]
