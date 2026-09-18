@@ -1804,60 +1804,40 @@ impl AppState {
     /// relocating rather than eliminating the R10-forbidden
     /// patch-cached-seq-and-redrive shape.
     ///
-    /// Reconstructs each store with the exact same open/create logic
-    /// [`Self::with_stores`] uses at boot, then atomically swaps it into the
-    /// corresponding long-lived native-store handle via
-    /// [`crate::store::NativeStore::resync_pgno_from_authoritative`] /
-    /// [`crate::store::NativeStore::resync_jetstream_from_authoritative`]
-    /// (and the equivalent methods on
-    /// [`crate::store::NativeOrgStore`]/[`crate::store::NativeTeamStore`]).
+    /// Each store re-reads through the backend handle it was opened with, so a
+    /// NATS-backed store always recovers from its configured NATS stream and a
+    /// `.pgno`-backed store from its own file. The caller cannot select the
+    /// recovery source; `_events_dir`, `_backend` and `_nats` are retained only
+    /// to keep the existing call shape.
     ///
     /// # Errors
     ///
-    /// Returns [`std::io::Error`] when any of the three backends cannot be
-    /// re-opened (mirrors [`Self::with_stores`]'s error surface for the
-    /// same backend); the first failure aborts the remaining resyncs.
+    /// Returns [`std::io::Error`] when a store cannot be re-read, decoded, or
+    /// schema-verified. Each store validates and decodes fully before it
+    /// replaces its own cache, so a failing store keeps its previous cache.
+    /// This is per-store preservation, not a three-store transaction: the
+    /// stores are refreshed in repo, org, team order, the first failure
+    /// returns immediately, and partial progress is permitted and expected —
+    /// stores already refreshed stay refreshed, and stores after the failing
+    /// one are never attempted. The caller must treat an `Err` as a failed
+    /// re-arm and must not resume useful work on it.
     pub(crate) async fn resync_event_store(
         &self,
-        events_dir: &Path,
-        backend: crate::config::runtime::PardosaBackend,
+        _events_dir: &Path,
+        _backend: crate::config::runtime::PardosaBackend,
         _nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<(), std::io::Error> {
-        let events_dir = events_dir.to_path_buf();
-        match backend {
-            crate::config::runtime::PardosaBackend::Pgno => {
-                let repo_path = events_dir.join("events.pgno");
-                let org_path = events_dir.join("org-events.pgno");
-                let team_path = events_dir.join("team-events.pgno");
-                let event_store = Arc::clone(&self.event_store);
-                let org_event_store = Arc::clone(&self.org_event_store);
-                let team_event_store = Arc::clone(&self.team_event_store);
-                tokio::task::spawn_blocking(move || {
-                    event_store.resync_pgno_from_authoritative(&repo_path)?;
-                    org_event_store.resync_pgno_from_authoritative(&org_path)?;
-                    team_event_store.resync_pgno_from_authoritative(&team_path)
-                })
-                .await
-                .map_err(std::io::Error::other)?
-                .map_err(std::io::Error::other)
-            }
-            crate::config::runtime::PardosaBackend::Nats => {
-                let repo_path = events_dir.join("events.pgno");
-                let org_path = events_dir.join("org-events.pgno");
-                let team_path = events_dir.join("team-events.pgno");
-                let event_store = self.event_store.clone();
-                let org_event_store = self.org_event_store.clone();
-                let team_event_store = self.team_event_store.clone();
-                tokio::task::spawn_blocking(move || {
-                    event_store.resync_pgno_from_authoritative(&repo_path)?;
-                    org_event_store.resync_pgno_from_authoritative(&org_path)?;
-                    team_event_store.resync_pgno_from_authoritative(&team_path)
-                })
-                .await
-                .map_err(std::io::Error::other)?
-                .map_err(std::io::Error::other)
-            }
-        }
+        let event_store = Arc::clone(&self.event_store);
+        let org_event_store = Arc::clone(&self.org_event_store);
+        let team_event_store = Arc::clone(&self.team_event_store);
+        tokio::task::spawn_blocking(move || {
+            event_store.resync_from_authoritative()?;
+            org_event_store.resync_from_authoritative()?;
+            team_event_store.resync_from_authoritative()
+        })
+        .await
+        .map_err(std::io::Error::other)?
+        .map_err(std::io::Error::other)
     }
 }
 
@@ -4110,6 +4090,340 @@ accounts: {
             "resync_event_store must re-seed org and team stores, not just repos — \
              an org/team-origin FencedConflict converges through the same catch-all"
         );
+    }
+
+    fn plant_stale_local_pgno_sentinel(
+        rt: &Arc<tokio::runtime::Runtime>,
+        events_dir: &Path,
+    ) -> crate::domain::evidence::RepositoryEvidence {
+        let sentinel = crate::test_fixtures::all_passing_evidence("stale-local-pgno-sentinel");
+        let pgno_nats =
+            NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+                .expect("pgno-side nats config");
+        let planted = rt
+            .block_on(AppState::with_stores(
+                events_dir,
+                PardosaBackend::Pgno,
+                pgno_nats,
+            ))
+            .expect("plant local pgno stores in the same events_dir");
+        planted
+            .record_repo(
+                &sentinel.repository.inventory_key,
+                sentinel.clone(),
+                &sentinel.repository.name,
+                "2026-01-01T00:00:00Z",
+            )
+            .expect("seed a stale sentinel fact into events.pgno");
+        sentinel
+    }
+
+    fn record_authoritative_nats_facts(
+        rt: &Arc<tokio::runtime::Runtime>,
+        events_dir: &Path,
+        nats: NatsStoreConfig,
+    ) -> crate::domain::evidence::RepositoryEvidence {
+        let authoritative = crate::test_fixtures::all_passing_evidence("nats-authoritative-repo");
+        let other_writer = rt
+            .block_on(AppState::with_stores_and_runtime(
+                events_dir,
+                PardosaBackend::Nats,
+                nats,
+                Some(Arc::clone(rt)),
+            ))
+            .expect("second nats handle against the same streams");
+        other_writer
+            .record_repo(
+                &authoritative.repository.inventory_key,
+                authoritative.clone(),
+                &authoritative.repository.name,
+                "2026-07-16T00:00:00Z",
+            )
+            .expect("record repo durably in NATS via the second handle");
+        let mut metadata = crate::test_fixtures::make_metadata();
+        metadata.organization = "TestOrg".to_string();
+        other_writer
+            .record_org(crate::domain::evidence::OrgStateSnapshot {
+                archived_repos: 3,
+                assessment_metadata: metadata,
+                alert_summary: empty_org_summary(),
+            })
+            .expect("record org durably in NATS via the second handle");
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        other_writer
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("record team durably in NATS via the second handle");
+        authoritative
+    }
+
+    #[test]
+    fn nats_resync_event_store_reads_nats_stores_not_stale_local_pgno_files() {
+        let Some(server) = crate::store::tests::TestNatsServer::spawn() else {
+            return;
+        };
+
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+
+        let sentinel = plant_stale_local_pgno_sentinel(&rt, &events_dir);
+
+        let nats = NatsStoreConfig::for_org("TestOrg", &server.url).expect("live nats config");
+        let state = rt
+            .block_on(AppState::with_stores_and_runtime(
+                &events_dir,
+                PardosaBackend::Nats,
+                nats.clone(),
+                Some(Arc::clone(&rt)),
+            ))
+            .expect("nats-backed app state");
+
+        let authoritative = record_authoritative_nats_facts(&rt, &events_dir, nats.clone());
+
+        rt.block_on(state.resync_event_store(&events_dir, PardosaBackend::Nats, nats))
+            .expect("resync all three NATS stores");
+
+        let repo_keys = state
+            .event_store
+            .fold_events(Vec::<String>::new(), |acc, _detached, event| {
+                if let crate::event::DomainEvent::RepositoryStateCaptured { domain_key, .. } = event
+                {
+                    acc.push(domain_key.as_str().to_string());
+                }
+            })
+            .expect("fold repo events after resync");
+        assert!(
+            repo_keys
+                .iter()
+                .all(|key| key != sentinel.repository.inventory_key.as_str()),
+            "a stale local events.pgno sentinel must never contaminate a NATS resync; \
+             recovery must read the configured NATS store through its own retained backend"
+        );
+        assert!(
+            repo_keys
+                .iter()
+                .any(|key| key == authoritative.repository.inventory_key.as_str()),
+            "NATS resync must load the authoritative repository fact durably written to NATS"
+        );
+
+        let org_facts = state
+            .org_event_store
+            .fold_events(Vec::<u32>::new(), |acc, event| {
+                acc.push(event.archived_repos);
+            })
+            .expect("fold org events after resync");
+        let team_facts = state
+            .team_event_store
+            .fold_events(Vec::<(String, String)>::new(), |acc, event| {
+                acc.push((
+                    event.org.as_str().to_string(),
+                    event.team_slug.as_str().to_string(),
+                ));
+            })
+            .expect("fold team events after resync");
+        assert_eq!(
+            org_facts,
+            vec![3_u32],
+            "the org store must recover the authoritative org content from its own NATS \
+             backend, not merely some event count"
+        );
+        assert_eq!(
+            team_facts,
+            vec![("TestOrg".to_string(), "platform".to_string())],
+            "the team store must recover the authoritative team identity from its own NATS \
+             backend, not merely some event count"
+        );
+
+        drop(state);
+        drop(server);
+    }
+
+    #[test]
+    fn nats_resync_event_store_recovers_when_no_local_pgno_files_exist_at_all() {
+        let Some(server) = crate::store::tests::TestNatsServer::spawn() else {
+            return;
+        };
+
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", &server.url).expect("live nats config");
+
+        let state = rt
+            .block_on(AppState::with_stores_and_runtime(
+                &events_dir,
+                PardosaBackend::Nats,
+                nats.clone(),
+                Some(Arc::clone(&rt)),
+            ))
+            .expect("nats-backed app state");
+
+        assert!(
+            !events_dir.join("events.pgno").exists(),
+            "this case must have no local pgno artefact to fall back to"
+        );
+
+        let authoritative = record_authoritative_nats_facts(&rt, &events_dir, nats.clone());
+
+        rt.block_on(state.resync_event_store(&events_dir, PardosaBackend::Nats, nats))
+            .expect("a NATS resync must not require any local pgno file to exist");
+
+        assert!(
+            repo_keys_of(&state)
+                .iter()
+                .any(|key| key == authoritative.repository.inventory_key.as_str()),
+            "NATS recovery must succeed from the NATS backend with no local files present"
+        );
+        assert_eq!(
+            (org_count_of(&state), team_count_of(&state)),
+            (1, 1),
+            "all three NATS stores must recover without any local pgno artefact"
+        );
+
+        drop(state);
+        drop(server);
+    }
+
+    #[test]
+    fn resync_event_store_keeps_per_store_caches_when_a_middle_store_fails() {
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+
+        let state = rt
+            .block_on(AppState::with_stores(
+                &events_dir,
+                PardosaBackend::Pgno,
+                nats.clone(),
+            ))
+            .expect("long-lived pgno app state");
+
+        let authoritative = record_authoritative_pgno_facts(&rt, &events_dir, nats.clone());
+
+        assert_eq!(
+            (
+                repo_keys_of(&state).len(),
+                org_count_of(&state),
+                team_count_of(&state)
+            ),
+            (0, 0, 0),
+            "the long-lived handle must not see the externally durable writes before resync"
+        );
+
+        crate::store::tests::overwrite_with_mismatched_descriptor_store(
+            &events_dir.join("org-events.pgno"),
+        );
+
+        let err = rt
+            .block_on(state.resync_event_store(&events_dir, PardosaBackend::Pgno, nats))
+            .expect_err("a mismatched org store must fail the re-arm");
+        assert!(
+            err.to_string()
+                .contains("schema descriptor identity mismatch"),
+            "the failure must be the org store's schema rejection, got: {err}"
+        );
+
+        assert!(
+            repo_keys_of(&state)
+                .iter()
+                .any(|key| key == authoritative.repository.inventory_key.as_str()),
+            "the repo store is refreshed before the org store fails; partial progress is \
+             permitted and must be observable, not silently rolled back"
+        );
+        assert_eq!(
+            org_count_of(&state),
+            0,
+            "the failing org store must keep its previous cache — validate and decode fully \
+             before replacing it"
+        );
+        assert_eq!(
+            team_count_of(&state),
+            0,
+            "the team store is never attempted after the org store fails; a successful team \
+             refresh would have loaded the externally durable team fact"
+        );
+    }
+
+    fn record_authoritative_pgno_facts(
+        rt: &Arc<tokio::runtime::Runtime>,
+        events_dir: &Path,
+        nats: NatsStoreConfig,
+    ) -> crate::domain::evidence::RepositoryEvidence {
+        let authoritative = crate::test_fixtures::all_passing_evidence("pgno-authoritative-repo");
+        let other_writer = rt
+            .block_on(AppState::with_stores(
+                events_dir,
+                PardosaBackend::Pgno,
+                nats,
+            ))
+            .expect("second pgno handle against the same events_dir");
+        other_writer
+            .record_repo(
+                &authoritative.repository.inventory_key,
+                authoritative.clone(),
+                &authoritative.repository.name,
+                "2026-07-16T00:00:00Z",
+            )
+            .expect("record repo durably via the second handle");
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        other_writer
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("record team durably via the second handle");
+        authoritative
+    }
+
+    fn repo_keys_of(state: &AppState) -> Vec<String> {
+        state
+            .event_store
+            .fold_events(Vec::<String>::new(), |acc, _detached, event| {
+                if let crate::event::DomainEvent::RepositoryStateCaptured { domain_key, .. } = event
+                {
+                    acc.push(domain_key.as_str().to_string());
+                }
+            })
+            .expect("fold repo events")
+    }
+
+    fn org_count_of(state: &AppState) -> usize {
+        state
+            .org_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold org events")
+    }
+
+    fn team_count_of(state: &AppState) -> usize {
+        state
+            .team_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold team events")
     }
 
     #[tokio::test]
