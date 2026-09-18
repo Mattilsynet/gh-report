@@ -634,11 +634,17 @@ enum Continuation {
     Exhausted,
     Follow(String),
     Refused,
+    Uninterpretable,
 }
 
 fn trusted_continuation(headers: &HeaderMap, trusted_origin: &str) -> Continuation {
-    let Some(candidate_url) = pagination::next_url(headers) else {
-        return Continuation::Exhausted;
+    let candidate_url = match pagination::next_link(headers) {
+        pagination::NextLink::None => return Continuation::Exhausted,
+        pagination::NextLink::Uninterpretable => {
+            warn!("Link header could not be interpreted; enumeration is incomplete");
+            return Continuation::Uninterpretable;
+        }
+        pagination::NextLink::One(url) => url,
     };
     if is_same_origin(&candidate_url, trusted_origin) {
         return Continuation::Follow(candidate_url);
@@ -1379,7 +1385,7 @@ impl GitHubClient {
             match continuation {
                 Continuation::Follow(url) => next_url = Some(url),
                 Continuation::Exhausted => {}
-                Continuation::Refused => {
+                Continuation::Refused | Continuation::Uninterpretable => {
                     truncated = true;
                     break;
                 }
@@ -5709,6 +5715,153 @@ mod tests {
             .and_then(serde_json::Value::as_array)
             .expect("data should be an array");
         assert_eq!(items.len(), 1, "the positive prefix must be retained");
+    }
+
+    #[tokio::test]
+    async fn missing_delimiter_link_denies_completeness() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let link = format!("<{}/uninterpretable-page-2; rel=\"next\"", server.uri());
+        Mock::given(path("/uninterpretable-link"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", link.as_str())
+                    .set_body_json(serde_json::json!([{"id": 1}])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let result = client.request("/uninterpretable-link", true, 1, 10).await;
+
+        assert!(result.is_ok());
+        assert!(
+            result.is_truncated(),
+            "a Link header that cannot be interpreted denies completeness"
+        );
+        let items = result
+            .data()
+            .and_then(serde_json::Value::as_array)
+            .expect("data should be an array");
+        assert_eq!(items.len(), 1, "the positive prefix must be retained");
+    }
+
+    #[tokio::test]
+    async fn malformed_relation_parameter_denies_completeness() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let link = format!("<{}/malformed-parameter-page-2>; rel", server.uri());
+        Mock::given(path("/malformed-parameter-link"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", link.as_str())
+                    .set_body_json(serde_json::json!([{"id": 1}])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let result = client
+            .request("/malformed-parameter-link", true, 1, 10)
+            .await;
+
+        assert!(result.is_ok());
+        assert!(
+            result.is_truncated(),
+            "a valueless rel parameter is unrecognized syntax, so the client must \
+             report incomplete enumeration rather than exhaustion"
+        );
+        let items = result
+            .data()
+            .and_then(serde_json::Value::as_array)
+            .expect("data should be an array");
+        assert_eq!(items.len(), 1, "the positive prefix must be retained");
+    }
+
+    #[tokio::test]
+    async fn next_relation_in_a_later_link_field_is_followed() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let next = format!("<{}/multi-field-page-2>; rel=next", server.uri());
+        Mock::given(path("/multi-field-page-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", "<https://api.github.com/p0>; rel=\"prev\"")
+                    .append_header("link", next.as_str())
+                    .set_body_json(serde_json::json!([{"id": 1}])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/multi-field-page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": 2}])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let result = client.request("/multi-field-page-1", true, 1, 10).await;
+
+        assert!(result.is_ok());
+        assert!(
+            !result.is_truncated(),
+            "a next relation in a later Link field is a valid, followable continuation"
+        );
+        let items = result
+            .data()
+            .and_then(serde_json::Value::as_array)
+            .expect("data should be an array");
+        assert_eq!(items.len(), 2, "both pages must be enumerated");
+    }
+
+    #[tokio::test]
+    async fn refused_cross_origin_continuation_sends_zero_destination_requests() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let destination = MockServer::start().await;
+        Mock::given(path("/destination-page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": 9}])))
+            .mount(&destination)
+            .await;
+
+        let server = MockServer::start().await;
+        let link = format!("<{}/destination-page-2>; rel=\"next\"", destination.uri());
+        Mock::given(path("/origin-page-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", link.as_str())
+                    .set_body_json(serde_json::json!([{"id": 1}])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let result = client.request("/origin-page-1", true, 1, 10).await;
+
+        assert!(result.is_ok());
+        let received = destination
+            .received_requests()
+            .await
+            .expect("the destination server records every request it receives");
+        assert!(
+            received.is_empty(),
+            "an untrusted destination origin must receive zero requests, got {}",
+            received.len()
+        );
+        assert!(
+            result.is_truncated(),
+            "a refused continuation is incomplete"
+        );
     }
 
     #[tokio::test]

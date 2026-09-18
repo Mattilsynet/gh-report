@@ -42,10 +42,11 @@ pub struct TickFailure {
 /// [`AppState::record_team`]), and detach any team the projection
 /// previously recorded that no longer owns any repository.
 ///
-/// Omission-based detach runs only when the org-team enumeration came back
-/// [`team_membership::TeamDiscovery::Complete`]: a failed, truncated or
-/// unparseable enumeration establishes no identity coverage, so a known
-/// team's absence from it is not an absence fact (CHE-0092:R4). The teams
+/// Omission-based detach runs only when the org-team enumeration
+/// [`authorizes_omission_detach`](team_membership::TeamDiscovery::authorizes_omission_detach):
+/// a failed, truncated or uninterpretable enumeration establishes no identity
+/// coverage, so a known team's absence from it is not an absence fact
+/// (CHE-0092:R4). The teams
 /// such an enumeration DID report are still fetched and recorded.
 ///
 /// A freshly-fetched roster whose status is
@@ -698,6 +699,118 @@ mod tests {
             .team_rosters
             .get(&visible)
             .expect("the page observed before refusal is still a positive fact");
+        assert!(
+            roster.members.iter().any(|m| m.login == "octocat"),
+            "the positive prefix must retain the members it actually read"
+        );
+    }
+
+    #[tokio::test]
+    async fn uninterpretable_discovery_link_does_not_detach_known_team() {
+        let (state, _dir) = test_state().await;
+        let team_key = seed_live_roster(&state);
+
+        let server = MockServer::start().await;
+        let malformed = format!("<{}/orgs/test-org/teams?page=2; rel=\"next\"", server.uri());
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", malformed.as_str())
+                    .set_body_json(serde_json::json!([{"slug": "visible"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/visible/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "octocat", "role": "member"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/platform/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "octocat", "role": "member"}])),
+            )
+            .mount(&server)
+            .await;
+        let client = test_client(&server.uri());
+
+        run_team_refresh_tick(&state, &client, "2026-07-23T02:00:00Z")
+            .await
+            .expect("tick succeeds");
+
+        let projection = state.lock_projection();
+        assert!(
+            projection.team_rosters.contains_key(&team_key),
+            "a Link header that was never interpreted proves nothing about the \
+             org's team set, so omission cannot authorize detach"
+        );
+        let visible = team_domain_key("test-org", "visible").expect("derive team key");
+        let roster = projection
+            .team_rosters
+            .get(&visible)
+            .expect("the page read before the uninterpretable link is a positive fact");
+        assert!(
+            roster.members.iter().any(|m| m.login == "octocat"),
+            "the positive prefix must retain the members it actually read"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_relation_parameter_does_not_detach_known_team() {
+        let (state, _dir) = test_state().await;
+        let team_key = seed_live_roster(&state);
+
+        let server = MockServer::start().await;
+        let malformed = format!("<{}/orgs/test-org/teams?page=2>; rel", server.uri());
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", malformed.as_str())
+                    .set_body_json(serde_json::json!([{"slug": "visible"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/visible/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "octocat", "role": "member"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/platform/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "octocat", "role": "member"}])),
+            )
+            .mount(&server)
+            .await;
+        let client = test_client(&server.uri());
+
+        run_team_refresh_tick(&state, &client, "2026-07-23T02:30:00Z")
+            .await
+            .expect("tick succeeds");
+
+        let projection = state.lock_projection();
+        assert!(
+            projection.team_rosters.contains_key(&team_key),
+            "a valueless rel parameter is unrecognized syntax, not an exhausted \
+             enumeration, so omission cannot authorize detach"
+        );
+        let visible = team_domain_key("test-org", "visible").expect("derive team key");
+        let roster = projection
+            .team_rosters
+            .get(&visible)
+            .expect("the page read before the unrecognized link is a positive fact");
         assert!(
             roster.members.iter().any(|m| m.login == "octocat"),
             "the positive prefix must retain the members it actually read"

@@ -43,8 +43,9 @@ pub enum DiscoveryGap {
 /// A team identity that passed the same path-segment boundary the roster
 /// fetch itself applies, so it names a team that can actually be read.
 ///
-/// The inner string is private and minted only by [`TeamSlug::parse`]; an
-/// unvalidated string therefore has no route into a discovery result.
+/// The inner string is private and minted only by validating parse, reached
+/// through [`discover_org_teams`]; an unvalidated string therefore has no
+/// route into a discovery result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamSlug(String);
 
