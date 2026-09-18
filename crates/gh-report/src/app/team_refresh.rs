@@ -983,12 +983,6 @@ mod tests {
         );
     }
 
-    /// Full-tick regression: a complete team discovery whose member page
-    /// carries an unreadable entry must not overwrite a resident
-    /// `Complete` roster with a shortened one. The degraded roster is
-    /// refused by the anti-downgrade guard (CHE-0092:R1), so the known
-    /// membership survives; nothing is detached either, because the team
-    /// is still discovered.
     #[tokio::test]
     async fn malformed_member_page_does_not_erase_known_complete_roster() {
         let (state, _dir) = test_state().await;
@@ -1022,7 +1016,7 @@ mod tests {
         Mock::given(path("/orgs/test-org/teams/platform/members"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 {"login": "octocat"},
-                {"id": 7}
+                ["mallory", "member"]
             ])))
             .mount(&server)
             .await;
@@ -1037,10 +1031,12 @@ mod tests {
             .team_rosters
             .get(&team_key)
             .expect("known roster must survive an unreadable member page");
+        let mut live_logins: Vec<&str> = live.members.iter().map(|m| m.login.as_str()).collect();
+        live_logins.sort_unstable();
         assert_eq!(
-            live.members.len(),
-            2,
-            "the seeded complete membership must be preserved, not replaced by a partial read"
+            live_logins,
+            vec!["hubot", "octocat"],
+            "the seeded complete membership must be preserved, not replaced by a misread page"
         );
     }
 }
