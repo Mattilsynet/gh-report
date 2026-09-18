@@ -211,3 +211,5 @@ overflow-checks = true
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+as_underscore = "warn"
+as_pointer_underscore = "warn"
