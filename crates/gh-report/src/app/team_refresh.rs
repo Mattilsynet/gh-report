@@ -982,4 +982,65 @@ mod tests {
             "non-conflict error must not fabricate a seq value: {parsed}"
         );
     }
+
+    /// Full-tick regression: a complete team discovery whose member page
+    /// carries an unreadable entry must not overwrite a resident
+    /// `Complete` roster with a shortened one. The degraded roster is
+    /// refused by the anti-downgrade guard (CHE-0092:R1), so the known
+    /// membership survives; nothing is detached either, because the team
+    /// is still discovered.
+    #[tokio::test]
+    async fn malformed_member_page_does_not_erase_known_complete_roster() {
+        let (state, _dir) = test_state().await;
+        let team_key = team_domain_key("test-org", "platform").expect("derive team key");
+        let mut seeded = roster("@test-org/platform", "platform");
+        seeded.members.push(TeamMember {
+            login: "hubot".to_string(),
+            role: TeamMemberRole::Member,
+            in_org: None,
+        });
+        state
+            .record_team(
+                "test-org",
+                &seeded,
+                "2026-07-22T00:00:00Z",
+                crate::event::OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("seed existing complete roster");
+
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/teams"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"slug": "platform"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/platform/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "octocat"},
+                {"id": 7}
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        run_team_refresh_tick(&state, &client, "2026-07-23T01:00:00Z")
+            .await
+            .expect("tick succeeds");
+
+        let projection = state.lock_projection();
+        let live = projection
+            .team_rosters
+            .get(&team_key)
+            .expect("known roster must survive an unreadable member page");
+        assert_eq!(
+            live.members.len(),
+            2,
+            "the seeded complete membership must be preserved, not replaced by a partial read"
+        );
+    }
 }
