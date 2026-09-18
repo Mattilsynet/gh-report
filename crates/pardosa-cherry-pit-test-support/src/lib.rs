@@ -30,6 +30,10 @@ struct PgnoEnvelope<Ev> {
     payload: Ev,
 }
 
+fn clear_component_if_removable(path: &Path) {
+    drop(std::fs::remove_file(path));
+}
+
 fn default_claim(epoch: u64) -> OwnershipClaimRecord {
     OwnershipClaimRecord {
         epoch,
@@ -59,8 +63,8 @@ impl<Ev: DomainEvent + Serialize + DeserializeOwned + Clone + Send + 'static> Pg
     /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
         let adapter = FileStorageAdapter::new(path);
-        let _ = std::fs::remove_file(adapter.meta_path());
-        let _ = std::fs::remove_file(adapter.pgno_path());
+        clear_component_if_removable(adapter.meta_path());
+        clear_component_if_removable(adapter.pgno_path());
         let claim = default_claim(1);
         let session = adapter.create(&claim).map_err(to_store_error)?;
         Ok(Self::from_session(session))

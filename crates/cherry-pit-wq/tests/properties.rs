@@ -126,7 +126,7 @@ proptest! {
         let rt = current_thread_rt();
         let distinct = distinct_preserving(keys);
         let expected = distinct.clone();
-        let actual_input = distinct.clone();
+        let actual_input = distinct;
         let got = rt.block_on(async move {
             let q: WorkQueue<String> = WorkQueue::new(actual_input.len().max(1));
             for k in &actual_input {

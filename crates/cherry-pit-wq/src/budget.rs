@@ -974,7 +974,11 @@ mod tests {
 
         pause.notified().await;
         doomed.abort();
-        let _ = doomed.await;
+        let doomed_join = doomed.await;
+        assert!(
+            doomed_join.is_err_and(|e| e.is_cancelled()),
+            "the doomed resetter must end by cancellation, not by a panic that would invalidate the release assertions below"
+        );
 
         let g_next = Arc::clone(&gate);
         let next_cancel = cancel.clone();

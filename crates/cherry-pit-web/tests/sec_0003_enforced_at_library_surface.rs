@@ -30,7 +30,7 @@ use tokio::sync::Notify;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use cherry_pit_web::{LayerLimits, ProjectionState, WsPolicy, build_projection_router};
-use common::MockProjectionSource;
+use common::{MockProjectionSource, best_effort_teardown};
 use tower::ServiceExt;
 
 /// SEC-0003:R1 (bounded allocation) — body bytes exceeding
@@ -301,7 +301,7 @@ async fn ws_permit_released_on_disconnect() {
         "2nd connection must be rejected with 503; got: {result:?}"
     );
 
-    ws1.close(None).await.ok();
+    best_effort_teardown(ws1.close(None).await);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let (_ws3, resp3) = tokio_tungstenite::connect_async(&url)

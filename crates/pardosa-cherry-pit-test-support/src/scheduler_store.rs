@@ -259,7 +259,7 @@ fn remap_envelope(
     .map_err(|e| StoreError::CorruptData(Box::new(e)))
 }
 
-/// `.pgno`-backed [`EventStore`]`<Event = cherry_pit_core::SchedulerEvent>`.
+/// `.pgno`-backed [`EventStore<Event = cherry_pit_core::SchedulerEvent>`](EventStore).
 ///
 /// `DurableScheduler` pins its store parameter to the CONCRETE
 /// `cherry_pit_core::SchedulerEvent` (not `GenomeSafe` — CHE-0029:R4/R6
@@ -401,7 +401,7 @@ mod tests {
         let back = from_dto(dto).expect("dto converts back");
 
         let cherry_pit_core::SchedulerEvent::Armed(a) = &original else {
-            unreachable!()
+            panic!("expected Armed variant from the fixture")
         };
         let cherry_pit_core::SchedulerEvent::Armed(b) = &back else {
             panic!("expected Armed variant back")

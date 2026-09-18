@@ -72,13 +72,14 @@ pub enum WriteResponse {
 }
 
 impl WritePolicyCategory {
-    /// The ONE conversion chokepoint from the `#[non_exhaustive]`
-    /// `PersistenceError` into this closed category set (CHE-0088:R2).
+    /// The ONE conversion chokepoint from `PersistenceError` into this
+    /// closed category set (CHE-0088:R2).
     ///
-    /// The trailing wildcard arm is the only permitted wildcard in the
-    /// whole mechanism: because `PersistenceError` may grow variants
-    /// this crate does not yet know about, an unclassified variant
-    /// fails CLOSED to `Unrecoverable` (fatal), never open (swallow).
+    /// `PersistenceError` is a closed enum and this match is exhaustive
+    /// over its variants with no wildcard arm, so a new variant is a
+    /// compile-time error here rather than a runtime fail-open. Adding
+    /// one requires a deliberate classification decision; the existing
+    /// fatal classifications are unchanged.
     #[must_use]
     pub fn classify(error: &PersistenceError) -> Self {
         match error {
@@ -88,7 +89,10 @@ impl WritePolicyCategory {
             PersistenceError::PoisonedState | PersistenceError::TornWriteRecovery { .. } => {
                 Self::Unrecoverable
             }
-            _ => Self::Unrecoverable,
+            PersistenceError::LockFailed { .. }
+            | PersistenceError::AtomicWriteFailed { .. }
+            | PersistenceError::LoadFailed { .. }
+            | PersistenceError::Io(_) => Self::Unrecoverable,
         }
     }
 
@@ -268,7 +272,14 @@ fn conflict_seq_fields(error: &PersistenceError) -> (Option<u64>, Option<u64>) {
             actual_seq,
             ..
         } => (*expected_seq, *actual_seq),
-        _ => (None, None),
+        PersistenceError::LockFailed { .. }
+        | PersistenceError::AtomicWriteFailed { .. }
+        | PersistenceError::LoadFailed { .. }
+        | PersistenceError::TornWriteRecovery { .. }
+        | PersistenceError::BackendUnavailable { .. }
+        | PersistenceError::InvariantViolation { .. }
+        | PersistenceError::PoisonedState
+        | PersistenceError::Io(_) => (None, None),
     }
 }
 

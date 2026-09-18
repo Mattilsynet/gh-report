@@ -740,12 +740,10 @@ mod tests {
             .collect();
 
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
+        let successes = results.iter().filter(|r| r.is_ok()).count();
         assert_eq!(
-            successes.len(),
-            1,
-            "exactly one thread should acquire the lock, got {}",
-            successes.len()
+            successes, 1,
+            "exactly one thread should acquire the lock, got {successes}"
         );
     }
 

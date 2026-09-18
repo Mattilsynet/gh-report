@@ -369,7 +369,7 @@ mod tests {
                 jiff::Timestamp::now(),
                 None,
                 None,
-                TestEvent::Happened { value: value.clone() },
+                TestEvent::Happened { value },
             ).unwrap();
 
             let json = serde_json::to_string(&envelope).unwrap();

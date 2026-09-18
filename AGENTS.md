@@ -6,15 +6,17 @@ global `~/.config/opencode/AGENTS.md` (auto-loaded) — not repeated here.
 
 ## What this repo is
 
-Rust workspace (edition 2024, MSRV 1.98, resolver 3, 13 member crates) shipping two
-binaries plus an ADR-governed library family and a large ADR corpus.
+Rust workspace (edition 2024, MSRV 1.98, resolver 3, 12 member crates) shipping one
+binary plus an ADR-governed library family and a large ADR corpus.
 
-- Binaries (real entrypoints): `adr-srv` (axum GraphQL service over an
-  ADR-corpus projection), `gh-report` (GitHub org evidence collector + HTML
-  reporter daemon). Two tools are **not** built here and are consumed as
+- Binary (real entrypoint): `gh-report` (GitHub org evidence collector + HTML
+  reporter daemon). The `adr-srv` GraphQL service was retired from this
+  workspace under ghr-ktvy5; its ADRs (CHE-0098, AFM-0027) remain in the
+  corpus as historical decisions. Two tools are **not** built here and are consumed as
   installed binaries from their canonical repos: `adr-fmt` (ADR validator,
-  read-only) from `Mattilsynet/adr-fmt`, at the rev pinned in
-  `[workspace.dependencies]` for its library consumers; and `comment-free`
+  read-only) from `Mattilsynet/adr-fmt`, which since the `adr-srv` retirement
+  has no library consumers here and therefore no workspace-dependency pin;
+  and `comment-free`
   (doc-lint tool) from `acje/comment-free`, which has no library consumers
   here and therefore no workspace-dependency pin.
 - `cherry-pit-*` — event-sourcing substrate consumed by `gh-report`.
@@ -93,8 +95,8 @@ adr-fmt-xdlw9 O3).
   computed package list, never the whole graph.
 
   Reverse-dependent closure is mechanically computable, not a judgement
-  call — verified against `cherry-pit-core` (9 transitive reverse
-  dependents: `adr-srv`, `cherry-pit-app`, `cherry-pit-gateway`,
+  call — verified against `cherry-pit-core` (historical run, 9 transitive
+  reverse dependents including the since-retired `adr-srv`: `cherry-pit-app`, `cherry-pit-gateway`,
   `cherry-pit-merger`, `cherry-pit-projection`, `cherry-pit-web`,
   `cherry-pit-wq`, `gh-report`, `pardosa-cherry-pit-test-support`; exit 0):
   ```
@@ -324,7 +326,7 @@ if executed; these examples alone are neither compiler nor CI proof.
 ## Intent (why this repo exists — the gh-report stance)
 
 This workspace lays down a *small, observable, ratified* set of enabling
-constraints — an ADR corpus enforced by `adr-fmt`/`adr-srv` — so that correct
+constraints — an ADR corpus enforced by `adr-fmt` — so that correct
 software is easier to build than incorrect software. The bet is
 **subtractive**: remove enough degrees of freedom that the remaining moves
 are obviously correct. When the type system rejects illegal architectures,
@@ -334,8 +336,8 @@ non-trivial consumer of that substrate, not the source of the constraints.
 - **The libraries are the product; the binaries are evidence they work.**
   `cherry-pit-*` is the EDA+DDD+hexagonal substrate (illegal compositions —
   multiple writers per aggregate, async in the domain, leaky identity — do not
-  type-check). `pardosa*` is the durable event-store substrate. `adr-fmt`/
-  `adr-srv` are the governance plane. `gh-report` is the first non-trivial
+  type-check). `pardosa*` is the durable event-store substrate. `adr-fmt` is
+  the governance plane. `gh-report` is the first non-trivial
   consumer, load-bearing proof the substrate carries real work.
 - **Niche — where to play:** high-complexity, durable, *intra-org* workloads
   that do **not** need arbitrary horizontal scale-out. Single writer per

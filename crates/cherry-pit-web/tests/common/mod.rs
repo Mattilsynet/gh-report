@@ -116,11 +116,39 @@ pub struct TestServer {
 impl TestServer {
     /// Abort the serving task and await its termination. Idempotent in
     /// practice — a second call after `abort` is a no-op.
+    ///
+    /// The join outcome is asserted, not discarded: a serving task that
+    /// ended by panicking is reported rather than passed off as clean
+    /// teardown.
     pub async fn shutdown(self) {
         self.handle.abort();
-        let _ = self.handle.await;
+        assert_join_ended_by_cancellation(self.handle.await);
     }
 }
+
+/// Assert that an aborted task ended by cancellation rather than by
+/// panicking.
+///
+/// `JoinHandle::await` after `abort` yields `Err(JoinError)` for both a
+/// cancellation and a panic. Discarding it would let a panicking serving
+/// task read as successful teardown, so the panic case is surfaced as a
+/// test failure. This makes no claim about *why* the task was cancelled.
+pub fn assert_join_ended_by_cancellation(outcome: Result<(), tokio::task::JoinError>) {
+    if let Err(join_err) = outcome {
+        assert!(
+            join_err.is_cancelled(),
+            "serving task must end by cancellation, not by panic: {join_err:?}"
+        );
+    }
+}
+
+/// Named sink for a teardown outcome that carries no verdict.
+///
+/// Closing a socket the server may already have closed is a legitimate
+/// outcome of the paths under test, so the result is deliberately not
+/// asserted. Naming the sink keeps the discard intentional and keeps it
+/// distinguishable from a stimulus send, whose result *is* checked.
+pub fn best_effort_teardown<T, E>(_outcome: Result<T, E>) {}
 
 /// Bind the projection router to `127.0.0.1:0`, spawn the serving task,
 /// and return the bound address + a [`TestServer`] handle.
@@ -339,5 +367,6 @@ pub async fn assert_etag_yields_304(addr: SocketAddr, path: &str) {
             .to_str()
             .unwrap(),
         "no-cache",
+        "304 Cache-Control must be no-cache"
     );
 }

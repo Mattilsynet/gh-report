@@ -59,9 +59,9 @@ fn envelope(aggregate: u64, sequence: u64) -> EventEnvelope<E> {
 /// expected dispatch order is the filtered projection of that vector
 /// for each aggregate.
 fn schedule_strategy() -> impl Strategy<Value = Vec<(u64, u64)>> {
-    (1usize..=4, 1u64..=8, any::<u64>()).prop_map(|(num_aggregates, k_per, seed)| {
+    (1u64..=4, 1u64..=8, any::<u64>()).prop_map(|(num_aggregates, k_per, seed)| {
         let mut all: Vec<(u64, u64)> = Vec::new();
-        for agg_idx in 1..=(num_aggregates as u64) {
+        for agg_idx in 1..=num_aggregates {
             for s in 1..=k_per {
                 all.push((agg_idx, s));
             }
@@ -138,8 +138,8 @@ proptest! {
             );
 
             prop_assert_eq!(
-                observed_list.clone(),
-                shuffled.clone(),
+                &observed_list,
+                &shuffled,
                 "global dispatch order must equal global publish order under sequential consumer",
             );
 

@@ -375,7 +375,7 @@ mod tests {
         let original = b"<html><body>Hello, world!</body></html>";
         let entry = PageEntry::new("index.html", original.to_vec());
         let compressed = entry.body_zstd.expect("zstd should be present");
-        let decompressed = zstd::stream::decode_all(&compressed[..]).unwrap();
+        let decompressed = zstd::stream::decode_all(&*compressed).unwrap();
         assert_eq!(decompressed, original);
     }
 
@@ -550,7 +550,7 @@ mod tests {
     fn page_entry_body_is_bytes() {
         let body = b"<html>test</html>";
         let entry = PageEntry::new("index.html", body.to_vec());
-        let cloned = entry.body.clone();
+        let cloned = entry.body;
         assert_eq!(cloned, body[..]);
     }
 

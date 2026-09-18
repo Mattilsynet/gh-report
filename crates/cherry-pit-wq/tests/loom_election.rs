@@ -30,7 +30,7 @@
 //! which is the loom-level analogue of `spec/fizzbee/budget_gate.fizz`
 //! (81 nodes/39 states) vs `token_bucket.fizz` (61/61) in Layer 3.
 //!
-//! Run with: `RUSTFLAGS="--cfg loom" cargo test --release --test loom_election`
+//! Run with: `RUSTFLAGS="--cfg loom" cargo test --release --test loom_election`.
 
 #![expect(
     unexpected_cfgs,

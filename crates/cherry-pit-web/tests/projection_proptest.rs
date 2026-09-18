@@ -105,7 +105,7 @@ async fn try_upgrade(
     match tokio_tungstenite::connect_async(request).await {
         Ok((mut ws, response)) => {
             use futures_util::SinkExt;
-            let _ = ws
+            let _best_effort_close = ws
                 .send(tokio_tungstenite::tungstenite::Message::Close(None))
                 .await;
             Ok(response.status() == 101)
@@ -126,7 +126,7 @@ proptest! {
     /// arbitrary Unicode input.
     #[test]
     fn path_never_panics(input in "\\PC{0,500}") {
-        let _ = normalize_request_path(&input);
+        let _normalized = normalize_request_path(&input);
     }
 
     /// Donor `server.rs:3752` — output key never contains `..`, null
@@ -186,7 +186,7 @@ proptest! {
 proptest! {
     #[test]
     fn sanitize_segment_never_panics(input in "\\PC{0,200}") {
-        let _ = sanitize_path_segment(&input, "field");
+        let _sanitized = sanitize_path_segment(&input, "field");
     }
 
     #[test]

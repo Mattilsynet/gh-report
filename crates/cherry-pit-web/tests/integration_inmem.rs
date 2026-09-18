@@ -307,7 +307,10 @@ impl CommandGateway for InMemGateway {
                     expected_sequence,
                     actual_sequence,
                 },
-                other => DispatchError::Infrastructure(Box::new(other)),
+                other @ (StoreError::StoreLocked { .. }
+                | StoreError::CorruptData(_)
+                | StoreError::Infrastructure(_)
+                | StoreError::JoinFailure(_)) => DispatchError::Infrastructure(Box::new(other)),
             })?;
         Ok(envelopes)
     }

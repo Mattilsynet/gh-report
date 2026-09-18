@@ -212,14 +212,13 @@ fn serve_page(page: &PageEntry, request_headers: &HeaderMap, status: StatusCode)
         Bytes,
         Option<&'static str>,
         Option<HeaderValue>,
-    ) = if wants_zstd && has_compressed {
-        (
-            page.body_zstd.clone().expect("checked has_compressed"),
+    ) = match page.body_zstd.as_ref().filter(|_| wants_zstd) {
+        Some(zstd_body) => (
+            zstd_body.clone(),
             Some("zstd"),
             page.content_length_zstd.clone(),
-        )
-    } else {
-        (page.body.clone(), None, Some(page.content_length.clone()))
+        ),
+        None => (page.body.clone(), None, Some(page.content_length.clone())),
     };
 
     let mut resp = Response::new(axum::body::Body::from(body_bytes));
@@ -273,7 +272,7 @@ where
     if !validate_ws_origin(&headers, &ws_policy.origin_policy) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Ok(permit) = ws_sem.clone().try_acquire_owned() else {
+    let Ok(permit) = ws_sem.try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     ws.max_message_size(WS_MAX_MESSAGE_SIZE)
@@ -755,7 +754,11 @@ mod tests {
                         tx.send(()).expect("pending tx send");
                     }
                 }
-                _ => {}
+                Message::Text(_)
+                | Message::Binary(_)
+                | Message::Ping(_)
+                | Message::Pong(_)
+                | Message::Close(_) => {}
             }
             Ok(())
         }
@@ -810,7 +813,7 @@ mod tests {
                 .ok()
                 .and_then(|mut guard| guard.take())
             {
-                tx.send(()).ok();
+                let _stall_signal_sent = tx.send(());
             }
             rx
         }
@@ -869,7 +872,9 @@ mod tests {
         let state = ProjectionState::from_arc(source);
 
         let sem = Arc::new(Semaphore::new(1));
-        let permit = sem.clone().try_acquire_owned().expect("acquire permit");
+        let permit = Arc::clone(&sem)
+            .try_acquire_owned()
+            .expect("acquire permit");
         assert_eq!(sem.available_permits(), 0);
 
         let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();

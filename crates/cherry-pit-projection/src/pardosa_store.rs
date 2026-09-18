@@ -58,6 +58,10 @@ fn to_bounded_name(name: &str) -> ProjectionResult<ProjectionNameStr> {
     ProjectionNameStr::new(name).map_err(|e| ProjectionError::Infrastructure(Box::new(e)))
 }
 
+fn clear_component_if_removable(path: &Path) {
+    drop(std::fs::remove_file(path));
+}
+
 fn encode_snapshot<P: Serialize>(projection: &P) -> ProjectionResult<SnapshotBytesDto> {
     let json =
         serde_json::to_vec(projection).map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
@@ -141,8 +145,8 @@ impl<P> PardosaProjectionStore<P> {
     /// create the backing container.
     pub fn create_pgno(path: &Path, projection_name: impl Into<String>) -> ProjectionResult<Self> {
         let adapter = FileStorageAdapter::new(path);
-        let _ = std::fs::remove_file(adapter.meta_path());
-        let _ = std::fs::remove_file(adapter.pgno_path());
+        clear_component_if_removable(adapter.meta_path());
+        clear_component_if_removable(adapter.pgno_path());
         let claim = default_claim(1);
         let session = adapter.create(&claim).map_err(to_infra)?;
         Ok(Self {
@@ -510,6 +514,38 @@ mod tests {
 
     fn seq(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("non-zero sequence")
+    }
+
+    #[test]
+    fn create_pgno_surfaces_error_when_a_component_survives_removal() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("counter_view.pgno");
+        let meta = FileStorageAdapter::new(&path).meta_path().to_path_buf();
+        std::fs::create_dir(&meta).expect("plant a directory where the metadata sibling belongs");
+        assert!(
+            meta.is_dir(),
+            "precondition: the planted component must be present before create_pgno runs"
+        );
+
+        let outcome = PardosaProjectionStore::<CounterView>::create_pgno(&path, "counter_view");
+
+        let Err(ProjectionError::Infrastructure(source)) = outcome else {
+            panic!(
+                "a component surviving the discarded removal must surface as Infrastructure, never as a successful reopen of stale state"
+            );
+        };
+        let failure = source
+            .downcast_ref::<pardosa::store::OperationFailure>()
+            .expect("create must preserve the native pardosa failure");
+        assert_eq!(
+            failure.condition(),
+            &pardosa::store::FailureCondition::StoreAlreadyExists,
+            "a surviving component must fail native create admission"
+        );
+        assert!(
+            meta.is_dir(),
+            "the surviving component must still be present, so the refusal came from it rather than from a later cleanup"
+        );
     }
 
     fn temp_pgno_path() -> tempfile::TempPath {

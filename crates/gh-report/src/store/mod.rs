@@ -89,8 +89,10 @@ enum StorageBackend {
 
 struct StoreInner<E> {
     backend: StorageBackend,
-    cached: Mutex<Vec<(bool, [u8; 16], E)>>,
+    cached: Mutex<CachedEvents<E>>,
 }
+
+type CachedEvents<E> = Vec<(bool, [u8; 16], E)>;
 
 fn verify_schema_descriptor<E: PardosaSchema>(
     actual: Option<&SchemaDescriptor>,
@@ -111,6 +113,10 @@ fn verify_schema_descriptor<E: PardosaSchema>(
 }
 
 impl<E: PardosaSchema> StoreInner<E> {
+    fn lock_cached(&self) -> Result<std::sync::MutexGuard<'_, CachedEvents<E>>, StoreError> {
+        self.cached.lock().map_err(|_| StoreError::Poisoned)
+    }
+
     fn create_pgno(path: &Path, label: &'static str) -> Result<Self, StoreError> {
         let adapter = FileStorageAdapter::new(path);
         let claim = default_claim(1, label);
@@ -177,7 +183,7 @@ impl<E: PardosaSchema> StoreInner<E> {
             let event = E::decode_payload(&env.payload)?;
             cached.push((env.header.detached, env.header.fiber_id, event));
         }
-        *self.cached.lock().map_err(|_| StoreError::Poisoned)? = cached;
+        *self.lock_cached()? = cached;
         Ok(())
     }
 
@@ -200,7 +206,7 @@ impl<E: PardosaSchema> StoreInner<E> {
             let event = E::decode_payload(&env.payload)?;
             cached.push((env.header.detached, env.header.fiber_id, event));
         }
-        *self.cached.lock().map_err(|_| StoreError::Poisoned)? = cached;
+        *self.lock_cached()? = cached;
         Ok(())
     }
 
@@ -236,10 +242,7 @@ impl<E: PardosaSchema> StoreInner<E> {
             }
         }
 
-        self.cached
-            .lock()
-            .map_err(|_| StoreError::Poisoned)?
-            .push((false, fiber_id, event));
+        self.lock_cached()?.push((false, fiber_id, event));
         Ok(())
     }
 
@@ -271,10 +274,7 @@ impl<E: PardosaSchema> StoreInner<E> {
             }
         }
 
-        self.cached
-            .lock()
-            .map_err(|_| StoreError::Poisoned)?
-            .push((true, fiber_id, event));
+        self.lock_cached()?.push((true, fiber_id, event));
         Ok(())
     }
 
@@ -282,7 +282,7 @@ impl<E: PardosaSchema> StoreInner<E> {
     where
         E: Clone,
     {
-        let cached = self.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        let cached = self.lock_cached()?;
         Ok(cached
             .iter()
             .map(|(detached, _, event)| (*detached, event.clone()))
@@ -294,7 +294,7 @@ impl<E: PardosaSchema> StoreInner<E> {
         init: R,
         mut fold: impl FnMut(&mut R, bool, &E),
     ) -> Result<R, StoreError> {
-        let cached = self.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        let cached = self.lock_cached()?;
         let mut acc = init;
         for (detached, _, event) in cached.iter() {
             fold(&mut acc, *detached, event);
@@ -307,7 +307,7 @@ impl<E: PardosaSchema> StoreInner<E> {
         init: R,
         mut fold: impl FnMut(&mut R, &E),
     ) -> Result<R, StoreError> {
-        let cached = self.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        let cached = self.lock_cached()?;
         let mut acc = init;
         for (detached, _, event) in cached.iter() {
             if !*detached {
@@ -321,7 +321,7 @@ impl<E: PardosaSchema> StoreInner<E> {
     where
         E: Clone,
     {
-        let cached = self.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        let cached = self.lock_cached()?;
         let mut latest: HashMap<[u8; 16], (String, E)> = HashMap::new();
         for (detached, fiber_id, event) in cached.iter() {
             if *detached {
@@ -446,7 +446,7 @@ impl NativeStore {
     /// # Errors
     /// Returns [`StoreError::Poisoned`] if the store cache lock is poisoned.
     pub fn events_with_fibers(&self) -> Result<Vec<(bool, [u8; 16], DomainEvent)>, StoreError> {
-        let cached = self.inner.cached.lock().map_err(|_| StoreError::Poisoned)?;
+        let cached = self.inner.lock_cached()?;
         Ok(cached.clone())
     }
 

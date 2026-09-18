@@ -38,9 +38,9 @@ Operational recovery procedures live at
 gateway, projection, app, web, work-queue, storage primitives), with durable
 events persisted through the modern `pardosa` event-store library (version 0.5.5,
 consumed from [`https://github.com/acje/pardosa`](https://github.com/acje/pardosa)
-governed by `docs/spec/pardosa-1.0.md`). `adr-srv` is the governance plane that
-keeps the ADR corpus this workspace is built against internally consistent,
-together with `adr-fmt` (consumed from canonical upstream, not a member here);
+governed by `docs/spec/pardosa-1.0.md`). `adr-fmt` (consumed from canonical
+upstream, not a member here) keeps the ADR corpus this workspace is built
+against internally consistent;
 `comment-free` enforces the workspace's no-`//`-comments rule and is
 likewise consumed from canonical upstream rather than built here.
 Why the substrate is developed here as a first-class concern, rather than only as
@@ -60,15 +60,13 @@ restate it.
   Consumed from canonical upstream
   [`Mattilsynet/adr-fmt`](https://github.com/Mattilsynet/adr-fmt); not a
   member of this workspace.
-- **`adr-srv`** — GraphQL service over a projection of the ADR corpus.
-  See [`crates/adr-srv/`](crates/adr-srv/).
 - **`comment-free`** — doc-lint tool enforcing the fleet-wide
   no-`//`-comments rule on Rust source. Consumed from canonical upstream
   [`acje/comment-free`](https://github.com/acje/comment-free) as an
   installed binary; not a member of this workspace.
 - **ADR corpus** at [`docs/adr/`](docs/adr/). Two domains are actively
   edited: `adr-fmt/` (prefix `AFM`) governs the validator; `cherry/`
-  (prefix `CHE`) governs cherry-pit, adr-srv, and gh-report.
+  (prefix `CHE`) governs cherry-pit and gh-report.
   Foundation domains (`ground`, `common`, `rust`, `security`, `flow`)
   supply cross-cutting principles applied to all crates.
 

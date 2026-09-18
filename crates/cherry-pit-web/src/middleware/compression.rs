@@ -28,7 +28,7 @@ pub fn compute_etag(body: &[u8]) -> HeaderValue {
     let hash = Sha256::digest(body);
     let mut etag_str = String::with_capacity(36);
     etag_str.push_str("W/\"");
-    for b in &hash[..16] {
+    for b in hash.iter().take(16) {
         write!(etag_str, "{b:02x}").expect("hex write to String is infallible");
     }
     etag_str.push('"');
@@ -113,12 +113,8 @@ pub(crate) fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
 
         let quality = params
             .and_then(|p| {
-                p.split(';').find_map(|param| {
-                    let param = param.trim();
-                    param
-                        .strip_prefix("q=")
-                        .and_then(|q| q.trim().parse::<f32>().ok())
-                })
+                p.split(';')
+                    .find_map(|param| param.trim().strip_prefix("q=")?.trim().parse::<f32>().ok())
             })
             .unwrap_or(1.0);
 
@@ -146,6 +142,19 @@ mod tests {
         let s = etag.to_str().unwrap();
         assert!(s.starts_with("W/\""));
         assert!(s.ends_with('"'));
+    }
+
+    #[test]
+    fn etag_is_visible_ascii_header() {
+        for body in [b"".as_slice(), &[0u8; 64], &[0xFFu8; 64], b"hello world"] {
+            let etag = compute_etag(body);
+            let rendered = etag.to_str().expect("ETag is ASCII");
+            assert_eq!(rendered.len(), 36, "W/\" + 32 hex chars + \"");
+            assert!(
+                rendered.bytes().all(|b| (0x21..=0x7E).contains(&b)),
+                "only visible ASCII reaches HeaderValue::from_str"
+            );
+        }
     }
 
     #[test]

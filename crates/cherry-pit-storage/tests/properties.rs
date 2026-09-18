@@ -73,7 +73,7 @@ proptest! {
         let mut reversed = pairs.clone();
         reversed.reverse();
         let backward = object_from_pairs(&reversed);
-        let mut shuffled = pairs.clone();
+        let mut shuffled = pairs;
         let len = shuffled.len();
         if len > 1 {
             let mut state = seed;

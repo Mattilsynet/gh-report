@@ -19,7 +19,6 @@ const LIBRARY_CRATES: &[&str] = &[
     "crates/cherry-pit-web",
     "crates/cherry-pit-wq",
     "crates/gh-report",
-    "crates/adr-srv",
 ];
 
 const HELP_TEXT: &str =

@@ -52,7 +52,10 @@ async fn fanout_under_concurrent_publishes() {
     for i in 1..=N {
         let bus_c = Arc::clone(&bus);
         handles.push(tokio::spawn(async move {
-            bus_c.publish(&[env(i as u64)]).await.unwrap();
+            bus_c
+                .publish(&[env(u64::try_from(i).expect("loop index fits u64"))])
+                .await
+                .unwrap();
         }));
     }
     for h in handles {
@@ -61,7 +64,7 @@ async fn fanout_under_concurrent_publishes() {
 
     let mut got = received.lock().unwrap().clone();
     got.sort_unstable();
-    let expected: Vec<u64> = (1..=N as u64).collect();
+    let expected: Vec<u64> = (1..=u64::try_from(N).expect("N fits u64")).collect();
     assert_eq!(got, expected, "every published envelope must reach handler");
 }
 
@@ -83,15 +86,19 @@ async fn multi_handler_fanout_under_concurrent_publishes() {
     for i in 1..=N {
         let bus_c = Arc::clone(&bus);
         handles.push(tokio::spawn(async move {
-            bus_c.publish(&[env(i as u64)]).await.unwrap();
+            bus_c
+                .publish(&[env(u64::try_from(i).expect("loop index fits u64"))])
+                .await
+                .unwrap();
         }));
     }
     for h in handles {
         h.await.unwrap();
     }
 
-    assert_eq!(*count_a.lock().unwrap(), N as u64);
-    assert_eq!(*count_b.lock().unwrap(), N as u64);
+    let expected_per_handler = u64::try_from(N).expect("N fits u64");
+    assert_eq!(*count_a.lock().unwrap(), expected_per_handler);
+    assert_eq!(*count_b.lock().unwrap(), expected_per_handler);
 }
 
 /// Regression: a handler that re-enters the bus to register another

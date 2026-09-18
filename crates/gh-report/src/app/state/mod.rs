@@ -154,6 +154,7 @@ use crate::event::{
     OrphanAttributionInputs, TeamMemberEvent, TeamMemberRoleEvent, TeamRosterStatusEvent,
     TeamStateCaptured, team_domain_key,
 };
+use crate::projection::EvidenceProjectionResponse;
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 const STYLESHEET: &str = include_str!("../../../templates/style.css");
@@ -617,8 +618,16 @@ impl AppState {
                 projection,
                 crate::projection::EvidenceProjectionQuery::Len,
             ) {
-                crate::projection::EvidenceProjectionResponse::Len(len) => len,
-                _ => 0,
+                EvidenceProjectionResponse::Len(len) => len,
+                EvidenceProjectionResponse::One(_)
+                | EvidenceProjectionResponse::Contains(_)
+                | EvidenceProjectionResponse::Many(_)
+                | EvidenceProjectionResponse::Deleted(_)
+                | EvidenceProjectionResponse::KeyNamePairs(_)
+                | EvidenceProjectionResponse::OrgState(_)
+                | EvidenceProjectionResponse::TeamRoster(_)
+                | EvidenceProjectionResponse::TeamRostersSnapshot(_)
+                | EvidenceProjectionResponse::TeamGhostRostersSnapshot(_) => 0,
             }
         })
     }
@@ -649,8 +658,16 @@ impl AppState {
                 projection,
                 crate::projection::EvidenceProjectionQuery::ByKey(key.to_string()),
             ) {
-                crate::projection::EvidenceProjectionResponse::One(evidence) => *evidence,
-                _ => None,
+                EvidenceProjectionResponse::One(evidence) => *evidence,
+                EvidenceProjectionResponse::Len(_)
+                | EvidenceProjectionResponse::Contains(_)
+                | EvidenceProjectionResponse::Many(_)
+                | EvidenceProjectionResponse::Deleted(_)
+                | EvidenceProjectionResponse::KeyNamePairs(_)
+                | EvidenceProjectionResponse::OrgState(_)
+                | EvidenceProjectionResponse::TeamRoster(_)
+                | EvidenceProjectionResponse::TeamRostersSnapshot(_)
+                | EvidenceProjectionResponse::TeamGhostRostersSnapshot(_) => None,
             }
         })
     }
@@ -666,8 +683,16 @@ impl AppState {
                 projection,
                 crate::projection::EvidenceProjectionQuery::Contains(key.to_string()),
             ) {
-                crate::projection::EvidenceProjectionResponse::Contains(contains) => contains,
-                _ => false,
+                EvidenceProjectionResponse::Contains(contains) => contains,
+                EvidenceProjectionResponse::One(_)
+                | EvidenceProjectionResponse::Len(_)
+                | EvidenceProjectionResponse::Many(_)
+                | EvidenceProjectionResponse::Deleted(_)
+                | EvidenceProjectionResponse::KeyNamePairs(_)
+                | EvidenceProjectionResponse::OrgState(_)
+                | EvidenceProjectionResponse::TeamRoster(_)
+                | EvidenceProjectionResponse::TeamRostersSnapshot(_)
+                | EvidenceProjectionResponse::TeamGhostRostersSnapshot(_) => false,
             }
         })
     }
@@ -685,8 +710,16 @@ impl AppState {
                 projection,
                 crate::projection::EvidenceProjectionQuery::SortedSnapshot,
             ) {
-                crate::projection::EvidenceProjectionResponse::Many(evidence) => evidence,
-                _ => Vec::new(),
+                EvidenceProjectionResponse::Many(evidence) => evidence,
+                EvidenceProjectionResponse::One(_)
+                | EvidenceProjectionResponse::Len(_)
+                | EvidenceProjectionResponse::Contains(_)
+                | EvidenceProjectionResponse::Deleted(_)
+                | EvidenceProjectionResponse::KeyNamePairs(_)
+                | EvidenceProjectionResponse::OrgState(_)
+                | EvidenceProjectionResponse::TeamRoster(_)
+                | EvidenceProjectionResponse::TeamRostersSnapshot(_)
+                | EvidenceProjectionResponse::TeamGhostRostersSnapshot(_) => Vec::new(),
             }
         })
     }
@@ -705,8 +738,16 @@ impl AppState {
                 projection,
                 crate::projection::EvidenceProjectionQuery::KeyNameSnapshot,
             ) {
-                crate::projection::EvidenceProjectionResponse::KeyNamePairs(pairs) => pairs,
-                _ => Vec::new(),
+                EvidenceProjectionResponse::KeyNamePairs(pairs) => pairs,
+                EvidenceProjectionResponse::One(_)
+                | EvidenceProjectionResponse::Len(_)
+                | EvidenceProjectionResponse::Contains(_)
+                | EvidenceProjectionResponse::Many(_)
+                | EvidenceProjectionResponse::Deleted(_)
+                | EvidenceProjectionResponse::OrgState(_)
+                | EvidenceProjectionResponse::TeamRoster(_)
+                | EvidenceProjectionResponse::TeamRostersSnapshot(_)
+                | EvidenceProjectionResponse::TeamGhostRostersSnapshot(_) => Vec::new(),
             }
         })
     }
@@ -736,8 +777,16 @@ impl AppState {
                 projection,
                 crate::projection::EvidenceProjectionQuery::DeletedSnapshot,
             ) {
-                crate::projection::EvidenceProjectionResponse::Deleted(deleted) => deleted,
-                _ => Vec::new(),
+                EvidenceProjectionResponse::Deleted(deleted) => deleted,
+                EvidenceProjectionResponse::One(_)
+                | EvidenceProjectionResponse::Len(_)
+                | EvidenceProjectionResponse::Contains(_)
+                | EvidenceProjectionResponse::Many(_)
+                | EvidenceProjectionResponse::KeyNamePairs(_)
+                | EvidenceProjectionResponse::OrgState(_)
+                | EvidenceProjectionResponse::TeamRoster(_)
+                | EvidenceProjectionResponse::TeamRostersSnapshot(_)
+                | EvidenceProjectionResponse::TeamGhostRostersSnapshot(_) => Vec::new(),
             }
         })
     }
@@ -765,10 +814,16 @@ impl AppState {
                 projection,
                 crate::projection::EvidenceProjectionQuery::TeamRostersSnapshot,
             ) {
-                crate::projection::EvidenceProjectionResponse::TeamRostersSnapshot(rosters) => {
-                    rosters
-                }
-                _ => Vec::new(),
+                EvidenceProjectionResponse::TeamRostersSnapshot(rosters) => rosters,
+                EvidenceProjectionResponse::One(_)
+                | EvidenceProjectionResponse::Len(_)
+                | EvidenceProjectionResponse::Contains(_)
+                | EvidenceProjectionResponse::Many(_)
+                | EvidenceProjectionResponse::Deleted(_)
+                | EvidenceProjectionResponse::KeyNamePairs(_)
+                | EvidenceProjectionResponse::OrgState(_)
+                | EvidenceProjectionResponse::TeamRoster(_)
+                | EvidenceProjectionResponse::TeamGhostRostersSnapshot(_) => Vec::new(),
             }
         })
     }
@@ -784,10 +839,16 @@ impl AppState {
                 projection,
                 crate::projection::EvidenceProjectionQuery::TeamGhostRostersSnapshot,
             ) {
-                crate::projection::EvidenceProjectionResponse::TeamGhostRostersSnapshot(
-                    rosters,
-                ) => rosters,
-                _ => Vec::new(),
+                EvidenceProjectionResponse::TeamGhostRostersSnapshot(rosters) => rosters,
+                EvidenceProjectionResponse::One(_)
+                | EvidenceProjectionResponse::Len(_)
+                | EvidenceProjectionResponse::Contains(_)
+                | EvidenceProjectionResponse::Many(_)
+                | EvidenceProjectionResponse::Deleted(_)
+                | EvidenceProjectionResponse::KeyNamePairs(_)
+                | EvidenceProjectionResponse::OrgState(_)
+                | EvidenceProjectionResponse::TeamRoster(_)
+                | EvidenceProjectionResponse::TeamRostersSnapshot(_) => Vec::new(),
             }
         })
     }
