@@ -1893,10 +1893,17 @@ impl AppState {
     /// publish (CHE-0024:R1): the projection is folded only after the
     /// store append succeeds.
     ///
+    /// The two appends are ordered, not atomic (ghr-7qm12.16). A failed
+    /// primary append short-circuits: the dedicated append and the
+    /// projection fold are both skipped. A failed dedicated append is
+    /// returned to the caller with the already-durable primary append
+    /// retained — no rollback is performed or claimed — and no
+    /// projection fold.
+    ///
     /// # Errors
     ///
-    /// Returns a persistence error when native conversion or store append
-    /// fails.
+    /// Returns a persistence error when native conversion, the primary
+    /// store append, or the dedicated store append fails.
     ///
     /// # Panics
     ///
@@ -1913,10 +1920,12 @@ impl AppState {
         let event = team_state_event(org, roster, fetched_at, org_membership_fetch_status)?;
         let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
             .expect("team_state_event never produces empty org/team_slug");
-        let _ = self.event_store.record(
-            &team_key,
-            NativeDomainEvent::TeamStateCaptured(event.clone()),
-        );
+        self.event_store
+            .record(
+                &team_key,
+                NativeDomainEvent::TeamStateCaptured(event.clone()),
+            )
+            .map_err(native_store_persistence)?;
         self.team_event_store
             .record(&team_key, event.clone())
             .map_err(native_store_persistence)?;
@@ -1931,10 +1940,17 @@ impl AppState {
     /// projection stale until restart). Same OCC fence and
     /// persist-then-publish ordering as [`Self::record_team`].
     ///
+    /// The two detaches are ordered, not atomic (ghr-7qm12.37). A failed
+    /// primary detach short-circuits: the dedicated detach and the
+    /// projection removal are both skipped. A failed dedicated detach is
+    /// returned to the caller with the already-durable primary detach
+    /// retained — no rollback is performed or claimed — and no projection
+    /// removal.
+    ///
     /// # Errors
     ///
-    /// Returns a persistence error when native conversion or store detach
-    /// fails.
+    /// Returns a persistence error when native conversion, the primary
+    /// store detach, or the dedicated store detach fails.
     ///
     /// # Panics
     ///
@@ -1952,10 +1968,12 @@ impl AppState {
         let event = team_state_event(org, &tombstone, fetched_at, org_membership_fetch_status)?;
         let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
             .expect("team_state_event never produces empty org/team_slug");
-        let _ = self.event_store.detach(
-            &team_key,
-            NativeDomainEvent::TeamStateCaptured(event.clone()),
-        );
+        self.event_store
+            .detach(
+                &team_key,
+                NativeDomainEvent::TeamStateCaptured(event.clone()),
+            )
+            .map_err(native_store_persistence)?;
         self.team_event_store
             .detach(&team_key, event.clone())
             .map_err(native_store_persistence)?;
@@ -2027,18 +2045,26 @@ impl AppState {
 
     /// Record a live org snapshot in the native org store.
     ///
+    /// The two appends are ordered, not atomic (ghr-7qm12.37). A failed
+    /// primary append short-circuits: the dedicated append and the
+    /// projection fold are both skipped. A failed dedicated append is
+    /// returned to the caller with the already-durable primary append
+    /// retained — no rollback is performed or claimed — and no projection
+    /// fold.
+    ///
     /// # Errors
     ///
-    /// Returns a persistence error when native conversion or store append fails.
+    /// Returns a persistence error when native conversion, the primary
+    /// store append, or the dedicated store append fails.
     pub fn record_org(
         &self,
         snapshot: crate::domain::evidence::OrgStateSnapshot,
     ) -> Result<(), PersistenceError> {
         let event = OrgStateCaptured::try_from(snapshot).map_err(|e| conversion_persistence(&e))?;
         let org_key = event.assessment_metadata.organization.as_str().to_string();
-        let _ = self
-            .event_store
-            .record(&org_key, NativeDomainEvent::OrgStateCaptured(event.clone()));
+        self.event_store
+            .record(&org_key, NativeDomainEvent::OrgStateCaptured(event.clone()))
+            .map_err(native_store_persistence)?;
         self.org_event_store
             .record(&org_key, event.clone())
             .map_err(native_store_persistence)?;
@@ -4142,6 +4168,479 @@ accounts: {
             failure.response,
             crate::app::write_policy::WriteResponse::Fatal,
             "OCC conflict must abort the run, never retry in-band"
+        );
+    }
+
+    fn corrupt_pgno_backing_file(path: &Path) {
+        assert!(
+            path.exists(),
+            "backing store {} must exist before the failure seam is planted",
+            path.display()
+        );
+        std::fs::write(path, b"corrupt-not-a-pgno-container")
+            .expect("overwrite the backing store so the next append fails for real");
+    }
+
+    fn team_events_in_primary_store(state: &AppState, team_key: &str) -> usize {
+        state
+            .event_store
+            .events_with_fibers()
+            .expect("read primary store cache")
+            .iter()
+            .filter(|(_, _, event)| match event {
+                NativeDomainEvent::TeamStateCaptured(team) => {
+                    crate::event::team_domain_key(team.org.as_str(), team.team_slug.as_str())
+                        .is_ok_and(|key| key == team_key)
+                }
+                _ => false,
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn record_team_primary_failure_propagates_and_skips_dedicated_and_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+
+        corrupt_pgno_backing_file(&events_dir.join("events.pgno"));
+
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        let error = state
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect_err(
+                "a failed primary team append must surface as a persistence error, \
+                 not be discarded while the dedicated write proceeds",
+            );
+        assert!(
+            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            "primary append failure must carry a concrete persistence classification, got {error:?}"
+        );
+
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+        let dedicated_count = state
+            .team_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold dedicated team events");
+        assert_eq!(
+            dedicated_count, 0,
+            "the dedicated team append must be skipped when the primary append failed"
+        );
+        assert!(
+            !state.lock_projection().team_rosters.contains_key(&team_key),
+            "persist-then-publish: no projection fold may follow a failed primary append"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_team_dedicated_failure_returns_error_preserving_primary_without_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+
+        corrupt_pgno_backing_file(&events_dir.join("team-events.pgno"));
+
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        let error = state
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect_err("a failed dedicated team append must surface as a persistence error");
+        assert!(
+            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            "dedicated append failure must carry a concrete persistence classification, got {error:?}"
+        );
+
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+        assert_eq!(
+            team_events_in_primary_store(&state, &team_key),
+            1,
+            "the already-durable primary append is retained: record_team is not atomic \
+             and claims no rollback of the primary write"
+        );
+        assert!(
+            !state.lock_projection().team_rosters.contains_key(&team_key),
+            "no projection fold may follow a failed dedicated append"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_team_success_appends_both_stores_and_publishes_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        state
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("ordinary success path is unchanged by primary-error propagation");
+
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+        assert_eq!(
+            team_events_in_primary_store(&state, &team_key),
+            1,
+            "success still appends the team event to the primary store"
+        );
+        assert_eq!(
+            state
+                .team_event_store
+                .fold_events(0_usize, |acc, _| *acc += 1)
+                .expect("fold dedicated team events"),
+            1,
+            "success still appends the team event to the dedicated store"
+        );
+        assert!(
+            state.lock_projection().team_rosters.contains_key(&team_key),
+            "success still publishes the roster into the resident projection"
+        );
+    }
+
+    fn detached_team_events_in_primary_store(state: &AppState, team_key: &str) -> usize {
+        state
+            .event_store
+            .events_with_fibers()
+            .expect("read primary store cache")
+            .iter()
+            .filter(|(detached, _, event)| {
+                *detached
+                    && match event {
+                        NativeDomainEvent::TeamStateCaptured(team) => {
+                            crate::event::team_domain_key(
+                                team.org.as_str(),
+                                team.team_slug.as_str(),
+                            )
+                            .is_ok_and(|key| key == team_key)
+                        }
+                        _ => false,
+                    }
+            })
+            .count()
+    }
+
+    struct PersistedFiberMarkers {
+        envelopes: usize,
+        detached_markers: usize,
+    }
+
+    fn persisted_fiber_markers(pgno_path: &Path, domain_key: &str) -> PersistedFiberMarkers {
+        let fiber_id = derive_fiber_id(domain_key);
+        let adapter = FileStorageAdapter::new(pgno_path);
+        let mut reader = adapter
+            .open_read()
+            .expect("open the persisted store for reading");
+        let envelopes = reader
+            .read_all_envelopes()
+            .expect("read the persisted envelopes");
+        let mut markers = PersistedFiberMarkers {
+            envelopes: 0,
+            detached_markers: 0,
+        };
+        for envelope in envelopes
+            .iter()
+            .filter(|envelope| envelope.header.fiber_id == fiber_id)
+        {
+            markers.envelopes += 1;
+            if envelope.header.detached {
+                markers.detached_markers += 1;
+            }
+        }
+        markers
+    }
+
+    fn org_events_in_primary_store(state: &AppState, organization: &str) -> usize {
+        state
+            .event_store
+            .events_with_fibers()
+            .expect("read primary store cache")
+            .iter()
+            .filter(|(_, _, event)| match event {
+                NativeDomainEvent::OrgStateCaptured(org) => {
+                    org.assessment_metadata.organization.as_str() == organization
+                }
+                _ => false,
+            })
+            .count()
+    }
+
+    fn org_snapshot_fixture() -> crate::domain::evidence::OrgStateSnapshot {
+        let mut metadata = crate::test_fixtures::make_metadata();
+        metadata.organization = "TestOrg".to_string();
+        crate::domain::evidence::OrgStateSnapshot {
+            archived_repos: 3,
+            assessment_metadata: metadata,
+            alert_summary: empty_org_summary(),
+        }
+    }
+
+    async fn state_with_seeded_team(
+        events_dir: &Path,
+    ) -> (Arc<AppState>, crate::domain::metrics::TeamRoster) {
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        state
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("seed the team fiber before the detach seam is planted");
+        (state, roster)
+    }
+
+    #[tokio::test]
+    async fn detach_team_primary_failure_propagates_and_skips_dedicated_and_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let (state, roster) = state_with_seeded_team(&events_dir).await;
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+
+        corrupt_pgno_backing_file(&events_dir.join("events.pgno"));
+
+        let error = state
+            .detach_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T01:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect_err(
+                "a failed primary team detach must surface as a persistence error, \
+                 not be discarded while the dedicated detach proceeds",
+            );
+        assert!(
+            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            "primary detach failure must carry a concrete persistence classification, got {error:?}"
+        );
+
+        assert_eq!(
+            state
+                .team_event_store
+                .fold_events(0_usize, |acc, _| *acc += 1)
+                .expect("fold dedicated team events"),
+            1,
+            "the dedicated team detach must be skipped when the primary detach failed \
+             (only the seeded record_team event remains)"
+        );
+        assert!(
+            state.lock_projection().team_rosters.contains_key(&team_key),
+            "persist-then-publish: no projection removal may follow a failed primary detach"
+        );
+        assert_eq!(
+            detached_team_events_in_primary_store(&state, &team_key),
+            0,
+            "a failed primary detach leaves no detach-marked tombstone behind"
+        );
+        let dedicated = persisted_fiber_markers(&events_dir.join("team-events.pgno"), &team_key);
+        assert_eq!(
+            dedicated.envelopes, 1,
+            "the dedicated team file still holds exactly the seeded record_team envelope"
+        );
+        assert_eq!(
+            dedicated.detached_markers, 0,
+            "the skipped dedicated detach must leave no persisted detach marker on the team fiber: \
+             a fold count alone cannot discriminate a skipped detach from a successful one"
+        );
+    }
+
+    #[tokio::test]
+    async fn detach_team_dedicated_failure_returns_error_preserving_primary_detach() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let (state, roster) = state_with_seeded_team(&events_dir).await;
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+
+        corrupt_pgno_backing_file(&events_dir.join("team-events.pgno"));
+
+        let error = state
+            .detach_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T01:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect_err("a failed dedicated team detach must surface as a persistence error");
+        assert!(
+            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            "dedicated detach failure must carry a concrete persistence classification, got {error:?}"
+        );
+
+        assert_eq!(
+            team_events_in_primary_store(&state, &team_key),
+            2,
+            "the already-durable primary detach is retained alongside the seeded record: \
+             detach_team is not atomic and claims no rollback of the primary write"
+        );
+        assert!(
+            state.lock_projection().team_rosters.contains_key(&team_key),
+            "no projection removal may follow a failed dedicated detach"
+        );
+        assert_eq!(
+            detached_team_events_in_primary_store(&state, &team_key),
+            1,
+            "the retained primary write must be the detach-marked tombstone itself, \
+             not merely a second team event of any kind"
+        );
+    }
+
+    #[tokio::test]
+    async fn detach_team_success_detaches_both_stores_and_removes_projection_roster() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let (state, roster) = state_with_seeded_team(&events_dir).await;
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+
+        state
+            .detach_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T01:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("ordinary detach success is unchanged by primary-error propagation");
+
+        assert_eq!(
+            team_events_in_primary_store(&state, &team_key),
+            2,
+            "success still writes the detach event to the primary store"
+        );
+        assert!(
+            !state.lock_projection().team_rosters.contains_key(&team_key),
+            "success still removes the detached roster from the resident projection"
+        );
+        assert_eq!(
+            detached_team_events_in_primary_store(&state, &team_key),
+            1,
+            "success still writes a detach-marked tombstone event to the primary store"
+        );
+        let dedicated = persisted_fiber_markers(&events_dir.join("team-events.pgno"), &team_key);
+        assert_eq!(
+            dedicated.detached_markers, 1,
+            "success must persist a detach marker on the target team fiber in the dedicated store: \
+             replacing the dedicated detach with a successful no-op must fail this assertion"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_org_primary_failure_propagates_and_skips_dedicated_and_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+
+        corrupt_pgno_backing_file(&events_dir.join("events.pgno"));
+
+        let error = state.record_org(org_snapshot_fixture()).expect_err(
+            "a failed primary org append must surface as a persistence error, \
+             not be discarded while the dedicated write proceeds",
+        );
+        assert!(
+            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            "primary org append failure must carry a concrete persistence classification, got {error:?}"
+        );
+
+        assert_eq!(
+            org_count_of(&state),
+            0,
+            "the dedicated org append must be skipped when the primary append failed"
+        );
+        assert!(
+            state.lock_projection().org_state.is_none(),
+            "persist-then-publish: no projection fold may follow a failed primary org append"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_org_dedicated_failure_returns_error_preserving_primary_without_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+
+        corrupt_pgno_backing_file(&events_dir.join("org-events.pgno"));
+
+        let error = state
+            .record_org(org_snapshot_fixture())
+            .expect_err("a failed dedicated org append must surface as a persistence error");
+        assert!(
+            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            "dedicated org append failure must carry a concrete persistence classification, got {error:?}"
+        );
+
+        assert_eq!(
+            org_events_in_primary_store(&state, "TestOrg"),
+            1,
+            "the already-durable primary org append is retained: record_org is not atomic \
+             and claims no rollback of the primary write"
+        );
+        assert!(
+            state.lock_projection().org_state.is_none(),
+            "no projection fold may follow a failed dedicated org append"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_org_success_appends_both_stores_and_publishes_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+
+        state
+            .record_org(org_snapshot_fixture())
+            .expect("ordinary org success path is unchanged by primary-error propagation");
+
+        assert_eq!(
+            org_events_in_primary_store(&state, "TestOrg"),
+            1,
+            "success still appends the org event to the primary store"
+        );
+        assert_eq!(
+            org_count_of(&state),
+            1,
+            "success still appends the org event to the dedicated store"
+        );
+        assert!(
+            state.lock_projection().org_state.is_some(),
+            "success still publishes the org snapshot into the resident projection"
         );
     }
 
