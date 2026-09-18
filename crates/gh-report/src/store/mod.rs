@@ -175,6 +175,29 @@ impl<E: PardosaSchema> StoreInner<E> {
         Ok(())
     }
 
+    fn resync_from_authoritative(&self) -> Result<(), StoreError> {
+        let envelopes = match &self.backend {
+            StorageBackend::File(path) => {
+                let adapter = FileStorageAdapter::new(path);
+                let mut reader = adapter.open_read()?;
+                verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
+                reader.read_all_envelopes()?
+            }
+            StorageBackend::Nats(adapter) => {
+                let mut reader = adapter.open_read()?;
+                verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
+                reader.read_all_envelopes()?
+            }
+        };
+        let mut cached = Vec::with_capacity(envelopes.len());
+        for env in envelopes {
+            let event = E::decode_payload(&env.payload)?;
+            cached.push((env.header.detached, env.header.fiber_id, event));
+        }
+        *self.cached.lock().map_err(|_| StoreError::Poisoned)? = cached;
+        Ok(())
+    }
+
     fn record(&self, domain_key: &str, event: E) -> Result<(), StoreError> {
         let fiber_id = derive_fiber_id(domain_key);
         let mut payload = Vec::new();
@@ -375,6 +398,10 @@ impl NativeStore {
         self.inner.resync_pgno_from_authoritative(path)
     }
 
+    pub(crate) fn resync_from_authoritative(&self) -> Result<(), StoreError> {
+        self.inner.resync_from_authoritative()
+    }
+
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
         self.backend_reachable
@@ -509,6 +536,10 @@ impl NativeOrgStore {
         self.inner.resync_pgno_from_authoritative(path)
     }
 
+    pub(crate) fn resync_from_authoritative(&self) -> Result<(), StoreError> {
+        self.inner.resync_from_authoritative()
+    }
+
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
         self.backend_reachable
@@ -587,6 +618,10 @@ impl NativeTeamStore {
     /// Returns [`StoreError`] if reading or decoding from `path` fails.
     pub fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
         self.inner.resync_pgno_from_authoritative(path)
+    }
+
+    pub(crate) fn resync_from_authoritative(&self) -> Result<(), StoreError> {
+        self.inner.resync_from_authoritative()
     }
 
     #[must_use]
@@ -850,6 +885,246 @@ pub(crate) mod tests {
             1,
             "cache must be preserved on mismatched identity error"
         );
+    }
+
+    fn remove_artefact_at(target: &Path) {
+        let parent = target.parent().expect("target has a parent directory");
+        let stem = format!(
+            "{}.",
+            target
+                .file_stem()
+                .expect("target has a file stem")
+                .to_string_lossy()
+        );
+        for entry in std::fs::read_dir(parent).expect("read events dir") {
+            let entry = entry.expect("dir entry");
+            if entry.file_name().to_string_lossy().starts_with(&stem) {
+                std::fs::remove_file(entry.path()).expect("remove artefact file");
+            }
+        }
+    }
+
+    pub(crate) fn overwrite_with_mismatched_descriptor_store(target: &Path) {
+        remove_artefact_at(target);
+        let adapter = FileStorageAdapter::new(target);
+        let claim = default_claim(1, "mismatched");
+        let mut session = adapter.create(&claim).expect("create mismatched store");
+        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
+        session
+            .set_schema_descriptor(&mismatched_desc)
+            .expect("set mismatched descriptor");
+        session.sync().expect("sync mismatched descriptor");
+    }
+
+    pub(crate) fn overwrite_with_unadmitted_store(target: &Path) {
+        remove_artefact_at(target);
+        let adapter = FileStorageAdapter::new(target);
+        let claim = default_claim(1, "unadmitted");
+        let session = adapter.create(&claim).expect("create unadmitted store");
+        drop(session);
+    }
+
+    #[test]
+    fn resync_from_authoritative_preserves_its_own_cache_when_its_backend_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("owned.pgno");
+
+        let store = NativeStore::create_pgno(&path).expect("create valid store");
+        store
+            .record(
+                "repo-owned-1",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-owned-1"),
+                    repo_name: nes("repo-owned-1"),
+                    detected_at: ts(10),
+                },
+            )
+            .expect("seed a good cache before any failing refresh");
+        assert_eq!(store.events().expect("events").len(), 1);
+
+        overwrite_with_unadmitted_store(&path);
+        let err_unadmitted = store
+            .resync_from_authoritative()
+            .expect_err("backend-owned refresh of an unadmitted store must fail closed");
+        assert!(matches!(
+            err_unadmitted,
+            StoreError::Infrastructure(ref msg)
+                if msg == "missing schema descriptor in store metadata: refusing to open unadmitted store"
+        ));
+        assert_eq!(
+            store.events().expect("events").len(),
+            1,
+            "a failed backend-owned refresh must not replace this store's cache"
+        );
+
+        overwrite_with_mismatched_descriptor_store(&path);
+        let err_mismatched = store
+            .resync_from_authoritative()
+            .expect_err("backend-owned refresh of a mismatched store must fail closed");
+        assert!(matches!(
+            err_mismatched,
+            StoreError::Infrastructure(ref msg)
+                if msg.contains("schema descriptor identity mismatch: expected ")
+        ));
+        assert_eq!(
+            store.events().expect("events").len(),
+            1,
+            "a failed backend-owned refresh must not replace this store's cache"
+        );
+    }
+
+    #[test]
+    fn nats_resync_from_authoritative_preserves_cache_when_its_backend_is_unreachable() {
+        let Some(server) = TestNatsServer::spawn() else {
+            return;
+        };
+
+        let rt = std::sync::Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
+        );
+        let client = rt
+            .block_on(async_nats::connect(&server.url))
+            .expect("connect to live nats");
+        let stem = format!("test_nats_unreachable_{}", uuid::Uuid::now_v7());
+        let adapter =
+            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem, rt.clone());
+        let store = NativeStore::create_nats(adapter).expect("create nats store");
+        store
+            .record(
+                "repo-nats-cached",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-nats-cached"),
+                    repo_name: nes("repo-nats-cached"),
+                    detected_at: ts(40),
+                },
+            )
+            .expect("seed a good cache while the backend is reachable");
+        assert_eq!(store.events().expect("events").len(), 1);
+
+        drop(server);
+
+        let err = store
+            .resync_from_authoritative()
+            .expect_err("backend-owned refresh must fail when its own NATS backend is gone");
+        assert!(
+            !matches!(err, StoreError::Poisoned),
+            "an unreachable backend must surface as a backend error, got: {err:?}"
+        );
+        assert_eq!(
+            store.events().expect("events").len(),
+            1,
+            "a failed NATS refresh must not clear or replace this store's cache"
+        );
+    }
+
+    pub(crate) fn overwrite_with_valid_schema_but_undecodable_payload(target: &Path) {
+        remove_artefact_at(target);
+        let adapter = FileStorageAdapter::new(target);
+        let claim = default_claim(1, "decode-failure");
+        let mut session = adapter.create(&claim).expect("create store");
+        let desc = SchemaDescriptor::new(
+            DomainEvent::schema_version(),
+            DomainEvent::schema_descriptor(),
+        );
+        session
+            .set_schema_descriptor(&desc)
+            .expect("set the CORRECT descriptor so verification passes");
+        session.sync().expect("sync descriptor");
+        drop(session);
+
+        let mut decodable = Vec::new();
+        DomainEvent::RepositoryDeleted {
+            domain_key: nes("repo-decodes-fine"),
+            repo_name: nes("repo-decodes-fine"),
+            detected_at: ts(70),
+        }
+        .encode_payload(&mut decodable)
+        .expect("encode a genuinely valid payload");
+
+        let epoch = adapter.current_epoch().expect("current epoch");
+        let mut session = adapter.open_write(epoch).expect("open write");
+        let good_fiber = derive_fiber_id("repo-decodes-fine");
+        session.fiber(good_fiber).expect("good fiber");
+        session
+            .append_to_fiber(good_fiber, *uuid::Uuid::now_v7().as_bytes(), decodable)
+            .expect("append the decodable event first");
+        let bad_fiber = derive_fiber_id("repo-payload-is-garbage");
+        session.fiber(bad_fiber).expect("bad fiber");
+        session
+            .append_to_fiber(
+                bad_fiber,
+                *uuid::Uuid::now_v7().as_bytes(),
+                vec![0xFF_u8; 16],
+            )
+            .expect("append an undecodable payload after it");
+        session.sync().expect("sync appended envelopes");
+    }
+
+    #[test]
+    fn resync_from_authoritative_preserves_cache_when_a_payload_fails_to_decode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("decode.pgno");
+
+        let store = NativeStore::create_pgno(&path).expect("create valid store");
+        store
+            .record(
+                "repo-decode-seed",
+                DomainEvent::RepositoryDeleted {
+                    domain_key: nes("repo-decode-seed"),
+                    repo_name: nes("repo-decode-seed"),
+                    detected_at: ts(60),
+                },
+            )
+            .expect("seed a known good cache before the failing refresh");
+        let seeded = store.events().expect("events");
+        assert_eq!(seeded.len(), 1);
+
+        overwrite_with_valid_schema_but_undecodable_payload(&path);
+
+        let err = store
+            .resync_from_authoritative()
+            .expect_err("a payload that cannot be decoded must fail the refresh closed");
+        assert!(
+            !matches!(err, StoreError::Poisoned),
+            "the failure must come from decoding, not from a poisoned lock: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            !message.contains("schema descriptor"),
+            "this test must reach the payload decode loop, NOT stop at descriptor \
+             verification — descriptor rejection is already covered elsewhere and is not \
+             decode coverage: {message}"
+        );
+        assert!(
+            message.contains("UnknownVariantDiscriminant"),
+            "the failure must be the undecodable payload itself: {message}"
+        );
+
+        let preserved = store.events().expect("events after the failed refresh");
+        assert_eq!(
+            preserved.len(),
+            1,
+            "a decode failure must not publish a partial prefix, and must not clear the cache"
+        );
+        match &preserved[0].1 {
+            DomainEvent::RepositoryDeleted {
+                domain_key,
+                detected_at,
+                ..
+            } => {
+                assert_eq!(
+                    domain_key.as_str(),
+                    "repo-decode-seed",
+                    "the previous cache CONTENTS must survive unchanged; the decodable event \
+                     from the failing read must never be published"
+                );
+                assert_eq!(detected_at.as_nanos(), 60);
+            }
+            other => panic!("unexpected preserved event: {other:?}"),
+        }
     }
 
     fn nes<const MAX: usize>(s: &str) -> NonEmptyEventString<MAX> {
