@@ -982,4 +982,61 @@ mod tests {
             "non-conflict error must not fabricate a seq value: {parsed}"
         );
     }
+
+    #[tokio::test]
+    async fn malformed_member_page_does_not_erase_known_complete_roster() {
+        let (state, _dir) = test_state().await;
+        let team_key = team_domain_key("test-org", "platform").expect("derive team key");
+        let mut seeded = roster("@test-org/platform", "platform");
+        seeded.members.push(TeamMember {
+            login: "hubot".to_string(),
+            role: TeamMemberRole::Member,
+            in_org: None,
+        });
+        state
+            .record_team(
+                "test-org",
+                &seeded,
+                "2026-07-22T00:00:00Z",
+                crate::event::OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("seed existing complete roster");
+
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/teams"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"slug": "platform"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/platform/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "octocat"},
+                ["mallory", "member"]
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        run_team_refresh_tick(&state, &client, "2026-07-23T01:00:00Z")
+            .await
+            .expect("tick succeeds");
+
+        let projection = state.lock_projection();
+        let live = projection
+            .team_rosters
+            .get(&team_key)
+            .expect("known roster must survive an unreadable member page");
+        let mut live_logins: Vec<&str> = live.members.iter().map(|m| m.login.as_str()).collect();
+        live_logins.sort_unstable();
+        assert_eq!(
+            live_logins,
+            vec!["hubot", "octocat"],
+            "the seeded complete membership must be preserved, not replaced by a misread page"
+        );
+    }
 }

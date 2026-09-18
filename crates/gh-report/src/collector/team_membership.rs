@@ -223,30 +223,52 @@ fn failure_status(outcome: &ApiOutcome) -> TeamRosterStatus {
     }
 }
 
+enum WireEntry<T> {
+    Member(T),
+    NotAnObject,
+    Malformed(serde_json::Error),
+}
+
+fn member_entry<T: serde::de::DeserializeOwned>(item: &serde_json::Value) -> WireEntry<T> {
+    match item {
+        serde_json::Value::Object(_) => match serde_json::from_value::<T>(item.clone()) {
+            Ok(member) => WireEntry::Member(member),
+            Err(e) => WireEntry::Malformed(e),
+        },
+        _ => WireEntry::NotAnObject,
+    }
+}
+
+fn usable_login(login: String) -> Option<String> {
+    (!login.trim().is_empty()).then_some(login)
+}
+
 /// Parse a successful members-list `ApiOutcome` into logins paired with
-/// the role GitHub reported for each.
-///
-/// Entries that fail to parse as [`GhTeamMember`] are skipped and logged;
-/// they do not fail the whole fetch. A parsed entry whose role is absent
-/// or unrecognised yields [`TeamMemberRole::Unknown`] — see
-/// [`role_from_wire`].
-fn members_from_outcome(outcome: &ApiOutcome) -> Vec<(String, TeamMemberRole)> {
-    let items = outcome
-        .data()
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+/// the role GitHub reported for each, or `None` when the page-set cannot
+/// be read as a whole member list.
+fn members_from_outcome(outcome: &ApiOutcome) -> Option<Vec<(String, TeamMemberRole)>> {
+    let items = outcome.data().and_then(serde_json::Value::as_array)?;
     let mut members = Vec::with_capacity(items.len());
     for item in items {
-        match serde_json::from_value::<GhTeamMember>(item) {
-            Ok(member) => {
-                let role = role_from_wire(member.role.as_deref(), &member.login);
-                members.push((member.login, role));
+        let member = match member_entry::<GhTeamMember>(item) {
+            WireEntry::Member(member) => member,
+            WireEntry::NotAnObject => {
+                warn!("team member entry was not a member object — roster completeness unknown");
+                return None;
             }
-            Err(e) => warn!(error = %e, "failed to parse team member entry — skipping"),
-        }
+            WireEntry::Malformed(e) => {
+                warn!(error = %e, "team member entry unreadable — roster completeness unknown");
+                return None;
+            }
+        };
+        let Some(login) = usable_login(member.login) else {
+            warn!("team member entry carried no usable login — roster completeness unknown");
+            return None;
+        };
+        let role = role_from_wire(member.role.as_deref(), &login);
+        members.push((login, role));
     }
-    members
+    Some(members)
 }
 
 /// Classify GitHub's raw role string.
@@ -334,8 +356,15 @@ async fn collect_one_team_roster(
         }
         return degraded_roster(canonical_owner, team_slug, status);
     }
+    let Some(parsed) = members_from_outcome(&all_outcome) else {
+        warn!(
+            team_slug,
+            "team member list could not be read in full; roster completeness unknown"
+        );
+        return degraded_roster(canonical_owner, team_slug, TeamRosterStatus::TransientError);
+    };
     let fetched_at = jiff::Timestamp::now().to_string();
-    let mut members: Vec<TeamMember> = members_from_outcome(&all_outcome)
+    let mut members: Vec<TeamMember> = parsed
         .into_iter()
         .map(|(login, role)| TeamMember {
             login,
@@ -409,32 +438,37 @@ fn org_members_from_outcome(outcome: &ApiOutcome) -> Option<HashSet<String>> {
     }
 
     Some(
-        org_member_logins_from_outcome(outcome)
+        org_member_logins_from_outcome(outcome)?
             .into_iter()
             .map(|login| login.to_lowercase())
             .collect(),
     )
 }
 
-/// Parse a successful org-members-list `ApiOutcome` into a list of logins.
-///
-/// Entries that fail to parse as [`GhOrgMember`] are skipped and logged;
-/// they do not fail the whole fetch. Mirrors [`members_from_outcome`]
-/// exactly, against the org-members DTO instead of the team-members DTO.
-fn org_member_logins_from_outcome(outcome: &ApiOutcome) -> Vec<String> {
-    let items = outcome
-        .data()
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+/// Parse a successful org-members-list `ApiOutcome` into a list of logins,
+/// or `None` when the page-set cannot be read as a whole member list.
+fn org_member_logins_from_outcome(outcome: &ApiOutcome) -> Option<Vec<String>> {
+    let items = outcome.data().and_then(serde_json::Value::as_array)?;
     let mut logins = Vec::with_capacity(items.len());
     for item in items {
-        match serde_json::from_value::<GhOrgMember>(item) {
-            Ok(member) => logins.push(member.login),
-            Err(e) => warn!(error = %e, "failed to parse org member entry — skipping"),
-        }
+        let member = match member_entry::<GhOrgMember>(item) {
+            WireEntry::Member(member) => member,
+            WireEntry::NotAnObject => {
+                warn!("org member entry was not a member object — org membership unknown");
+                return None;
+            }
+            WireEntry::Malformed(e) => {
+                warn!(error = %e, "org member entry unreadable — org membership unknown");
+                return None;
+            }
+        };
+        let Some(login) = usable_login(member.login) else {
+            warn!("org member entry carried no usable login — org membership unknown");
+            return None;
+        };
+        logins.push(login);
     }
-    logins
+    Some(logins)
 }
 
 /// Cross-check every team member's login against the org-members set,
@@ -1133,6 +1167,285 @@ mod tests {
         assert!(
             discovery.authorizes_omission_detach(),
             "a complete enumeration returning no teams genuinely establishes absence"
+        );
+    }
+
+    async fn team_member_page_status(slug: &str, body: serde_json::Value) -> TeamRosterStatus {
+        let server = MockServer::start().await;
+        Mock::given(path(format!("/orgs/test-org/teams/{slug}/members")))
+            .and(query_param("role", "all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let rosters =
+            collect_team_rosters(&client, &[(format!("@test-org/{slug}"), slug.to_string())]).await;
+        rosters[0].status
+    }
+
+    fn org_member_page_set(body: serde_json::Value) -> Option<HashSet<String>> {
+        org_members_from_outcome(&ApiOutcome::Success {
+            status_code: 200,
+            data: Some(body),
+            headers: None,
+            truncated: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn positional_array_team_member_entry_degrades_roster_status() {
+        assert_ne!(
+            team_member_page_status(
+                "positional-team",
+                serde_json::json!([["alice", null, null]]),
+            )
+            .await,
+            TeamRosterStatus::Complete,
+            "a positional array is not a member object and must not yield a login"
+        );
+    }
+
+    #[test]
+    fn positional_array_org_member_entry_degrades_set_to_none() {
+        assert_eq!(
+            org_member_page_set(serde_json::json!([["alice"]])),
+            None,
+            "a positional array is not a member object and must not yield a login"
+        );
+    }
+
+    #[tokio::test]
+    async fn unusable_team_member_logins_all_degrade_roster_status() {
+        for (slug, entry) in [
+            ("missing-login", serde_json::json!({"id": 7})),
+            ("null-login", serde_json::json!({"login": null})),
+            ("nonstring-login", serde_json::json!({"login": 7})),
+            ("empty-login", serde_json::json!({"login": ""})),
+            ("blank-login", serde_json::json!({"login": "   "})),
+        ] {
+            assert_ne!(
+                team_member_page_status(
+                    slug,
+                    serde_json::json!([{"login": "alice", "role": "member"}, entry]),
+                )
+                .await,
+                TeamRosterStatus::Complete,
+                "{slug}: an entry without a usable login cannot complete a roster"
+            );
+        }
+    }
+
+    #[test]
+    fn unusable_org_member_logins_all_degrade_set_to_none() {
+        for entry in [
+            serde_json::json!({"id": 7}),
+            serde_json::json!({"login": null}),
+            serde_json::json!({"login": 7}),
+            serde_json::json!({"login": ""}),
+            serde_json::json!({"login": "   "}),
+        ] {
+            assert_eq!(
+                org_member_page_set(serde_json::json!([{"login": "alice"}, entry.clone()])),
+                None,
+                "{entry}: an entry without a usable login cannot be authoritative"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_team_member_entry_degrades_roster_status() {
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/teams/big-team/members"))
+            .and(query_param("role", "all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "alice", "role": "member"},
+                {"id": 7}
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let rosters = collect_team_rosters(
+            &client,
+            &[("@test-org/big-team".to_string(), "big-team".to_string())],
+        )
+        .await;
+
+        assert_ne!(
+            rosters[0].status,
+            TeamRosterStatus::Complete,
+            "a member list carrying an unusable identity cannot be a complete roster"
+        );
+        assert!(
+            rosters[0].members.is_empty(),
+            "a degraded roster carries no members"
+        );
+    }
+
+    #[tokio::test]
+    async fn blank_team_member_login_degrades_roster_status() {
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/teams/blank-team/members"))
+            .and(query_param("role", "all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "   ", "role": "member"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let rosters = collect_team_rosters(
+            &client,
+            &[("@test-org/blank-team".to_string(), "blank-team".to_string())],
+        )
+        .await;
+
+        assert_ne!(rosters[0].status, TeamRosterStatus::Complete);
+    }
+
+    #[tokio::test]
+    async fn ordinary_roster_with_unknown_role_stays_complete() {
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/teams/ok-team/members"))
+            .and(query_param("role", "all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "alice", "role": "member"},
+                {"login": "bob"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let rosters = collect_team_rosters(
+            &client,
+            &[("@test-org/ok-team".to_string(), "ok-team".to_string())],
+        )
+        .await;
+
+        assert_eq!(rosters[0].status, TeamRosterStatus::Complete);
+        assert_eq!(rosters[0].members.len(), 2);
+        assert_eq!(
+            rosters[0]
+                .members
+                .iter()
+                .find(|m| m.login == "bob")
+                .map(|m| m.role),
+            Some(TeamMemberRole::Unknown),
+            "an absent role stays Unknown; it is not a malformed identity"
+        );
+    }
+
+    #[tokio::test]
+    async fn genuinely_empty_team_stays_complete() {
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/teams/empty-team/members"))
+            .and(query_param("role", "all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let rosters = collect_team_rosters(
+            &client,
+            &[("@test-org/empty-team".to_string(), "empty-team".to_string())],
+        )
+        .await;
+
+        assert_eq!(rosters[0].status, TeamRosterStatus::Complete);
+        assert!(rosters[0].members.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_array_member_body_degrades_roster_status() {
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/teams/weird-team/members"))
+            .and(query_param("role", "all"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"message": "nope"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let rosters = collect_team_rosters(
+            &client,
+            &[("@test-org/weird-team".to_string(), "weird-team".to_string())],
+        )
+        .await;
+
+        assert_ne!(rosters[0].status, TeamRosterStatus::Complete);
+    }
+
+    #[test]
+    fn malformed_org_member_entry_degrades_set_to_none() {
+        let outcome = ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::json!([{"login": "alice"}, {"id": 7}])),
+            headers: None,
+            truncated: false,
+        };
+
+        assert_eq!(
+            org_members_from_outcome(&outcome),
+            None,
+            "a member list with an unreadable entry is not an authoritative org roster"
+        );
+    }
+
+    #[test]
+    fn well_formed_org_member_lists_stay_authoritative() {
+        let populated = ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::json!([{"login": "Alice"}])),
+            headers: None,
+            truncated: false,
+        };
+        let empty = ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::json!([])),
+            headers: None,
+            truncated: false,
+        };
+
+        assert_eq!(
+            org_members_from_outcome(&populated),
+            Some(HashSet::from(["alice".to_string()]))
+        );
+        assert_eq!(org_members_from_outcome(&empty), Some(HashSet::new()));
+    }
+
+    #[tokio::test]
+    async fn malformed_org_members_leave_in_org_unknown_through_enrichment() {
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "alice"},
+                ["bob"]
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let org_members = collect_org_members(&client).await;
+        assert_eq!(org_members, None);
+
+        let mut rosters = vec![TeamRoster {
+            fetched_at: None,
+            canonical_owner: "@test-org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "bob".to_string(),
+                role: TeamMemberRole::Member,
+                in_org: None,
+            }],
+        }];
+        enrich_team_rosters_with_org_membership(&mut rosters, org_members.as_ref());
+
+        assert_eq!(
+            rosters[0].members[0].in_org, None,
+            "an unreadable org-members page must flag nobody as departed"
         );
     }
 }
