@@ -81,9 +81,10 @@ pub async fn run_team_refresh_tick(
     let team_discovery = team_membership::discover_org_teams(client).await;
 
     for slug in team_discovery.slugs() {
+        let slug = slug.as_str();
         let canonical = format!("@{org}/{slug}");
         if !team_pairs.iter().any(|(_, s)| s.eq_ignore_ascii_case(slug)) {
-            team_pairs.push((canonical, slug.clone()));
+            team_pairs.push((canonical, slug.to_string()));
         }
     }
 
@@ -459,8 +460,6 @@ mod tests {
         );
     }
 
-    /// Mount only the org-members endpoint plus a discovery response, for
-    /// ticks whose team set comes from discovery rather than CODEOWNERS.
     async fn mount_discovery(server: &MockServer, response: ResponseTemplate) {
         Mock::given(path("/orgs/test-org/members"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
@@ -489,9 +488,6 @@ mod tests {
         key
     }
 
-    /// A failed discovery enumeration establishes no identity coverage, so
-    /// the omission of a known team from it is not an absence fact
-    /// (CHE-0092:R4). The seeded roster must survive the tick.
     #[tokio::test]
     async fn failed_discovery_does_not_detach_known_team() {
         let (state, _dir) = test_state().await;
@@ -512,8 +508,6 @@ mod tests {
         );
     }
 
-    /// A truncated enumeration saw only a prefix of the org's teams; the
-    /// teams beyond the cut are unobserved, not absent.
     #[tokio::test]
     async fn truncated_discovery_does_not_detach_undiscovered_team() {
         let (state, _dir) = test_state().await;
@@ -551,8 +545,6 @@ mod tests {
         );
     }
 
-    /// An enumeration carrying an unusable entry cannot prove it covered
-    /// every identity, so it likewise cannot authorize detach.
     #[tokio::test]
     async fn invalid_discovery_entry_does_not_detach_known_team() {
         let (state, _dir) = test_state().await;
@@ -576,9 +568,6 @@ mod tests {
         );
     }
 
-    /// Positive control: a genuinely complete empty enumeration IS an
-    /// absence fact and must still detach the stale fiber. Without this the
-    /// preservation tests above would pass on a tick that never detaches.
     #[tokio::test]
     async fn complete_empty_discovery_still_detaches_stale_team() {
         let (state, _dir) = test_state().await;
@@ -603,8 +592,63 @@ mod tests {
         );
     }
 
-    /// Partial positive facts from an incomplete enumeration are retained:
-    /// a team the truncated page DID report is still fetched and recorded.
+    #[tokio::test]
+    async fn path_invalid_discovery_slug_does_not_detach_known_team() {
+        let (state, _dir) = test_state().await;
+        let team_key = seed_live_roster(&state);
+
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"slug": "../bad"}, {"slug": "visible"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/visible/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "octocat", "role": "member"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/platform/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "octocat", "role": "member"}])),
+            )
+            .mount(&server)
+            .await;
+        let client = test_client(&server.uri());
+
+        run_team_refresh_tick(&state, &client, "2026-07-23T01:00:00Z")
+            .await
+            .expect("tick succeeds");
+
+        let projection = state.lock_projection();
+        assert!(
+            projection.team_rosters.contains_key(&team_key),
+            "a malformed team identity was never actually read, so the org's \
+             team set is unproven and omission cannot mean absence"
+        );
+        let visible = team_domain_key("test-org", "visible").expect("derive team key");
+        assert!(
+            projection.team_rosters.contains_key(&visible),
+            "the valid slug in the same response is still a positive fact"
+        );
+        assert!(
+            !projection
+                .team_rosters
+                .keys()
+                .any(|k| k.contains("bad") || k.contains("..")),
+            "a rejected identity must never become a recorded team pair"
+        );
+    }
+
     #[tokio::test]
     async fn truncated_discovery_still_records_the_teams_it_did_see() {
         let (state, _dir) = test_state().await;
@@ -639,10 +683,27 @@ mod tests {
             .expect("tick succeeds");
 
         let key = team_domain_key("test-org", "visible").expect("derive team key");
-        assert!(
-            state.lock_projection().team_rosters.contains_key(&key),
-            "an incomplete enumeration's positive observations are still facts \
-             and must be recorded"
+        let projection = state.lock_projection();
+        let roster = projection
+            .team_rosters
+            .get(&key)
+            .expect("an incomplete enumeration's positive observations are still facts");
+        assert_eq!(
+            roster.status,
+            TeamRosterStatus::Complete,
+            "the independent positive observation must survive as a real fetched \
+             roster, not as a degraded placeholder a record_team insert would \
+             also produce"
+        );
+        assert_eq!(
+            roster
+                .members
+                .iter()
+                .map(|m| m.login.as_str())
+                .collect::<Vec<_>>(),
+            vec!["octocat"],
+            "the member data the roster endpoint actually returned is the fact \
+             under test; mere key presence would pass on a TransientError"
         );
     }
 
