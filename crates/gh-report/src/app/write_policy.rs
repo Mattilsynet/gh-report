@@ -272,10 +272,35 @@ fn conflict_seq_fields(error: &PersistenceError) -> (Option<u64>, Option<u64>) {
     }
 }
 
+enum RetryStep {
+    Succeeded,
+    Retryable(WriteFailure),
+    Terminal(WriteFailure),
+}
+
+fn classify_attempt(result: Result<(), PersistenceError>, attempt: u8) -> RetryStep {
+    match result {
+        Ok(()) => RetryStep::Succeeded,
+        Err(error) => {
+            let mut failure = WriteFailure::classify(error);
+            failure.attempt = attempt;
+            match failure.response {
+                WriteResponse::BoundedRetry => RetryStep::Retryable(failure),
+                WriteResponse::Fatal | WriteResponse::HttpNon2xx => RetryStep::Terminal(failure),
+            }
+        }
+    }
+}
+
 /// Attempt a durable write once, and on a `BoundedRetry`-classified
 /// failure, retry `op` up to [`BOUNDED_RETRY_ATTEMPTS`] more times with
 /// a fixed small delay between attempts (CHE-0046: explicit, bounded
 /// retry — never an unbounded loop).
+///
+/// EVERY observed failure is classified, including those observed on a
+/// retry attempt: a `Fatal`-routed failure returns immediately even when
+/// an earlier attempt was `Transient`, so a later success can never mask
+/// an intervening lost fence (PGN-0016:R2, CHE-0088:R3).
 ///
 /// Every category resolves to the same response at every call site
 /// (jxma5): this helper is shared by every durable-write caller, so a
@@ -289,29 +314,26 @@ fn conflict_seq_fields(error: &PersistenceError) -> (Option<u64>, Option<u64>) {
 /// # Errors
 ///
 /// Returns the classified [`WriteFailure`] when `op` fails with a
-/// `Fatal`- or `HttpNon2xx`-routed category immediately, or after
+/// `Fatal`- or `HttpNon2xx`-routed category on any attempt, or after
 /// `BOUNDED_RETRY_ATTEMPTS` retries are exhausted for a `Transient`
 /// (`BoundedRetry`-routed) category.
 pub async fn write_with_policy<F>(mut op: F) -> Result<(), WriteFailure>
 where
     F: FnMut() -> Result<(), PersistenceError>,
 {
-    let mut failure = match op() {
-        Ok(()) => return Ok(()),
-        Err(error) => WriteFailure::classify(error),
+    let mut failure = match classify_attempt(op(), 1) {
+        RetryStep::Succeeded => return Ok(()),
+        RetryStep::Terminal(failure) => return Err(failure),
+        RetryStep::Retryable(failure) => failure,
     };
-
-    if failure.response != WriteResponse::BoundedRetry {
-        return Err(failure);
-    }
 
     for retry in 0..BOUNDED_RETRY_ATTEMPTS {
         tokio::time::sleep(BOUNDED_RETRY_DELAY).await;
-        match op() {
-            Ok(()) => return Ok(()),
-            Err(error) => failure = WriteFailure::classify(error),
-        }
-        failure.attempt = retry + 2;
+        failure = match classify_attempt(op(), retry + 2) {
+            RetryStep::Succeeded => return Ok(()),
+            RetryStep::Terminal(failure) => return Err(failure),
+            RetryStep::Retryable(failure) => failure,
+        };
     }
     Err(failure)
 }
@@ -326,27 +348,25 @@ where
 /// # Errors
 ///
 /// Returns the classified [`WriteFailure`] under the same conditions as
-/// [`write_with_policy`].
+/// [`write_with_policy`], including immediate return on a `Fatal`-routed
+/// failure observed on a retry attempt.
 pub fn write_with_policy_sync<F>(mut op: F) -> Result<(), WriteFailure>
 where
     F: FnMut() -> Result<(), PersistenceError>,
 {
-    let mut failure = match op() {
-        Ok(()) => return Ok(()),
-        Err(error) => WriteFailure::classify(error),
+    let mut failure = match classify_attempt(op(), 1) {
+        RetryStep::Succeeded => return Ok(()),
+        RetryStep::Terminal(failure) => return Err(failure),
+        RetryStep::Retryable(failure) => failure,
     };
-
-    if failure.response != WriteResponse::BoundedRetry {
-        return Err(failure);
-    }
 
     for retry in 0..BOUNDED_RETRY_ATTEMPTS {
         std::thread::sleep(BOUNDED_RETRY_DELAY);
-        match op() {
-            Ok(()) => return Ok(()),
-            Err(error) => failure = WriteFailure::classify(error),
-        }
-        failure.attempt = retry + 2;
+        failure = match classify_attempt(op(), retry + 2) {
+            RetryStep::Succeeded => return Ok(()),
+            RetryStep::Terminal(failure) => return Err(failure),
+            RetryStep::Retryable(failure) => failure,
+        };
     }
     Err(failure)
 }
@@ -784,6 +804,63 @@ mod tests {
         });
         assert!(result.is_ok());
         assert_eq!(calls, 2);
+    }
+
+    #[tokio::test]
+    async fn write_with_policy_stops_at_a_conflict_observed_after_a_transient_retry() {
+        let mut calls = 0;
+        let result = write_with_policy(|| {
+            calls += 1;
+            match calls {
+                1 => Err(PersistenceError::BackendUnavailable {
+                    reason: "nats down".to_string(),
+                }),
+                2 => Err(PersistenceError::FencedConflict {
+                    expected_seq: None,
+                    actual_seq: None,
+                    source: Box::new(std::io::Error::other("fence")),
+                }),
+                _ => Ok(()),
+            }
+        })
+        .await;
+
+        assert_eq!(
+            calls, 2,
+            "the success sentinel must never be reached once a fence is lost"
+        );
+        let failure = result.expect_err("a fenced conflict must not be reported as a success");
+        assert_eq!(failure.category, WritePolicyCategory::Conflict);
+        assert_eq!(failure.response, WriteResponse::Fatal);
+        assert_eq!(failure.attempt, 2);
+    }
+
+    #[test]
+    fn write_with_policy_sync_stops_at_a_conflict_observed_after_a_transient_retry() {
+        let mut calls = 0;
+        let result = write_with_policy_sync(|| {
+            calls += 1;
+            match calls {
+                1 => Err(PersistenceError::BackendUnavailable {
+                    reason: "nats down".to_string(),
+                }),
+                2 => Err(PersistenceError::FencedConflict {
+                    expected_seq: None,
+                    actual_seq: None,
+                    source: Box::new(std::io::Error::other("fence")),
+                }),
+                _ => Ok(()),
+            }
+        });
+
+        assert_eq!(
+            calls, 2,
+            "the success sentinel must never be reached once a fence is lost"
+        );
+        let failure = result.expect_err("a fenced conflict must not be reported as a success");
+        assert_eq!(failure.category, WritePolicyCategory::Conflict);
+        assert_eq!(failure.response, WriteResponse::Fatal);
+        assert_eq!(failure.attempt, 2);
     }
 
     #[derive(Debug)]

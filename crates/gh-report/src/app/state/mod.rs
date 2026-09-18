@@ -3586,6 +3586,138 @@ accounts: {
     }
 
     #[test]
+    fn typed_pardosa_conflict_reaches_fatal_fence_policy_without_bounded_retry() {
+        use pardosa::prelude::{FailureCondition, OperationFailure};
+
+        let mut attempts = 0_u32;
+        let failure = crate::app::write_policy::write_with_policy_sync(|| {
+            attempts += 1;
+            let typed = OperationFailure::new(
+                FailureCondition::ConcurrencyConflict,
+                "two-writer concurrency collision: expected sequence mismatch",
+            );
+            Err(native_store_persistence(crate::store::StoreError::from(
+                typed,
+            )))
+        })
+        .expect_err("a fenced conflict must not be reported as a successful write");
+
+        assert_eq!(
+            attempts, 1,
+            "PGN-0016:R2 forbids in-band retry of a lost fence"
+        );
+        assert_eq!(
+            failure.category,
+            crate::app::write_policy::WritePolicyCategory::Conflict
+        );
+        assert_eq!(
+            failure.response,
+            crate::app::write_policy::WriteResponse::Fatal
+        );
+    }
+
+    fn typed_transport_then_conflict_then_success(
+        attempt: u32,
+    ) -> Result<(), cherry_pit_storage::PersistenceError> {
+        use pardosa::prelude::{FailureCondition, OperationFailure};
+
+        let condition = match attempt {
+            1 => FailureCondition::TransportUnavailable,
+            2 => FailureCondition::ConcurrencyConflict,
+            _ => return Ok(()),
+        };
+        let typed = OperationFailure::new(
+            condition,
+            "two-writer concurrency collision: expected sequence mismatch",
+        );
+        Err(native_store_persistence(crate::store::StoreError::from(
+            typed,
+        )))
+    }
+
+    fn assert_typed_conflict_source_retained(failure: &crate::app::write_policy::WriteFailure) {
+        use pardosa::prelude::OperationFailure;
+
+        let PersistenceError::FencedConflict {
+            expected_seq,
+            actual_seq,
+            source,
+        } = &failure.error
+        else {
+            panic!("expected FencedConflict, got {:?}", failure.error);
+        };
+        assert_eq!(
+            *expected_seq, None,
+            "no typed expected sequence is available"
+        );
+        assert_eq!(*actual_seq, None, "no typed actual sequence is available");
+        let typed = source
+            .downcast_ref::<OperationFailure>()
+            .expect("the typed pardosa failure must survive end to end");
+        assert!(
+            typed.is_concurrency_conflict(),
+            "the retained source must keep its ConcurrencyConflict condition"
+        );
+        assert!(
+            typed
+                .to_string()
+                .contains("two-writer concurrency collision"),
+            "the retained source must keep its original detail"
+        );
+    }
+
+    #[test]
+    fn typed_pardosa_conflict_after_a_transport_retry_still_stops_the_policy_loop_sync() {
+        let mut attempts = 0_u32;
+        let failure = crate::app::write_policy::write_with_policy_sync(|| {
+            attempts += 1;
+            typed_transport_then_conflict_then_success(attempts)
+        })
+        .expect_err("a fenced conflict must not be reported as a successful write");
+
+        assert_eq!(
+            attempts, 2,
+            "the success sentinel must never be reached: PGN-0016:R2 forbids retrying past a lost fence"
+        );
+        assert_eq!(
+            failure.category,
+            crate::app::write_policy::WritePolicyCategory::Conflict
+        );
+        assert_eq!(
+            failure.response,
+            crate::app::write_policy::WriteResponse::Fatal
+        );
+        assert_eq!(failure.attempt, 2);
+        assert_typed_conflict_source_retained(&failure);
+    }
+
+    #[tokio::test]
+    async fn typed_pardosa_conflict_after_a_transport_retry_still_stops_the_policy_loop_async() {
+        let mut attempts = 0_u32;
+        let failure = crate::app::write_policy::write_with_policy(|| {
+            attempts += 1;
+            typed_transport_then_conflict_then_success(attempts)
+        })
+        .await
+        .expect_err("a fenced conflict must not be reported as a successful write");
+
+        assert_eq!(
+            attempts, 2,
+            "the success sentinel must never be reached: PGN-0016:R2 forbids retrying past a lost fence"
+        );
+        assert_eq!(
+            failure.category,
+            crate::app::write_policy::WritePolicyCategory::Conflict
+        );
+        assert_eq!(
+            failure.response,
+            crate::app::write_policy::WriteResponse::Fatal
+        );
+        assert_eq!(failure.attempt, 2);
+        assert_typed_conflict_source_retained(&failure);
+    }
+
+    #[test]
     fn native_store_persistence_preserves_fenced_conflict_variant() {
         let err = crate::store::StoreError::ConcurrencyConflict {
             expected_seq: Some(1),
