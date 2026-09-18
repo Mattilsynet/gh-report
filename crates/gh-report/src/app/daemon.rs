@@ -51,6 +51,7 @@ const PHASE_SHUTDOWN_BEGIN: &str = "shutdown_begin";
 const PHASE_DRAIN_POOL: &str = "drain_pool";
 const PHASE_DRAIN_DELIVERY: &str = "drain_delivery";
 const PHASE_DRAIN_COLLECTION: &str = "drain_collection";
+const PHASE_DRAIN_REFRESH: &str = "drain_refresh";
 const PHASE_STOPPED: &str = "stopped";
 const MESSAGE_READY: &str = "daemon ready — serving";
 const MESSAGE_SHUTDOWN_BEGIN: &str = "beginning graceful shutdown";
@@ -217,7 +218,8 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         Arc::clone(&force_refresh_flag),
         collect_cancel_rx.clone(),
     );
-    spawn_team_refresh_loop(&config, Arc::clone(&app_state), collect_cancel_rx);
+    let mut team_refresh_loop =
+        spawn_team_refresh_loop(&config, Arc::clone(&app_state), collect_cancel_rx);
     let server_config = crate::server::served_dashboard_server_config();
 
     let server_result = cherry_pit_web::serve::start(
@@ -249,7 +251,13 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         MESSAGE_SHUTDOWN_BEGIN,
     );
 
-    drain_shutdown(&app_state, &collect_cancel_tx, &mut collection_loop).await;
+    drain_shutdown(
+        &app_state,
+        &collect_cancel_tx,
+        &mut collection_loop,
+        &mut team_refresh_loop,
+    )
+    .await;
 
     server_result.map_err(|e| crate::error::ServerError::Runtime(e.to_string()))?;
 
@@ -271,24 +279,33 @@ async fn drain_shutdown(
     app_state: &Arc<AppState>,
     cancel: &tokio::sync::watch::Sender<bool>,
     collection_loop: &mut tokio::task::JoinHandle<()>,
+    team_refresh_loop: &mut tokio::task::JoinHandle<()>,
 ) {
-    drain_shutdown_with_timeout(app_state, cancel, collection_loop, SHUTDOWN_DRAIN_TIMEOUT).await;
+    drain_shutdown_with_timeout(
+        app_state,
+        cancel,
+        collection_loop,
+        team_refresh_loop,
+        SHUTDOWN_DRAIN_TIMEOUT,
+    )
+    .await;
 }
 
 async fn drain_shutdown_with_timeout(
     app_state: &Arc<AppState>,
     cancel: &tokio::sync::watch::Sender<bool>,
     collection_loop: &mut tokio::task::JoinHandle<()>,
+    team_refresh_loop: &mut tokio::task::JoinHandle<()>,
     timeout: Duration,
 ) {
     app_state.cancel_worker_pool();
     app_state.work_queue.close();
     let _ = cancel.send(true);
     let worker_drain = app_state.drain_worker_pool(timeout);
-    let collection_drain =
-        drain_task_after_cancel_with_timeout(collection_loop, timeout);
-    let ((pool_drained, delivery_drained), collection_drained) =
-        tokio::join!(worker_drain, collection_drain);
+    let collection_drain = drain_task_after_cancel_with_timeout(collection_loop, timeout);
+    let refresh_drain = drain_task_after_cancel_with_timeout(team_refresh_loop, timeout);
+    let ((pool_drained, delivery_drained), collection_drained, refresh_drained) =
+        tokio::join!(worker_drain, collection_drain, refresh_drain);
     if pool_drained {
         info!(
             phase = PHASE_DRAIN_POOL,
@@ -334,6 +351,25 @@ async fn drain_shutdown_with_timeout(
             reason = "timeout",
             budget_ms = duration_millis(timeout),
             "aborting in-flight collection work — persist or publish outcome is unknown; EventStore boot replay will reconcile on next startup",
+        ),
+    }
+    match refresh_drained {
+        Ok(()) => info!(
+            phase = PHASE_DRAIN_REFRESH,
+            reason = "drained",
+            "team-refresh task drained cooperatively"
+        ),
+        Err(BackgroundDrainError::Join(join_err)) => warn!(
+            phase = PHASE_DRAIN_REFRESH,
+            reason = "join_error",
+            error = %join_err,
+            "team-refresh task ended abnormally during drain",
+        ),
+        Err(BackgroundDrainError::Timeout) => warn!(
+            phase = PHASE_DRAIN_REFRESH,
+            reason = "timeout",
+            budget_ms = duration_millis(timeout),
+            "aborting in-flight team refresh — a fetched-but-unwritten roster is lost, already-written rosters stay durable and the next startup tick re-fetches",
         ),
     }
 }
@@ -2057,10 +2093,13 @@ mod tests {
         let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
         let mut collection_loop = tokio::spawn(async {});
 
+        let mut team_refresh_loop = tokio::spawn(async {});
+
         drain_shutdown_with_timeout(
             &state,
             &cancel_tx,
             &mut collection_loop,
+            &mut team_refresh_loop,
             Duration::from_millis(100),
         )
         .await;
@@ -2085,7 +2124,16 @@ mod tests {
         let timeout = Duration::from_secs(3);
         let started = tokio::time::Instant::now();
 
-        drain_shutdown_with_timeout(&state, &cancel_tx, &mut collection_loop, timeout).await;
+        let mut team_refresh_loop = tokio::spawn(std::future::pending::<()>());
+
+        drain_shutdown_with_timeout(
+            &state,
+            &cancel_tx,
+            &mut collection_loop,
+            &mut team_refresh_loop,
+            timeout,
+        )
+        .await;
 
         let elapsed = started.elapsed();
         assert!(token.is_cancelled());
@@ -2093,6 +2141,53 @@ mod tests {
         assert!(
             elapsed <= timeout + Duration::from_millis(1),
             "shutdown drain must use one shared timeout budget; elapsed={elapsed:?}, budget={timeout:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_a_held_in_flight_team_refresh_request() {
+        let state = AppState::new().await;
+        let pool_handle = tokio::spawn(async {});
+        let delivery_handle = tokio::spawn(async {});
+        assert!(
+            state
+                .worker_pool_started
+                .set(std::sync::Mutex::new(Some((pool_handle, delivery_handle))))
+                .is_ok()
+        );
+        let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+        let mut collection_loop = tokio::spawn(async {});
+
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let roster_written = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&roster_written);
+        let mut team_refresh_loop = tokio::spawn(async move {
+            let _ = release_rx.await;
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = release_tx.send(());
+        });
+
+        drain_shutdown_with_timeout(
+            &state,
+            &cancel_tx,
+            &mut collection_loop,
+            &mut team_refresh_loop,
+            Duration::from_secs(2),
+        )
+        .await;
+
+        assert!(
+            team_refresh_loop.is_finished(),
+            "drain returned while the team-refresh task was still in flight — its \
+             handle is unobserved and its outcome detached"
+        );
+        assert!(
+            roster_written.load(std::sync::atomic::Ordering::SeqCst),
+            "the held in-flight refresh request completed after drain returned; \
+             shutdown reported stopped without observing the refresh result"
         );
     }
 
