@@ -650,6 +650,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refused_cross_origin_discovery_continuation_does_not_detach_known_team() {
+        let (state, _dir) = test_state().await;
+        let team_key = seed_live_roster(&state);
+
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", "<https://other.invalid/teams?page=2>; rel=\"next\"")
+                    .set_body_json(serde_json::json!([{"slug": "visible"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/visible/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "octocat", "role": "member"}])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/teams/platform/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "octocat", "role": "member"}])),
+            )
+            .mount(&server)
+            .await;
+        let client = test_client(&server.uri());
+
+        run_team_refresh_tick(&state, &client, "2026-07-23T01:00:00Z")
+            .await
+            .expect("tick succeeds");
+
+        let projection = state.lock_projection();
+        assert!(
+            projection.team_rosters.contains_key(&team_key),
+            "pagination was refused, not exhausted, so the org's team set is \
+             unproven and omission cannot authorize detach"
+        );
+        let visible = team_domain_key("test-org", "visible").expect("derive team key");
+        let roster = projection
+            .team_rosters
+            .get(&visible)
+            .expect("the page observed before refusal is still a positive fact");
+        assert!(
+            roster.members.iter().any(|m| m.login == "octocat"),
+            "the positive prefix must retain the members it actually read"
+        );
+    }
+
+    #[tokio::test]
     async fn truncated_discovery_still_records_the_teams_it_did_see() {
         let (state, _dir) = test_state().await;
 

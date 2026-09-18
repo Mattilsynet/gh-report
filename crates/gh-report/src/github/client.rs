@@ -630,10 +630,18 @@ fn is_same_origin(url_str: &str, trusted_origin: &str) -> bool {
     }
 }
 
-fn trusted_next_url(headers: &HeaderMap, trusted_origin: &str) -> Option<String> {
-    let candidate_url = pagination::next_url(headers)?;
+enum Continuation {
+    Exhausted,
+    Follow(String),
+    Refused,
+}
+
+fn trusted_continuation(headers: &HeaderMap, trusted_origin: &str) -> Continuation {
+    let Some(candidate_url) = pagination::next_url(headers) else {
+        return Continuation::Exhausted;
+    };
     if is_same_origin(&candidate_url, trusted_origin) {
-        return Some(candidate_url);
+        return Continuation::Follow(candidate_url);
     }
     let sanitized: String = candidate_url
         .chars()
@@ -644,7 +652,7 @@ fn trusted_next_url(headers: &HeaderMap, trusted_origin: &str) -> Option<String>
         url = %sanitized,
         "rejecting pagination URL from untrusted origin"
     );
-    None
+    Continuation::Refused
 }
 
 /// Validate that a URL uses HTTPS (or HTTP only if explicitly opted in).
@@ -1345,7 +1353,7 @@ impl GitHubClient {
                 return AttemptResult::Failure(Box::new(failure));
             }
 
-            next_url = trusted_next_url(response.headers(), &self.trusted_origin);
+            let continuation = trusted_continuation(response.headers(), &self.trusted_origin);
 
             let body_bytes =
                 match read_body_bytes_limited(response, config::MAX_RESPONSE_BODY_BYTES).await {
@@ -1366,6 +1374,15 @@ impl GitHubClient {
                     }
                 }
                 Err(failure) => return AttemptResult::Failure(Box::new(failure)),
+            }
+
+            match continuation {
+                Continuation::Follow(url) => next_url = Some(url),
+                Continuation::Exhausted => {}
+                Continuation::Refused => {
+                    truncated = true;
+                    break;
+                }
             }
         }
 
@@ -5626,6 +5643,111 @@ mod tests {
         );
         assert!(run.is_retries_exhausted());
         assert_eq!(run.attempts(), 2);
+    }
+
+    #[tokio::test]
+    async fn refused_cross_origin_continuation_is_incomplete_not_exhausted() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/refused-cross-origin"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", "<https://other.invalid/page-2>; rel=\"next\"")
+                    .set_body_json(serde_json::json!([{"id": 1}])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let result = client.request("/refused-cross-origin", true, 1, 10).await;
+
+        assert!(result.is_ok());
+        assert!(
+            result.is_truncated(),
+            "a refused cross-origin continuation is incomplete enumeration, never exhaustion"
+        );
+        let items = result
+            .data()
+            .and_then(serde_json::Value::as_array)
+            .expect("data should be an array");
+        assert_eq!(
+            items,
+            &vec![serde_json::json!({"id": 1})],
+            "the positive prefix observed before refusal must be retained"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_continuation_link_is_incomplete_not_exhausted() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/malformed-continuation"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("link", "<not a url>; rel=\"next\"")
+                    .set_body_json(serde_json::json!([{"id": 1}])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let result = client.request("/malformed-continuation", true, 1, 10).await;
+
+        assert!(result.is_ok());
+        assert!(
+            result.is_truncated(),
+            "an unparseable continuation link is incomplete enumeration, never exhaustion"
+        );
+        let items = result
+            .data()
+            .and_then(serde_json::Value::as_array)
+            .expect("data should be an array");
+        assert_eq!(items.len(), 1, "the positive prefix must be retained");
+    }
+
+    #[tokio::test]
+    async fn trusted_two_page_continuation_completes_without_truncation() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/trusted-page-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header(
+                        "link",
+                        format!("<{}/trusted-page-2>; rel=\"next\"", server.uri()),
+                    )
+                    .set_body_json(serde_json::json!([{"id": 1}])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/trusted-page-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": 2}])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let result = client.request("/trusted-page-1", true, 1, 10).await;
+
+        assert!(result.is_ok());
+        assert!(
+            !result.is_truncated(),
+            "genuinely exhausted trusted pagination must stay complete"
+        );
+        let items = result
+            .data()
+            .and_then(serde_json::Value::as_array)
+            .expect("data should be an array");
+        assert_eq!(items.len(), 2, "both trusted pages must be accumulated");
     }
 
     #[tokio::test]
