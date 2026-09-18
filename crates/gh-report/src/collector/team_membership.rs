@@ -25,21 +25,163 @@ use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterS
 use crate::github::client::{ApiOutcome, GitHubClient};
 use crate::github::dto::{GhOrgMember, GhTeamMember};
 
-/// Fetch all team slugs for the organization from `/orgs/{org}/teams`.
-pub async fn fetch_org_team_slugs(client: &GitHubClient) -> Vec<String> {
+/// Why an org-team enumeration failed to establish complete identity
+/// coverage. Each variant is a distinct epistemic state, never folded into
+/// "no teams" (COM-0028:R2, CHE-0092:R4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryGap {
+    /// The enumeration request itself did not succeed.
+    Failed,
+    /// The enumeration succeeded but stopped before exhausting pagination,
+    /// so the slugs returned are a prefix of the org's teams.
+    Truncated,
+    /// The enumeration succeeded and completed, but at least one entry
+    /// carried no usable slug, so the teams it named remain unknown.
+    Invalid,
+}
+
+/// A team identity that passed the same path-segment boundary the roster
+/// fetch itself applies, so it names a team that can actually be read.
+///
+/// The inner string is private and minted only by validating parse, reached
+/// through [`discover_org_teams`]; an unvalidated string therefore has no
+/// route into a discovery result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamSlug(String);
+
+impl TeamSlug {
+    fn parse(raw: &str) -> Option<Self> {
+        cherry_pit_web::sanitize_path_segment(raw, "team_slug")
+            .ok()
+            .map(|slug| Self(slug.into_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TeamSlug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Outcome of enumerating an organization's teams.
+///
+/// Omission authority is granted only when the enumeration succeeded,
+/// exhausted pagination, and yielded a usable identity for every entry.
+/// That authority has no public constructor: the state is private and
+/// minted only by [`discover_org_teams`], so no caller can fabricate,
+/// relabel, or later mutate a complete enumeration.
+///
+/// A fabricated complete enumeration does not compile:
+///
+/// ```compile_fail
+/// use gh_report::collector::team_membership::TeamDiscovery;
+/// let forged = TeamDiscovery { slugs: Vec::new(), gap: None };
+/// ```
+///
+/// Neither does emptying a legitimately complete one after the fact:
+///
+/// ```compile_fail
+/// # async fn f(client: &gh_report::github::client::GitHubClient) {
+/// let mut discovery = gh_report::collector::team_membership::discover_org_teams(client).await;
+/// discovery.slugs.clear();
+/// # }
+/// ```
+///
+/// Reading the observed identities is always allowed:
+///
+/// ```
+/// # async fn f(client: &gh_report::github::client::GitHubClient) {
+/// let discovery = gh_report::collector::team_membership::discover_org_teams(client).await;
+/// for slug in discovery.slugs() {
+///     let _: &str = slug.as_str();
+/// }
+/// # }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamDiscovery {
+    slugs: Vec<TeamSlug>,
+    gap: Option<DiscoveryGap>,
+}
+
+impl TeamDiscovery {
+    fn complete(slugs: Vec<TeamSlug>) -> Self {
+        Self { slugs, gap: None }
+    }
+
+    fn incomplete(slugs: Vec<TeamSlug>, gap: DiscoveryGap) -> Self {
+        Self {
+            slugs,
+            gap: Some(gap),
+        }
+    }
+
+    /// Every usable team identity this enumeration observed. Non-empty on
+    /// an incomplete enumeration that saw a prefix: those are positive
+    /// facts.
+    #[must_use]
+    pub fn slugs(&self) -> &[TeamSlug] {
+        &self.slugs
+    }
+
+    /// Why this enumeration established no complete coverage, or `None`
+    /// when it did.
+    #[must_use]
+    pub fn gap(&self) -> Option<DiscoveryGap> {
+        self.gap
+    }
+
+    /// Whether a known team's omission from this enumeration may be read
+    /// as the team's absence — true only for a complete, fully-validated
+    /// enumeration.
+    #[must_use]
+    pub fn authorizes_omission_detach(&self) -> bool {
+        self.gap.is_none()
+    }
+}
+
+/// Enumerate the organization's teams from `/orgs/{org}/teams`.
+pub async fn discover_org_teams(client: &GitHubClient) -> TeamDiscovery {
     let path = format!("/orgs/{}/teams?per_page=100", client.org_name);
     let outcome = client
         .request(&path, true, 1, config::DEFAULT_REQUEST_TIMEOUT_SECS)
         .await;
-    let mut slugs = Vec::new();
-    if let Some(items) = outcome.data().and_then(serde_json::Value::as_array) {
-        for item in items {
-            if let Some(slug) = item.get("slug").and_then(serde_json::Value::as_str) {
-                slugs.push(slug.to_string());
-            }
+    let Some(items) = outcome.data().and_then(serde_json::Value::as_array) else {
+        return TeamDiscovery::incomplete(Vec::new(), DiscoveryGap::Failed);
+    };
+    let mut slugs = Vec::with_capacity(items.len());
+    let mut unusable_entries = 0usize;
+    for item in items {
+        match item
+            .get("slug")
+            .and_then(serde_json::Value::as_str)
+            .and_then(TeamSlug::parse)
+        {
+            Some(slug) => slugs.push(slug),
+            None => unusable_entries += 1,
         }
     }
-    slugs
+    match (outcome.is_truncated(), unusable_entries) {
+        (true, _) => {
+            warn!(
+                observed_teams = slugs.len(),
+                "org team enumeration truncated; team absence cannot be inferred"
+            );
+            TeamDiscovery::incomplete(slugs, DiscoveryGap::Truncated)
+        }
+        (false, 0) => TeamDiscovery::complete(slugs),
+        (false, unusable) => {
+            warn!(
+                unusable_entries = unusable,
+                "org team entries carried no usable identity; team absence cannot be inferred"
+            );
+            TeamDiscovery::incomplete(slugs, DiscoveryGap::Invalid)
+        }
+    }
 }
 
 /// Fetch rosters for every `(canonical_owner, team_slug)` pair.
@@ -874,5 +1016,123 @@ mod tests {
         collect_team_rosters(&client, &teams).await;
 
         server.verify().await;
+    }
+
+    async fn discovery_against(server: &MockServer, response: ResponseTemplate) -> TeamDiscovery {
+        Mock::given(path("/orgs/test-org/teams"))
+            .respond_with(response)
+            .mount(server)
+            .await;
+        discover_org_teams(&test_client(&server.uri())).await
+    }
+
+    fn slug_strings(discovery: &TeamDiscovery) -> Vec<String> {
+        discovery
+            .slugs()
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn failed_enumeration_classifies_as_failed_gap_not_empty_team_set() {
+        let server = MockServer::start().await;
+        let discovery = discovery_against(&server, ResponseTemplate::new(403)).await;
+        assert_eq!(
+            (slug_strings(&discovery), discovery.gap()),
+            (Vec::new(), Some(DiscoveryGap::Failed)),
+            "a failed enumeration must not be indistinguishable from an org with no teams"
+        );
+        assert!(!discovery.authorizes_omission_detach());
+    }
+
+    #[tokio::test]
+    async fn truncated_enumeration_retains_observed_prefix_without_authority() {
+        let server = MockServer::start().await;
+        let teams_path = "/orgs/test-org/teams";
+        Mock::given(path(teams_path))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"slug": "visible"}]))
+                    .insert_header(
+                        "link",
+                        format!("<{}{teams_path}>; rel=\"next\"", server.uri()),
+                    ),
+            )
+            .expect(u64::try_from(config::MAX_PAGINATION_PAGES).unwrap())
+            .mount(&server)
+            .await;
+
+        let discovery = discover_org_teams(&test_client(&server.uri())).await;
+        server.verify().await;
+
+        assert!(!discovery.authorizes_omission_detach());
+        assert_eq!(
+            discovery.slugs().first().map(TeamSlug::as_str),
+            Some("visible"),
+            "the prefix a truncated enumeration DID observe is still a positive fact"
+        );
+        assert_eq!(discovery.gap(), Some(DiscoveryGap::Truncated));
+    }
+
+    #[tokio::test]
+    async fn entry_without_slug_classifies_invalid_while_keeping_valid_slugs() {
+        let server = MockServer::start().await;
+        let discovery = discovery_against(
+            &server,
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!([{"slug": "alpha"}, {"name": "no-slug"}])),
+        )
+        .await;
+        assert_eq!(
+            (slug_strings(&discovery), discovery.gap()),
+            (vec!["alpha".to_string()], Some(DiscoveryGap::Invalid)),
+            "a skipped entry leaves coverage unproven but does not discard the slug read"
+        );
+    }
+
+    #[tokio::test]
+    async fn path_invalid_slugs_are_excluded_and_leave_coverage_unproven() {
+        let server = MockServer::start().await;
+        let discovery = discovery_against(
+            &server,
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"slug": "alpha"},
+                {"slug": "../bad"},
+                {"slug": ""},
+                {"slug": "x/y"},
+                {"slug": "ctl\u{0001}"},
+                {"slug": 7},
+                {"slug": null},
+            ])),
+        )
+        .await;
+        assert!(
+            !discovery.authorizes_omission_detach(),
+            "an entry whose slug is not a usable identity leaves the org's team \
+             set unproven: the team it named was never actually read"
+        );
+        assert_eq!(
+            slug_strings(&discovery),
+            vec!["alpha".to_string()],
+            "a genuinely valid slug from the same response is still a positive \
+             fact and must survive alongside the rejected entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_empty_enumeration_is_an_absence_fact() {
+        let server = MockServer::start().await;
+        let discovery = discovery_against(
+            &server,
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([])),
+        )
+        .await;
+        assert_eq!(slug_strings(&discovery), Vec::<String>::new());
+        assert_eq!(discovery.gap(), None);
+        assert!(
+            discovery.authorizes_omission_detach(),
+            "a complete enumeration returning no teams genuinely establishes absence"
+        );
     }
 }
