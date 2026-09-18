@@ -324,7 +324,7 @@ where
 /// private fields. An unknown aggregate yields `events: []` per
 /// **CHE-0049 R7** (200 with an empty list, never 404 — CHE-0019 R1).
 #[derive(Debug, Serialize)]
-struct LoadedBody<E: DomainEvent + Serialize> {
+struct LoadedBody<E: DomainEvent> {
     aggregate_id: AggregateId,
     events: Vec<LoadedEvent<E>>,
 }
@@ -333,7 +333,7 @@ struct LoadedBody<E: DomainEvent + Serialize> {
 /// public-method accessors only, no struct-literal access to private
 /// fields of the upstream type.
 #[derive(Debug, Serialize)]
-struct LoadedEvent<E: DomainEvent + Serialize> {
+struct LoadedEvent<E: DomainEvent> {
     event_id: uuid::Uuid,
     sequence: NonZeroU64,
     event_type: &'static str,

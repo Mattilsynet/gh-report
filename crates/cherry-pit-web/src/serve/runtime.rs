@@ -88,7 +88,7 @@ async fn ws_handler<S: ServerState>(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let Ok(permit) = ws_sem.clone().try_acquire_owned() else {
+    let Ok(permit) = ws_sem.try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     ws.max_message_size(WS_MAX_MESSAGE_SIZE)
@@ -192,8 +192,12 @@ async fn ws_session<S: ServerState>(
         }
     }
 
-    let _ = sender.send(Message::Close(None)).await;
+    best_effort_close_outcome(sender.send(Message::Close(None)).await);
 }
+
+fn best_effort_close_outcome<E>(_outcome: Result<(), E>) {}
+
+fn best_effort_addr_notification<T>(_outcome: Result<(), T>) {}
 
 /// Build a full HTTP response from a cached page.
 ///
@@ -493,7 +497,8 @@ pub async fn start<S: ServerState>(
         let listener = bind_serving_port(addr).await?;
 
         if let Some(tx) = addr_tx {
-            let _ = tx.send(listener.local_addr().expect("listener bound successfully"));
+            let bound = listener.local_addr().expect("listener bound successfully");
+            best_effort_addr_notification(tx.send(bound));
         }
 
         listener
@@ -550,9 +555,12 @@ const BUILTIN_MAX_BODY_BYTES: usize = 1024;
 /// # Panics
 ///
 /// Panics if `options.csp_override()` is not a valid header value.
-/// [`ServeOptions`] validation rejects non-ASCII and CR/LF, so this is
-/// unreachable for options obtained from
-/// [`ServeOptionsBuilder::build`](super::config::ServeOptionsBuilder::build).
+/// [`ServeOptionsBuilder::build`](super::config::ServeOptionsBuilder::build)
+/// rejects non-ASCII and CR/LF only, which is narrower than the
+/// `HeaderValue` grammar: other ASCII control bytes — `\0` among them —
+/// are accepted by the builder and rejected here, so this panic is
+/// reachable from a builder-produced value. Narrowing the accepted input
+/// is a behaviour and API decision that has not been taken.
 pub fn build_router<S: ServerState>(
     state: Arc<S>,
     limits: LayerLimits,
@@ -686,6 +694,23 @@ mod tests {
     use crate::middleware::WebSocketOriginPolicy;
     use arc_swap::ArcSwap;
     use std::collections::HashMap;
+
+    #[test]
+    fn csp_override_nul_is_accepted_by_builder_and_rejected_by_header_value() {
+        let options = ServeOptions::builder()
+            .csp_override("default-src 'self'\0")
+            .build()
+            .expect("builder validation checks only non-ASCII and CR/LF, so NUL passes");
+
+        let csp = options
+            .csp_override()
+            .expect("the override survives builder validation");
+
+        assert!(
+            HeaderValue::from_str(csp).is_err(),
+            "HeaderValue rejects the NUL the builder admitted, so build_router's documented panic is reachable from a builder-produced value"
+        );
+    }
 
     /// Minimal `ServerState` implementation for testing the server layer
     /// in isolation from any domain-specific state.
@@ -1234,7 +1259,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let (addr_tx, addr_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
         let shutdown = async {
-            shutdown_rx.await.ok();
+            let _shutdown_signal_or_dropped_sender = shutdown_rx.await;
         };
 
         let state = state_no_cache();
@@ -1257,7 +1282,9 @@ mod tests {
         let addr = addr_rx.await.expect("should receive bound address");
         wait_for_server(addr).await;
 
-        let _ = shutdown_tx.send(());
+        shutdown_tx
+            .send(())
+            .expect("the server task still holds the shutdown receiver");
         let result = handle.await.unwrap();
         assert!(result.is_ok());
     }
@@ -1671,7 +1698,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed["type"], "connected");
 
-        ws.close(None).await.ok();
+        best_effort_close_outcome(ws.close(None).await);
 
         handle.abort();
     }
@@ -1712,7 +1739,7 @@ mod tests {
         assert_eq!(parsed["pages"][1], "page.html");
         assert_eq!(parsed["timestamp"], "2026-04-14T12:00:00Z");
 
-        ws.close(None).await.ok();
+        best_effort_close_outcome(ws.close(None).await);
 
         handle.abort();
     }
@@ -1745,7 +1772,7 @@ mod tests {
                     vec![format!("page-{i}.html")],
                     "2026-04-14T12:00:00Z".into(),
                 ))
-                .ok();
+                .expect("the ws session under test is a live subscriber");
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1777,7 +1804,7 @@ mod tests {
             "should have received a reload message after broadcast overflow"
         );
 
-        ws.close(None).await.ok();
+        best_effort_close_outcome(ws.close(None).await);
 
         handle.abort();
     }
@@ -1901,7 +1928,7 @@ mod tests {
             .await
             .expect("same-origin handshake must upgrade under Strict");
         let _ = ws.next().await;
-        ws.close(None).await.ok();
+        best_effort_close_outcome(ws.close(None).await);
 
         handle.abort();
     }
@@ -1950,8 +1977,8 @@ mod tests {
             Ok(_) => panic!("3rd connection should have been rejected"),
         }
 
-        ws1.close(None).await.ok();
-        ws2.close(None).await.ok();
+        best_effort_close_outcome(ws1.close(None).await);
+        best_effort_close_outcome(ws2.close(None).await);
         handle.abort();
     }
 
@@ -1993,7 +2020,7 @@ mod tests {
             "2nd connection should be rejected with 503, got: {result:?}"
         );
 
-        ws1.close(None).await.ok();
+        best_effort_close_outcome(ws1.close(None).await);
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -2003,7 +2030,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed["type"], "connected");
 
-        ws2.close(None).await.ok();
+        best_effort_close_outcome(ws2.close(None).await);
         handle.abort();
     }
 
@@ -2050,9 +2077,9 @@ mod tests {
             );
         }
 
-        ws1.close(None).await.ok();
-        ws2.close(None).await.ok();
-        ws3.close(None).await.ok();
+        best_effort_close_outcome(ws1.close(None).await);
+        best_effort_close_outcome(ws2.close(None).await);
+        best_effort_close_outcome(ws3.close(None).await);
         handle.abort();
     }
 
@@ -2080,9 +2107,15 @@ mod tests {
         drop(state);
 
         handle.abort();
-        let _ = handle.await;
+        let Err(join_error) = handle.await else {
+            panic!("aborted server task must not report normal completion")
+        };
+        assert!(
+            join_error.is_cancelled(),
+            "aborted server task panicked instead of being cancelled: {join_error}"
+        );
 
-        ws.close(None).await.ok();
+        best_effort_close_outcome(ws.close(None).await);
 
         let timeout = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while let Some(_msg) = ws.next().await {}
@@ -2165,7 +2198,7 @@ mod tests {
             oversized.into(),
         ))
         .await
-        .ok();
+        .expect("client-side send of the oversized frame must succeed");
 
         let timeout_result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
@@ -2915,13 +2948,13 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let futures: Vec<_> = (0..3)
-            .map(|_| {
-                let client = client.clone();
-                let url = format!("http://{addr}/index.html");
-                tokio::spawn(async move { client.get(&url).send().await.unwrap() })
-            })
-            .collect();
+        let futures: Vec<_> = std::iter::repeat_with(|| {
+            let client = client.clone();
+            let url = format!("http://{addr}/index.html");
+            tokio::spawn(async move { client.get(&url).send().await.unwrap() })
+        })
+        .take(3)
+        .collect();
 
         let mut got_503 = false;
         for f in futures {
@@ -3230,8 +3263,8 @@ mod tests {
             Ok(_) => panic!("3rd connection should have been rejected"),
         }
 
-        ws1.close(None).await.ok();
-        ws2.close(None).await.ok();
+        best_effort_close_outcome(ws1.close(None).await);
+        best_effort_close_outcome(ws2.close(None).await);
         handle.abort();
     }
 
@@ -3333,7 +3366,7 @@ mod tests {
             /// normalize_request_path never panics on arbitrary Unicode input.
             #[test]
             fn never_panics(input in "\\PC{0,500}") {
-                let _ = normalize_request_path(&input);
+                let _normalized = normalize_request_path(&input);
             }
 
             /// If normalize_request_path returns Some, the key never contains

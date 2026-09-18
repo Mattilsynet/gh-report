@@ -121,8 +121,8 @@ impl RunMetadata {
 
 /// Decode one ASCII hex character (`0-9a-f`) into its nibble value.
 ///
-/// Lowercase-only by `generate_run_id` invariant; uppercase or
-/// non-hex panics.
+/// Panics on any other byte. `RunMetadata::run_id` is a public `String`
+/// field and is also `Deserialize`, so a non-hex value is reachable.
 fn decode_hex_nibble(c: u8) -> u8 {
     match c {
         b'0'..=b'9' => c - b'0',
@@ -255,5 +255,31 @@ mod tests {
             0xee, 0xff,
         ]);
         assert_eq!(run.correlation_context().correlation_id(), Some(expected));
+    }
+
+    #[test]
+    fn public_mutation_admits_non_hex_run_id_and_correlation_panics() {
+        let mut run = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        run.run_id = "g".repeat(32);
+        assert_eq!(run.run_id.len(), 32);
+        let outcome = std::panic::catch_unwind(move || run.correlation_context());
+        assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn deserialize_admits_non_hex_run_id() {
+        let json = r#"{
+            "run_id": "gggggggggggggggggggggggggggggggg",
+            "started_at": "2026-01-01T00:00:00Z",
+            "completed_at": null,
+            "organization": "TestOrg",
+            "schema_version": "1",
+            "status": "in_progress"
+        }"#;
+        let run: RunMetadata = serde_json::from_str(json).expect("deserialize succeeds");
+        assert_eq!(run.run_id, "gggggggggggggggggggggggggggggggg");
     }
 }

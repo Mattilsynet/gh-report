@@ -433,11 +433,21 @@ where
     /// # Errors
     ///
     /// Forwarded from [`Self::run`].
+    ///
+    /// Both outcomes of [`tokio::signal::ctrl_c`] — a delivered `SIGINT`
+    /// and a handler that could never be installed — complete the
+    /// shutdown notification unconditionally and are not forwarded. An
+    /// unarmed signal trigger cannot later fire, so the alternative is a
+    /// process that can never be interrupted. This is unchanged runtime
+    /// behaviour, not an observability policy.
     pub async fn run_until_ctrl_c(self) -> Result<(), AgentError> {
-        self.run(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
+        self.run(best_effort_shutdown_notification()).await
+    }
+}
+
+async fn best_effort_shutdown_notification() {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) | Err(_) => {}
     }
 }
 

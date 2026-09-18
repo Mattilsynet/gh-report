@@ -138,7 +138,7 @@ async fn cache_swap_serves_new_content() {
         "index.html",
         "<html>v1</html>",
     )])));
-    let s = spawn_test_server_secured(source.clone()).await;
+    let s = spawn_test_server_secured(std::sync::Arc::clone(&source)).await;
 
     let resp = http_get(s.addr, "/v1/index.html").await;
     assert_eq!(resp.text().await.unwrap(), "<html>v1</html>");

@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/adr-srv",
     "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
@@ -21,7 +20,6 @@ members = [
 # drives the wasm crate on the host toolchain. It builds under an explicit
 # `--target wasm32-unknown-unknown` (or `-p gh-report-web-client`) only.
 default-members = [
-    "crates/adr-srv",
     "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
@@ -44,12 +42,6 @@ repository = "https://github.com/Mattilsynet/gh-report"
 authors = ["Mattilsynet"]
 
 [workspace.dependencies]
-# === ADR governance library (RST-0004:R1) ===
-# Canonical upstream, rev-pinned: no tags exist on Mattilsynet/adr-fmt,
-# so the rev is the only stable pin. Source admitted in deny.toml
-# [sources].allow-git (RST-0004:R7).
-adr-fmt = { git = "https://github.com/Mattilsynet/adr-fmt", rev = "840254e165b24709725ca4985e9b483f050bc19c" }
-
 # === Text processing ===
 regex = "1"
 toml = "1"
@@ -74,12 +66,6 @@ futures-util = "0.3"
 # === Web framework ===
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json", "ws"] }
 tower-http = { version = "0.7", features = ["limit", "trace"] }
-# async-graphql: GraphQL server runtime for adr-srv (AFM-0027 service crate).
-# Pinned on the 7.x stable line; the 8.x line is rc-only as of 2026-05.
-# default-features off drops tempfile/graphiql/dynamic-schema to keep the
-# dep surface minimal — adr-srv builds the schema statically (M1.4).
-async-graphql = { version = "7", default-features = false }
-async-graphql-axum = "7"
 
 # === Networking / HTTP ===
 bytes = "1"
@@ -90,13 +76,6 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 
 # === Crypto / encoding ===
 sha2 = "0.11"
-# xxhash-rust: xxh3-128 for adr-srv body_hash (AFM-0027:R4 — body_hash is
-# adr-srv's concern; computed from raw ADR file bytes). Already present
-# as a transitive dep via pardosa-genome (`n-rust` family); promoted to a
-# workspace-tier entry so adr-srv can name it directly. const_xxh3 and
-# xxh64 features added for pardosa-schema (compile-time schema hashing)
-# and pardosa-file (.pgno container/manifest checksums) respectively.
-xxhash-rust = { version = "0.8", features = ["xxh3", "const_xxh3", "xxh64"] }
 zstd = { version = "0.14", default-features = false }
 # GEN-0041 no_std floor: BLAKE3 with default-features off keeps it
 # `no_std`-clean for pardosa-encoding's `#![no_std]` substrate. PAR-0021 R1
@@ -232,6 +211,3 @@ overflow-checks = true
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-
-
-

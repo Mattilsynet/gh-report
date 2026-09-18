@@ -38,7 +38,7 @@ pub fn build_snapshot_signature(snapshot: Option<&serde_json::Value>) -> String 
     hash.iter()
         .fold(String::with_capacity(64), |mut acc, byte| {
             use std::fmt::Write;
-            let _ = write!(acc, "{byte:02x}");
+            write!(acc, "{byte:02x}").expect("formatting into a String is infallible");
             acc
         })
 }
@@ -93,7 +93,8 @@ pub(crate) fn escape_json_string(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if c.is_control() => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
+                write!(out, "\\u{:04x}", u32::from(c))
+                    .expect("formatting into a String is infallible");
             }
             c => out.push(c),
         }

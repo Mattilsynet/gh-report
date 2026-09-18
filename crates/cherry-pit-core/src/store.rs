@@ -354,7 +354,7 @@ pub trait SingleWriterEventStore: EventStore {}
 /// Cherry-pit treats aggregate enumeration as a substrate-level
 /// capability: not every store needs to expose it (CHE-0005:R1 — base
 /// `EventStore` is the minimum port), but boot-time projection replay
-/// (gh-report, adr-srv) needs to walk every aggregate stream.
+/// (gh-report) needs to walk every aggregate stream.
 ///
 /// File-backed substrates (PGNO and its predecessors) enumerate cheaply
 /// by directory listing; in-process stores enumerate by reading the

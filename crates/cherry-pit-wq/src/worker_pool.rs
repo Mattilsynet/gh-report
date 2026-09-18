@@ -350,7 +350,7 @@ async fn worker_loop_regulated<C, R, E>(
             JobOutcome::Success {
                 domain_key, result, ..
             } => executor.charge_of(domain_key, result),
-            _ => SettleOutcome::Charged,
+            JobOutcome::Failure { .. } | _ => SettleOutcome::Charged,
         };
 
         for regulator in &admitted_by {

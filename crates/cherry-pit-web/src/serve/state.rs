@@ -162,8 +162,8 @@ impl CachedBody {
     #[must_use]
     pub fn zstd(&self) -> Option<&Bytes> {
         match self {
-            CachedBody::Compressed { zstd, .. } => Some(zstd),
-            CachedBody::RawOnly { .. } => None,
+            Self::Compressed { zstd, .. } => Some(zstd),
+            Self::RawOnly { .. } => None,
         }
     }
 
@@ -176,8 +176,8 @@ impl CachedBody {
     #[must_use]
     pub fn identity_bytes(&self) -> Option<Bytes> {
         match self {
-            CachedBody::RawOnly { body } => Some(body.clone()),
-            CachedBody::Compressed { zstd, raw_len } => decode_bounded(zstd, *raw_len),
+            Self::RawOnly { body } => Some(body.clone()),
+            Self::Compressed { zstd, raw_len } => decode_bounded(zstd, *raw_len),
         }
     }
 }
@@ -377,8 +377,21 @@ mod tests {
         let page = CachedPage::new("index.html", original.to_vec());
 
         let compressed = page.body.zstd().expect("zstd should be present");
-        let decompressed = zstd::stream::decode_all(&compressed[..]).unwrap();
+        let decompressed = zstd::stream::decode_all(&**compressed).unwrap();
         assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn content_length_header_is_ascii_at_bounds() {
+        for len in [0usize, 1, usize::MAX] {
+            let header = content_length_header(len);
+            let rendered = header.to_str().expect("header is ASCII");
+            assert_eq!(rendered, len.to_string(), "round-trips the decimal form");
+            assert!(
+                rendered.bytes().all(|b| b.is_ascii_digit()),
+                "only decimal digits reach HeaderValue::from_str"
+            );
+        }
     }
 
     #[test]

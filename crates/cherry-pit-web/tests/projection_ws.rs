@@ -28,7 +28,8 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
 mod common;
 use common::{
-    MockProjectionSource, assert_envelope_v1, spawn_test_server, spawn_test_server_secured,
+    MockProjectionSource, assert_envelope_v1, assert_join_ended_by_cancellation,
+    best_effort_teardown, spawn_test_server, spawn_test_server_secured,
 };
 
 /// Drain one Text frame and parse it as JSON. Times out after 5s.
@@ -44,7 +45,11 @@ async fn recv_text_json(
         .expect("ws read error");
     let text = match frame {
         Message::Text(t) => t.to_string(),
-        other => panic!("expected Text frame, got {other:?}"),
+        other @ (Message::Binary(_)
+        | Message::Ping(_)
+        | Message::Pong(_)
+        | Message::Close(_)
+        | Message::Frame(_)) => panic!("expected Text frame, got {other:?}"),
     };
     serde_json::from_str(&text).expect("frame not JSON")
 }
@@ -69,7 +74,7 @@ async fn ws_upgrade_returns_101() {
     let parsed = recv_text_json(&mut ws).await;
     assert_envelope_v1(&parsed, "connected");
 
-    ws.close(None).await.ok();
+    best_effort_teardown(ws.close(None).await);
     server.shutdown().await;
 }
 
@@ -102,7 +107,7 @@ async fn ws_receives_broadcast_update() {
     assert_eq!(parsed["pages"][1], "report.html");
     assert_eq!(parsed["timestamp"], "2026-04-14T12:00:00Z");
 
-    ws.close(None).await.ok();
+    best_effort_teardown(ws.close(None).await);
     server.shutdown().await;
 }
 
@@ -245,9 +250,9 @@ async fn ws_broadcast_reaches_all_connected_clients() {
         );
     }
 
-    ws1.close(None).await.ok();
-    ws2.close(None).await.ok();
-    ws3.close(None).await.ok();
+    best_effort_teardown(ws1.close(None).await);
+    best_effort_teardown(ws2.close(None).await);
+    best_effort_teardown(ws3.close(None).await);
     server.shutdown().await;
 }
 
@@ -274,7 +279,7 @@ async fn ws_session_ends_on_broadcast_close() {
 
     server.shutdown().await;
 
-    let _ = ws.send(Message::Close(None)).await;
+    best_effort_teardown(ws.send(Message::Close(None)).await);
 
     let drained = timeout(Duration::from_secs(5), async {
         while let Some(_msg) = ws.next().await {}
@@ -302,7 +307,9 @@ async fn ws_rejects_oversized_client_message() {
     assert_envelope_v1(&connected, "connected");
 
     let oversized = "x".repeat(8192);
-    ws.send(Message::Text(oversized.into())).await.ok();
+    ws.send(Message::Text(oversized.into()))
+        .await
+        .expect("oversized stimulus frame must reach the socket");
 
     let closed = timeout(Duration::from_secs(3), async {
         loop {
@@ -508,7 +515,7 @@ async fn ws_keepalive_pong_resets_timeout() {
 async fn ws_stalled_consumer_missed_pong_times_out_and_releases_permit() {
     let source = MockProjectionSource::new();
 
-    let state = cherry_pit_web::ProjectionState::from_arc(source.clone());
+    let state = cherry_pit_web::ProjectionState::from_arc(std::sync::Arc::clone(&source));
     let mut policy = cherry_pit_web::WsPolicy::permissive_for_tests();
     policy.max_connections = std::num::NonZeroUsize::new(1).expect("nonzero");
     let app = cherry_pit_web::build_projection_router(
@@ -589,14 +596,9 @@ async fn ws_stalled_consumer_missed_pong_times_out_and_releases_permit() {
     let connected2 = recv_text_json(&mut ws2).await;
     assert_envelope_v1(&connected2, "connected");
 
-    ws2.close(None).await.ok();
+    best_effort_teardown(ws2.close(None).await);
     server_handle.abort();
-    if let Err(join_err) = server_handle.await {
-        assert!(
-            join_err.is_cancelled(),
-            "server handle must exit by cancellation, got {join_err:?}"
-        );
-    }
+    assert_join_ended_by_cancellation(server_handle.await);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -646,7 +648,7 @@ async fn ws_broadcast_send_capped_by_pong_deadline() {
     let source = MockProjectionSource::new();
     let tx = source.tx();
 
-    let state = cherry_pit_web::ProjectionState::from_arc(source.clone());
+    let state = cherry_pit_web::ProjectionState::from_arc(std::sync::Arc::clone(&source));
     let mut policy = cherry_pit_web::WsPolicy::permissive_for_tests();
     policy.max_connections = std::num::NonZeroUsize::new(1).expect("nonzero");
     let app = cherry_pit_web::build_projection_router(
@@ -728,12 +730,7 @@ async fn ws_broadcast_send_capped_by_pong_deadline() {
     let connected2 = recv_text_json(&mut ws2).await;
     assert_envelope_v1(&connected2, "connected");
 
-    ws2.close(None).await.ok();
+    best_effort_teardown(ws2.close(None).await);
     server_handle.abort();
-    if let Err(join_err) = server_handle.await {
-        assert!(
-            join_err.is_cancelled(),
-            "server handle must exit by cancellation, got {join_err:?}"
-        );
-    }
+    assert_join_ended_by_cancellation(server_handle.await);
 }

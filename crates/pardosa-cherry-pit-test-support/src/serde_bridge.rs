@@ -88,7 +88,7 @@ fn remap_envelope<Ev: DomainEvent + DeserializeOwned>(
     .map_err(|e| StoreError::CorruptData(Box::new(e)))
 }
 
-/// `.pgno`-backed [`EventStore`]`<Event = Ev>` for a caller-supplied
+/// `.pgno`-backed [`EventStore<Event = Ev>`](EventStore) for a caller-supplied
 /// `serde`-capable domain event type.
 pub struct PgnoSerdeStore<Ev> {
     inner: PgnoEventStore<SerdeEnvelopeDto>,

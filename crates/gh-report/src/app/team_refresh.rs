@@ -212,7 +212,14 @@ fn conflict_seq_fields(error: &AppError) -> (Option<u64>, Option<u64>) {
             actual_seq,
             ..
         }) => (*expected_seq, *actual_seq),
-        _ => (None, None),
+        AppError::RunOwnershipLost
+        | AppError::InvalidRunIdentity(_)
+        | AppError::Inventory(_)
+        | AppError::GitHubApi(_)
+        | AppError::Report(_)
+        | AppError::Persistence(_)
+        | AppError::Server(_)
+        | AppError::Config(_) => (None, None),
     }
 }
 

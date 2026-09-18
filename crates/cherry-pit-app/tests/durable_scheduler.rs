@@ -234,14 +234,14 @@ async fn no_loss_recovery_completes_schedule_fired_without_caller_event() {
     let first = driver.recover_due(at(10)).await.unwrap();
     let second = driver.recover_due(at(10)).await.unwrap();
     let target_history = target_store.load(target_id).await.unwrap();
-    let stored: Vec<_> = target_history
+    let stored = target_history
         .iter()
         .filter(|env| env.payload().scheduled_event_id() == uuid::Uuid::from_u128(400))
-        .collect();
+        .count();
 
     assert_eq!(first.completed, 1);
     assert_eq!(second.completed, 0);
-    assert_eq!(stored.len(), 1);
+    assert_eq!(stored, 1);
     assert_eq!(published.lock().unwrap().len(), 1);
 }
 

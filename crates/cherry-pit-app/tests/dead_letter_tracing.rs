@@ -44,7 +44,7 @@ impl Write for VecWriter {
 }
 
 impl<'a> MakeWriter<'a> for VecWriter {
-    type Writer = VecWriter;
+    type Writer = Self;
     fn make_writer(&'a self) -> Self::Writer {
         self.clone()
     }

@@ -20,7 +20,7 @@ gateway implementation.
   typed `S: EventStore<Event = P::Event>`.
 - `InMemoryProjection<P>` — the **EPHEMERAL** backend (CHE-0048:R5, R10): no
   durable state, rebuilds from the `EventStore` on every process start. This
-  is what `gh-report` and `adr-srv` ship in production today, on ephemeral
+  is what `gh-report` ships in production today, on ephemeral
   Cloud Run filesystems where a local snapshot file would not survive a
   restart anyway.
 - `PardosaProjectionStore<P>` — the **PERSISTENT** backend (CHE-0048:R1, R10):

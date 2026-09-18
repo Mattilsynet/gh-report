@@ -14,8 +14,8 @@ use fixture::wiring::assemble;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn foo_command_drives_bar_via_policy() {
     let bundle = assemble();
-    let foo_gw = bundle.foo_gateway.clone();
-    let bar_gw = bundle.bar_gateway.clone();
+    let foo_gw = std::sync::Arc::clone(&bundle.foo_gateway);
+    let bar_gw = std::sync::Arc::clone(&bundle.bar_gateway);
     let app = bundle.app;
 
     let correlation_id = uuid::Uuid::now_v7();
@@ -24,7 +24,9 @@ async fn foo_command_drives_bar_via_policy() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let run_handle = tokio::spawn(async move {
         app.run(async move {
-            let _ = shutdown_rx.await;
+            match shutdown_rx.await {
+                Ok(()) | Err(_) => {}
+            }
         })
         .await
     });
@@ -48,6 +50,8 @@ async fn foo_command_drives_bar_via_policy() {
 
     let _ = (foo_id, bar_id);
 
-    let _ = shutdown_tx.send(());
+    shutdown_tx
+        .send(())
+        .expect("shutdown receiver must still be armed when the test signals teardown");
     run_handle.await.expect("run join").expect("run ok");
 }

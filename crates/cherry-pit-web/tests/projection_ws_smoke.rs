@@ -29,7 +29,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::MockProjectionSource;
+use common::{MockProjectionSource, assert_join_ended_by_cancellation, best_effort_teardown};
 
 /// CHE-0049 R13 smoke test — the WS surface emits envelopes carrying
 /// `"v": 1` and structurally refuses any raw `EventEnvelope<E>` payload.
@@ -74,10 +74,10 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
     assert_delta_envelope(&parsed);
     assert_no_event_envelope_fields(&parsed, "delta envelope");
 
-    let _ = ws.send(Message::Close(None)).await;
-    let _ = timeout(Duration::from_secs(2), ws.next()).await;
+    best_effort_teardown(ws.send(Message::Close(None)).await);
+    best_effort_teardown(timeout(Duration::from_secs(2), ws.next()).await);
     server.abort();
-    let _ = server.await;
+    assert_join_ended_by_cancellation(server.await);
 }
 
 async fn spawn_projection_server(
@@ -112,7 +112,11 @@ where
         .expect("ws read error");
     let text = match frame {
         Message::Text(t) => t.to_string(),
-        other => panic!("expected Text frame, got {other:?}"),
+        other @ (Message::Binary(_)
+        | Message::Ping(_)
+        | Message::Pong(_)
+        | Message::Close(_)
+        | Message::Frame(_)) => panic!("expected Text frame, got {other:?}"),
     };
     serde_json::from_str(&text).unwrap_or_else(|_| panic!("{label}: not JSON"))
 }
@@ -134,8 +138,14 @@ fn assert_delta_envelope(parsed: &Value) {
         parsed["pages"][0], "index.html",
         "delta envelope must echo PageUpdate.pages"
     );
-    assert_eq!(parsed["repo"], "test-repo");
-    assert_eq!(parsed["timestamp"], "2026-05-11T00:00:00Z");
+    assert_eq!(
+        parsed["repo"], "test-repo",
+        "delta envelope must echo PageUpdate.repo"
+    );
+    assert_eq!(
+        parsed["timestamp"], "2026-05-11T00:00:00Z",
+        "delta envelope must echo PageUpdate.timestamp"
+    );
 }
 
 fn assert_no_event_envelope_fields(parsed: &Value, label: &str) {
