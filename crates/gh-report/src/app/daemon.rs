@@ -286,7 +286,7 @@ async fn drain_shutdown_with_timeout(
     let _ = cancel.send(true);
     let worker_drain = app_state.drain_worker_pool(timeout);
     let collection_drain =
-        drain_collection_loop_after_cancel_with_timeout(collection_loop, timeout);
+        drain_task_after_cancel_with_timeout(collection_loop, timeout);
     let ((pool_drained, delivery_drained), collection_drained) =
         tokio::join!(worker_drain, collection_drain);
     if pool_drained {
@@ -323,13 +323,13 @@ async fn drain_shutdown_with_timeout(
             reason = "drained",
             "collection task drained cooperatively"
         ),
-        Err(CollectionDrainError::Join(join_err)) => warn!(
+        Err(BackgroundDrainError::Join(join_err)) => warn!(
             phase = PHASE_DRAIN_COLLECTION,
             reason = "join_error",
             error = %join_err,
             "collection task ended abnormally during drain",
         ),
-        Err(CollectionDrainError::Timeout) => warn!(
+        Err(BackgroundDrainError::Timeout) => warn!(
             phase = PHASE_DRAIN_COLLECTION,
             reason = "timeout",
             budget_ms = duration_millis(timeout),
@@ -989,22 +989,22 @@ where
     Ok(listener)
 }
 
-enum CollectionDrainError {
+enum BackgroundDrainError {
     Join(tokio::task::JoinError),
     Timeout,
 }
 
-async fn drain_collection_loop_after_cancel_with_timeout(
+async fn drain_task_after_cancel_with_timeout(
     handle: &mut tokio::task::JoinHandle<()>,
     timeout: Duration,
-) -> Result<(), CollectionDrainError> {
+) -> Result<(), BackgroundDrainError> {
     match tokio::time::timeout(timeout, &mut *handle).await {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(join_err)) => Err(CollectionDrainError::Join(join_err)),
+        Ok(Err(join_err)) => Err(BackgroundDrainError::Join(join_err)),
         Err(_) => {
             handle.abort();
             let _ = (&mut *handle).await;
-            Err(CollectionDrainError::Timeout)
+            Err(BackgroundDrainError::Timeout)
         }
     }
 }
