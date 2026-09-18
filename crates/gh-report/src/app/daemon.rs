@@ -41,10 +41,6 @@ use crate::error::{AppError, ConfigError, PersistenceError, persist_error_varian
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-/// Shared cooperative drain budget for worker-pool, delivery-task, and
-/// scheduled collection task shutdown. All drain phases start together
-/// after cancellation is signalled; the total daemon-side drain budget is
-/// this value rather than the sum of per-phase budgets.
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 const PHASE_READY: &str = "ready";
 const PHASE_SHUTDOWN_BEGIN: &str = "shutdown_begin";
@@ -269,12 +265,6 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Drain all daemon-side background tasks on shutdown.
-///
-/// Cancels the worker-pool token, closes the work queue, and signals the
-/// collection loop before starting the shared drain budget. Worker-pool,
-/// delivery-task, and collection-loop handles are then awaited concurrently;
-/// handles still pending at the budget boundary are aborted.
 async fn drain_shutdown(
     app_state: &Arc<AppState>,
     cancel: &tokio::sync::watch::Sender<bool>,
@@ -866,9 +856,7 @@ fn log_initial_collection_failure(error: &AppError) {
 /// (ghr-3fda2878, roadmap ghr-b562fe02 §E Phase 3).
 ///
 /// Reuses the same cooperative cancellation signal as the collection
-/// loop; a tick in flight is not interrupted (matching the collection
-/// loop's own drain semantics — see module docs), but the wait between
-/// ticks observes cancellation immediately.
+/// loop; the wait between ticks observes cancellation immediately.
 ///
 /// Ticks wait for the GitHub client rather than skipping when it is
 /// absent: it is created lazily on the first repo collection, so a tick
@@ -1039,7 +1027,14 @@ async fn drain_task_after_cancel_with_timeout(
         Ok(Err(join_err)) => Err(BackgroundDrainError::Join(join_err)),
         Err(_) => {
             handle.abort();
-            let _ = (&mut *handle).await;
+            if let Err(join_err) = (&mut *handle).await
+                && !join_err.is_cancelled()
+            {
+                warn!(
+                    error = %join_err,
+                    "background task failed while being aborted at drain expiry"
+                );
+            }
             Err(BackgroundDrainError::Timeout)
         }
     }
@@ -1891,6 +1886,138 @@ mod tests {
             .expect("client init is infallible");
     }
 
+    fn team_refresh_test_config(store_dir: &Path) -> RuntimeConfig {
+        RuntimeConfig {
+            org_name: "test-org".to_string(),
+            no_resume: true,
+            max_workers: 1,
+            store_dir: store_dir.to_path_buf(),
+            pardosa_backend: config::runtime::PardosaBackend::Pgno,
+            nats_url: config::runtime::DEFAULT_NATS_URL.to_string(),
+            nats_creds: None,
+            force_unlock: false,
+            force_refresh: false,
+            dashboard_config: config::dashboard::DashboardConfig::default(),
+            team_roster_read_from_projection: true,
+            rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            sweep_timeout: crate::config::SweepTimeout::default(),
+            max_repos: crate::config::MaxRepos::default(),
+            nats_runtime: None,
+        }
+    }
+
+    fn seed_platform_codeowners_repo(state: &Arc<AppState>) {
+        let evidence = crate::test_fixtures::make_repository_evidence(
+            "repo-a",
+            crate::domain::repository::Visibility::Public,
+            false,
+            crate::test_fixtures::make_checks(
+                crate::test_fixtures::policy_pass_setting(),
+                crate::test_fixtures::secret_enabled_observable(false),
+                crate::test_fixtures::dependabot_enabled(),
+                crate::test_fixtures::branch_pass(),
+                crate::test_fixtures::codeowners_with_owners(&["@test-org/platform"]),
+            ),
+        );
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+        state
+            .record_repo(&domain_key, evidence, &repo_name, "2026-07-23T00:00:00Z")
+            .expect("seed repo evidence");
+    }
+
+    const GATE_MAX_CONNECTIONS: usize = 4;
+    const GATE_MAX_REQUESTS_PER_CONNECTION: usize = 8;
+    const GATE_MAX_REQUEST_BYTES: usize = 8192;
+
+    struct GatedTeamApi {
+        base_url: String,
+        entered_rx: tokio::sync::oneshot::Receiver<()>,
+        release_tx: tokio::sync::oneshot::Sender<()>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    async fn read_gate_request_path(socket: &mut tokio::net::TcpStream) -> Option<String> {
+        use tokio::io::AsyncReadExt;
+        let mut head = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if head.len() >= GATE_MAX_REQUEST_BYTES {
+                return None;
+            }
+            match socket.read(&mut byte).await {
+                Ok(0) | Err(_) => return None,
+                Ok(_) => head.push(byte[0]),
+            }
+        }
+        let head = String::from_utf8(head).ok()?;
+        head.lines()
+            .next()?
+            .split_whitespace()
+            .nth(1)
+            .map(str::to_owned)
+    }
+
+    async fn write_gate_response(
+        socket: &mut tokio::net::TcpStream,
+        body: &str,
+    ) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await
+    }
+
+    /// A finite, controlled GitHub API stand-in that admits at most
+    /// `GATE_MAX_CONNECTIONS` connections and holds its FIRST request until
+    /// released, signalling `entered_rx` the moment that request is actually
+    /// being served. That makes "a real request is in flight" an observed
+    /// server-side fact rather than a sleep.
+    async fn spawn_gated_team_api() -> GatedTeamApi {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gate listener");
+        let base_url = format!("http://{}", listener.local_addr().expect("gate addr"));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut entered = Some(entered_tx);
+            let mut release = Some(release_rx);
+            for _ in 0..GATE_MAX_CONNECTIONS {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                for _ in 0..GATE_MAX_REQUESTS_PER_CONNECTION {
+                    let Some(path) = read_gate_request_path(&mut socket).await else {
+                        break;
+                    };
+                    if let Some(signal) = entered.take() {
+                        let _ = signal.send(());
+                        if let Some(gate) = release.take() {
+                            let _ = gate.await;
+                        }
+                    }
+                    let body = if path.contains("/teams/") {
+                        "[{\"login\": \"octocat\"}]"
+                    } else {
+                        "[]"
+                    };
+                    if write_gate_response(&mut socket, body).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        GatedTeamApi {
+            base_url,
+            entered_rx,
+            release_tx,
+            server,
+        }
+    }
+
     /// A not-yet-initialised GitHub client must NOT let the startup tick
     /// silently no-op. `await_github_client` has no "skip" variant, so
     /// the only observable behaviours are "still waiting" and "Client".
@@ -1961,23 +2088,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn team_refresh_loop_records_a_roster_at_startup_without_waiting_an_interval() {
         let (state, dir) = team_refresh_test_state().await;
-        let evidence = crate::test_fixtures::make_repository_evidence(
-            "repo-a",
-            crate::domain::repository::Visibility::Public,
-            false,
-            crate::test_fixtures::make_checks(
-                crate::test_fixtures::policy_pass_setting(),
-                crate::test_fixtures::secret_enabled_observable(false),
-                crate::test_fixtures::dependabot_enabled(),
-                crate::test_fixtures::branch_pass(),
-                crate::test_fixtures::codeowners_with_owners(&["@test-org/platform"]),
-            ),
-        );
-        let domain_key = evidence.repository.inventory_key.clone();
-        let repo_name = evidence.repository.name.clone();
-        state
-            .record_repo(&domain_key, evidence, &repo_name, "2026-07-23T00:00:00Z")
-            .expect("seed repo evidence");
+        seed_platform_codeowners_repo(&state);
 
         let server = MockServer::start().await;
         Mock::given(wiremock::matchers::path("/orgs/test-org/members"))
@@ -1996,23 +2107,7 @@ mod tests {
 
         let team_key =
             crate::event::team_domain_key("test-org", "platform").expect("derive team key");
-        let config = RuntimeConfig {
-            org_name: "test-org".to_string(),
-            no_resume: true,
-            max_workers: 1,
-            store_dir: dir.path().to_path_buf(),
-            pardosa_backend: config::runtime::PardosaBackend::Pgno,
-            nats_url: config::runtime::DEFAULT_NATS_URL.to_string(),
-            nats_creds: None,
-            force_unlock: false,
-            force_refresh: false,
-            dashboard_config: config::dashboard::DashboardConfig::default(),
-            team_roster_read_from_projection: true,
-            rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
-            sweep_timeout: crate::config::SweepTimeout::default(),
-            max_repos: crate::config::MaxRepos::default(),
-            nats_runtime: None,
-        };
+        let config = team_refresh_test_config(dir.path());
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
         let started = tokio::time::Instant::now();
@@ -2142,11 +2237,31 @@ mod tests {
             elapsed <= timeout + Duration::from_millis(1),
             "shutdown drain must use one shared timeout budget; elapsed={elapsed:?}, budget={timeout:?}"
         );
+        assert!(
+            collection_loop.is_finished(),
+            "a collection task still pending at the drain budget must be aborted \
+             AND its termination observed before drain returns"
+        );
+        assert!(
+            team_refresh_loop.is_finished(),
+            "a team-refresh task still pending at the drain budget must be aborted \
+             AND its termination observed before drain returns; dropping the handle \
+             instead leaves the refresh detached past shutdown"
+        );
     }
 
+    /// Shutdown must not return while a REAL team-refresh request is still
+    /// in flight. The request is held server-side by a controlled finite
+    /// gate, so "in flight" is an observed server fact rather than a sleep;
+    /// releasing it must then yield a durable roster written through the
+    /// actual store, with the retained refresh handle observed as terminated.
     #[tokio::test]
     async fn shutdown_waits_for_a_held_in_flight_team_refresh_request() {
-        let state = AppState::new().await;
+        let (state, dir) = team_refresh_test_state().await;
+        seed_platform_codeowners_repo(&state);
+        let gate = spawn_gated_team_api().await;
+        install_team_refresh_client(&state, &gate.base_url).await;
+
         let pool_handle = tokio::spawn(async {});
         let delivery_handle = tokio::spawn(async {});
         assert!(
@@ -2155,19 +2270,22 @@ mod tests {
                 .set(std::sync::Mutex::new(Some((pool_handle, delivery_handle))))
                 .is_ok()
         );
-        let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let mut collection_loop = tokio::spawn(async {});
+        let config = team_refresh_test_config(dir.path());
+        let mut team_refresh_loop = spawn_team_refresh_loop(&config, Arc::clone(&state), cancel_rx);
 
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-        let roster_written = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let observed = Arc::clone(&roster_written);
-        let mut team_refresh_loop = tokio::spawn(async move {
-            let _ = release_rx.await;
-            observed.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-        tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(10), gate.entered_rx)
+            .await
+            .expect("the refresh tick must reach the GitHub API before shutdown begins")
+            .expect("the gate server must signal the entered request");
+
+        let release_tx = gate.release_tx;
+        let releaser = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            let _ = release_tx.send(());
+            release_tx
+                .send(())
+                .expect("the gate server must still hold the release receiver");
         });
 
         drain_shutdown_with_timeout(
@@ -2175,19 +2293,71 @@ mod tests {
             &cancel_tx,
             &mut collection_loop,
             &mut team_refresh_loop,
-            Duration::from_secs(2),
+            Duration::from_secs(10),
         )
         .await;
 
+        let team_key =
+            crate::event::team_domain_key("test-org", "platform").expect("derive team key");
+        let refresh_finished = team_refresh_loop.is_finished();
+        let roster_recorded = state.lock_projection().team_rosters.contains_key(&team_key);
+
+        releaser.await.expect("gate releaser task must not panic");
+        gate.server.abort();
+        let _ = gate.server.await;
+
         assert!(
-            team_refresh_loop.is_finished(),
-            "drain returned while the team-refresh task was still in flight — its \
-             handle is unobserved and its outcome detached"
+            refresh_finished,
+            "drain returned while the real team-refresh task was still in flight — \
+             its handle is unobserved and its outcome detached"
         );
         assert!(
-            roster_written.load(std::sync::atomic::Ordering::SeqCst),
-            "the held in-flight refresh request completed after drain returned; \
-             shutdown reported stopped without observing the refresh result"
+            roster_recorded,
+            "the held in-flight refresh request was released during drain but no \
+             roster reached the store; shutdown reported stopped without observing \
+             the real refresh result"
+        );
+    }
+
+    #[tokio::test]
+    async fn draining_an_already_completing_task_reports_normal_completion() {
+        let mut handle = tokio::spawn(async {});
+        let outcome =
+            drain_task_after_cancel_with_timeout(&mut handle, Duration::from_secs(5)).await;
+        assert!(
+            outcome.is_ok(),
+            "a task that completes within the budget must drain as a normal completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn draining_a_panicking_task_reports_the_join_error() {
+        let mut handle = tokio::spawn(async { panic!("fixture panic") });
+        let outcome =
+            drain_task_after_cancel_with_timeout(&mut handle, Duration::from_secs(5)).await;
+        match outcome {
+            Err(BackgroundDrainError::Join(join_err)) => assert!(
+                join_err.is_panic(),
+                "an abnormal join must retain the panic classification"
+            ),
+            Err(BackgroundDrainError::Timeout) | Ok(()) => {
+                panic!("a panicking task must drain as a join error, not success or timeout")
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn draining_a_pending_task_times_out_and_terminates_it() {
+        let mut handle = tokio::spawn(std::future::pending::<()>());
+        let outcome =
+            drain_task_after_cancel_with_timeout(&mut handle, Duration::from_millis(50)).await;
+        assert!(
+            matches!(outcome, Err(BackgroundDrainError::Timeout)),
+            "a task pending past the budget must drain as budget exhaustion"
+        );
+        assert!(
+            handle.is_finished(),
+            "budget exhaustion must abort AND observe termination before returning"
         );
     }
 
