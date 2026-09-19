@@ -3086,7 +3086,7 @@ mod tests {
                 in_org: None,
             },
         ];
-        let org_members: HashSet<String> = ["alice".to_string()].into_iter().collect();
+        let org_members: HashSet<String> = HashSet::from(["alice".to_string()]);
 
         enrich_owner_metrics_with_org_membership(&mut owners, Some(&org_members));
 

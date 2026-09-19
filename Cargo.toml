@@ -213,7 +213,13 @@ overflow-checks = true
 pedantic = { level = "warn", priority = -1 }
 as_underscore = "warn"
 as_pointer_underscore = "warn"
+clear_with_drain = "warn"
 dbg_macro = "warn"
+iter_on_empty_collections = "warn"
+iter_on_single_items = "warn"
+iter_with_drain = "warn"
+needless_collect = "warn"
+search_is_some = "warn"
 todo = "warn"
 unimplemented = "warn"
 unused_result_ok = "warn"

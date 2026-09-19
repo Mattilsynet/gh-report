@@ -722,6 +722,10 @@ mod tests {
         let num_threads = 10;
         let barrier = Arc::new(Barrier::new(num_threads));
 
+        #[expect(
+            clippy::needless_collect,
+            reason = "all ten workers must be spawned before the first join so Barrier::new(10) can release; lazy fusion would join worker 0 before worker 1 is spawned and deadlock"
+        )]
         let handles: Vec<_> = (0..num_threads)
             .map(|i| {
                 let dir = dir_path.clone();

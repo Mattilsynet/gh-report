@@ -5304,7 +5304,7 @@ mod tests {
             ],
         }];
         let org_members: std::collections::HashSet<String> =
-            ["octocat".to_string()].into_iter().collect();
+            std::collections::HashSet::from(["octocat".to_string()]);
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: repos,
