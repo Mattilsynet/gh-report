@@ -959,7 +959,7 @@ mod tests {
                 },
             ],
         }];
-        let org_members: HashSet<String> = ["alice".to_string()].into_iter().collect();
+        let org_members: HashSet<String> = HashSet::from(["alice".to_string()]);
 
         enrich_team_rosters_with_org_membership(&mut rosters, Some(&org_members));
 
