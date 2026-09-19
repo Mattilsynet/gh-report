@@ -66,7 +66,7 @@ make_workspace() {
     echo "]"
     echo
     if [ -n "$drop" ]; then
-      printf '%s\n' "$table" | grep -Ev "^($drop) *=" 
+      printf '%s\n' "$table" | grep -Ev "^($drop) *="
     else
       printf '%s\n' "$table"
     fi
