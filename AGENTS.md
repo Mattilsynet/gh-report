@@ -10,13 +10,10 @@ Rust workspace (edition 2024, MSRV 1.98, resolver 3, 12 member crates) shipping 
 binary plus an ADR-governed library family and a large ADR corpus.
 
 - Binary (real entrypoint): `gh-report` (GitHub org evidence collector + HTML
-  reporter daemon). The `adr-srv` GraphQL service was retired from this
-  workspace under ghr-ktvy5; its ADRs (CHE-0098, AFM-0027) remain in the
-  corpus as historical decisions. Two tools are **not** built here and are consumed as
+  reporter daemon). Two tools are **not** built here and are consumed as
   installed binaries from their canonical repos: `adr-fmt` (ADR validator,
-  read-only) from `Mattilsynet/adr-fmt`, which since the `adr-srv` retirement
-  has no library consumers here and therefore no workspace-dependency pin;
-  and `comment-free`
+  read-only) from `Mattilsynet/adr-fmt`, which has no library consumers here
+  and therefore no workspace-dependency pin; and `comment-free`
   (doc-lint tool) from `acje/comment-free`, which has no library consumers
   here and therefore no workspace-dependency pin.
 - `cherry-pit-*` — event-sourcing substrate consumed by `gh-report`.
@@ -95,8 +92,8 @@ adr-fmt-xdlw9 O3).
   computed package list, never the whole graph.
 
   Reverse-dependent closure is mechanically computable, not a judgement
-  call — verified against `cherry-pit-core` (historical run, 9 transitive
-  reverse dependents including the since-retired `adr-srv`: `cherry-pit-app`, `cherry-pit-gateway`,
+  call — verified against `cherry-pit-core` (historical run, 8 transitive
+  reverse dependents: `cherry-pit-app`, `cherry-pit-gateway`,
   `cherry-pit-merger`, `cherry-pit-projection`, `cherry-pit-web`,
   `cherry-pit-wq`, `gh-report`, `pardosa-cherry-pit-test-support`; exit 0):
   ```
@@ -168,13 +165,14 @@ adr-fmt-xdlw9 O3).
   local inner loop. **CI has no dedicated doctest step**: doctests are covered
   by the single `cargo test --workspace --all-features --locked` step at
   `.github/workflows/ci-reusable.yml:138`, exactly as locally. CI is untouched
-  by this tiering change: the 6 required
+  by this tiering change: the 7 required
   contexts and stabsec code-owner review still run full verification
   pre-merge. Nothing is deleted, `#[ignore]`d, or feature-gated by moving
   BOUNDARY to epic granularity; coverage is relocated to where it earns its
   cost, never dropped.
-- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
-  tripwire jobs. No agent tier runs these — not INNER, not MID, not BOUNDARY.
+- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the
+  tripwire jobs (`tools/tripwires.sh --list` for the current check names). No
+  agent tier runs these — not INNER, not MID, not BOUNDARY.
 - **Not covered by the four BOUNDARY commands** (additional CI steps, *not* an
   added prohibition): the `gh-report-web-client` steps inside the
   `build-test-lint` job (`.github/workflows/ci-reusable.yml:16-46`). They split
