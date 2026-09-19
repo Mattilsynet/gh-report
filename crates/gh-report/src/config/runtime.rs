@@ -281,7 +281,7 @@ mod tests {
         assert!(cfg.subject.contains(major));
         assert!(cfg.durable_consumer.contains(major));
 
-        let token = org_token("acme".as_bytes());
+        let token = org_token(b"acme");
         let next_major = "v24";
         assert_ne!(major, next_major, "counterfactual major must differ");
 
