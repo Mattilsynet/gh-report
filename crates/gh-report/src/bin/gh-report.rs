@@ -55,6 +55,10 @@ mod profiling {
                 .append(true)
                 .open(&csv_path)
                 .expect("open RSS_CSV path for the profiling harness");
+            #[expect(
+                clippy::unused_result_ok,
+                reason = "profiling-only CSV header write is best effort; a failed write must not abort the profiled run"
+            )]
             writeln!(csv, "epoch_ms,rss_bytes").ok();
 
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -67,7 +71,15 @@ mod profiling {
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_millis();
+                        #[expect(
+                            clippy::unused_result_ok,
+                            reason = "profiling-only RSS sample write is best effort; a failed write must not stop the sampler thread"
+                        )]
                         writeln!(csv, "{epoch_ms},{rss_bytes}").ok();
+                        #[expect(
+                            clippy::unused_result_ok,
+                            reason = "profiling-only CSV flush is best effort; a failed flush must not stop the sampler thread"
+                        )]
                         csv.flush().ok();
                     }
                     std::thread::sleep(Duration::from_secs(2));
@@ -86,6 +98,10 @@ mod profiling {
         fn drop(&mut self) {
             self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
             if let Some(handle) = self.sampler.take() {
+                #[expect(
+                    clippy::unused_result_ok,
+                    reason = "join result carries only the sampler thread panic payload; the Drop guard waits for the thread but must not panic while unwinding"
+                )]
                 handle.join().ok();
             }
         }
