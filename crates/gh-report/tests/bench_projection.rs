@@ -332,6 +332,29 @@ fn test_staged_projection_benchmark_1m() {
     run_staged_benchmark(1_000_000, 5_000, 200);
 }
 
+fn unique_evidence_timestamp(seq: usize) -> String {
+    let second = i64::try_from(1_726_130_000u64 + seq as u64).expect("candidate timestamp second");
+    jiff::Timestamp::from_second(second)
+        .expect("candidate timestamp in range")
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
+fn generate_unique_evidence(repo_idx: usize, seq: usize) -> RepositoryEvidence {
+    let mut evidence = generate_evidence(repo_idx, seq);
+    let ts = unique_evidence_timestamp(seq);
+    evidence.checks.security_policy.timestamp.clone_from(&ts);
+    evidence.checks.secret_scanning.timestamp.clone_from(&ts);
+    evidence
+        .checks
+        .dependabot_security_updates
+        .timestamp
+        .clone_from(&ts);
+    evidence.checks.branch_protection.timestamp.clone_from(&ts);
+    evidence.checks.codeowners.timestamp = ts;
+    evidence
+}
+
 fn expected_latest_seq(total_events: usize, distinct_repos: usize, repo_idx: usize) -> usize {
     let mut seq = repo_idx;
     let mut last = repo_idx;
@@ -353,9 +376,10 @@ fn assert_expected_latest_state(
     for item in &snapshot {
         by_name.insert(item.repository.name.clone(), item);
     }
+    let mut observed_timestamps = std::collections::HashSet::with_capacity(distinct_repos);
     for repo_idx in 0..distinct_repos {
         let seq = expected_latest_seq(total_events, distinct_repos, repo_idx);
-        let expected = generate_evidence(repo_idx, seq);
+        let expected = generate_unique_evidence(repo_idx, seq);
         let name = format!("repo-{repo_idx}");
         let actual = by_name
             .get(&name)
@@ -380,7 +404,24 @@ fn assert_expected_latest_state(
             actual.checks.security_policy.timestamp, expected.checks.security_policy.timestamp,
             "{name} latest timestamp (staleness/order oracle) at seq {seq}"
         );
+        assert_eq!(
+            actual.checks.codeowners.timestamp, expected.checks.codeowners.timestamp,
+            "{name} latest codeowners observation at seq {seq}"
+        );
+        assert_eq!(
+            actual.checks.branch_protection.timestamp, expected.checks.branch_protection.timestamp,
+            "{name} latest branch_protection observation at seq {seq}"
+        );
+        assert!(
+            observed_timestamps.insert(actual.checks.security_policy.timestamp.clone()),
+            "{name} projected observation must be unique across fibers at seq {seq}"
+        );
     }
+    assert_eq!(
+        observed_timestamps.len(),
+        distinct_repos,
+        "projected latest observations must be alias-free"
+    );
 }
 
 fn expected_event_nanos(seq: usize) -> u64 {
@@ -454,6 +495,43 @@ fn stale_by_3600_alias_witness() {
     );
 }
 
+#[test]
+fn unique_candidate_observation_is_alias_free() {
+    let aliased_latest = generate_evidence(0, 9_950);
+    let aliased_stale = generate_evidence(0, 6_350);
+    assert_eq!(
+        aliased_latest.checks.security_policy.timestamp,
+        aliased_stale.checks.security_policy.timestamp,
+        "original generator still aliases every 3600 sequences"
+    );
+
+    let latest = generate_unique_evidence(0, 9_950);
+    let stale = generate_unique_evidence(0, 6_350);
+    assert_ne!(
+        latest.checks.security_policy.timestamp, stale.checks.security_policy.timestamp,
+        "candidate observation must distinguish the stale-by-3600 witness"
+    );
+    assert_ne!(
+        latest.checks.codeowners.timestamp,
+        stale.checks.codeowners.timestamp
+    );
+    assert_eq!(
+        latest.checks.security_policy.timestamp.len(),
+        aliased_latest.checks.security_policy.timestamp.len(),
+        "candidate observation stays fixed-width"
+    );
+    assert_eq!(
+        format!("{:?}", latest.checks.security_policy.status),
+        format!("{:?}", aliased_latest.checks.security_policy.status),
+        "candidate preserves status distribution"
+    );
+    assert_eq!(
+        format!("{:?}", latest.checks.branch_protection.status),
+        format!("{:?}", aliased_latest.checks.branch_protection.status)
+    );
+    assert_eq!(latest.repository.id, aliased_latest.repository.id);
+}
+
 fn write_fixture_artefact(
     adapter: &FileStorageAdapter,
     total_events: usize,
@@ -488,7 +566,7 @@ fn write_fixture_artefact(
         let repo_idx = i % distinct_repos;
         let domain_key = format!("org/repo-{repo_idx}");
         let fiber_id = derive_fiber_id(&domain_key);
-        let evidence = generate_evidence(repo_idx, i);
+        let evidence = generate_unique_evidence(repo_idx, i);
         let native_evidence: gh_report::event::RepositoryEvidence =
             evidence.try_into().expect("try_into native evidence");
         let domain_event = DomainEvent::RepositoryStateCaptured {
