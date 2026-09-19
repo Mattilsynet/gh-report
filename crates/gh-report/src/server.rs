@@ -903,6 +903,10 @@ mod tests {
             "pages should contain index.html, got: {page_names:?}"
         );
 
+        #[expect(
+            clippy::unused_result_ok,
+            reason = "test teardown close is best effort after the assertions above; the server handle is aborted on the next line"
+        )]
         ws.close(None).await.ok();
         handle.abort();
     }
