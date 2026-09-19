@@ -22,14 +22,78 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 mod profiling {
     use std::fs::OpenOptions;
     use std::io::Write;
+    use std::sync::{Condvar, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WaitOutcome {
+        Stopped,
+        TimedOut,
+    }
+
+    struct ShutdownSignal {
+        stopped: Mutex<bool>,
+        changed: Condvar,
+    }
+
+    impl ShutdownSignal {
+        fn new() -> Self {
+            Self {
+                stopped: Mutex::new(false),
+                changed: Condvar::new(),
+            }
+        }
+
+        fn stop(&self) {
+            let mut stopped = self
+                .stopped
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *stopped = true;
+            self.changed.notify_all();
+        }
+
+        fn is_stopped(&self) -> bool {
+            *self
+                .stopped
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        fn wait_timeout(&self, timeout: Duration) -> WaitOutcome {
+            self.wait_timeout_enrolled(timeout, || {})
+        }
+
+        fn wait_timeout_enrolled(
+            &self,
+            timeout: Duration,
+            on_enrolled: impl FnOnce(),
+        ) -> WaitOutcome {
+            let stopped = self
+                .stopped
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            on_enrolled();
+            let (stopped, _) = self
+                .changed
+                .wait_timeout_while(stopped, timeout, |stopped| !*stopped)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *stopped {
+                WaitOutcome::Stopped
+            } else {
+                WaitOutcome::TimedOut
+            }
+        }
+    }
 
     /// RAII guard bundling the dhat heap profiler and the background RSS
     /// sampler. Dropping this at the end of `main` flushes `dhat-heap.json`
     /// and stops the sampler thread.
     pub struct ProfilingGuard {
         _dhat: dhat::Profiler,
-        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        stop: std::sync::Arc<ShutdownSignal>,
         sampler: Option<std::thread::JoinHandle<()>>,
     }
 
@@ -61,11 +125,11 @@ mod profiling {
             )]
             writeln!(csv, "epoch_ms,rss_bytes").ok();
 
-            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop = std::sync::Arc::new(ShutdownSignal::new());
             let stop_for_thread = std::sync::Arc::clone(&stop);
             let pid = std::process::id();
             let sampler = std::thread::spawn(move || {
-                while !stop_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                run_sampler(&stop_for_thread, SAMPLE_INTERVAL, move || {
                     if let Some(rss_bytes) = sample_rss_bytes(pid) {
                         let epoch_ms = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
@@ -82,8 +146,7 @@ mod profiling {
                         )]
                         csv.flush().ok();
                     }
-                    std::thread::sleep(Duration::from_secs(2));
-                }
+                });
             });
 
             Self {
@@ -96,13 +159,25 @@ mod profiling {
 
     impl Drop for ProfilingGuard {
         fn drop(&mut self) {
-            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.stop.stop();
             if let Some(handle) = self.sampler.take() {
                 #[expect(
                     clippy::unused_result_ok,
                     reason = "join result carries only the sampler thread panic payload; the Drop guard waits for the thread but must not panic while unwinding"
                 )]
                 handle.join().ok();
+            }
+        }
+    }
+
+    fn run_sampler(signal: &ShutdownSignal, interval: Duration, mut sample: impl FnMut()) {
+        loop {
+            if signal.is_stopped() {
+                break;
+            }
+            sample();
+            if signal.wait_timeout(interval) == WaitOutcome::Stopped {
+                break;
             }
         }
     }
@@ -121,6 +196,94 @@ mod profiling {
             .parse()
             .ok()?;
         Some(rss_kb * 1024)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{SAMPLE_INTERVAL, ShutdownSignal, WaitOutcome, run_sampler};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        #[test]
+        fn sample_interval_stays_two_seconds() {
+            assert_eq!(SAMPLE_INTERVAL, Duration::from_secs(2));
+        }
+
+        #[test]
+        fn wait_times_out_when_no_stop_requested() {
+            let signal = ShutdownSignal::new();
+            let started = Instant::now();
+            assert_eq!(
+                signal.wait_timeout(Duration::from_millis(50)),
+                WaitOutcome::TimedOut
+            );
+            assert!(started.elapsed() >= Duration::from_millis(50));
+        }
+
+        #[test]
+        fn stop_before_wait_returns_stopped_without_waiting() {
+            let signal = ShutdownSignal::new();
+            signal.stop();
+            let started = Instant::now();
+            assert_eq!(
+                signal.wait_timeout(Duration::from_secs(30)),
+                WaitOutcome::Stopped
+            );
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+
+        #[test]
+        fn stop_during_enrolled_wait_wakes_waiter() {
+            let signal = Arc::new(ShutdownSignal::new());
+            let stopper = Arc::clone(&signal);
+            let handle = std::sync::Mutex::new(None);
+            let started = Instant::now();
+            let outcome = signal.wait_timeout_enrolled(Duration::from_secs(30), || {
+                *handle.lock().expect("handle slot") = Some(std::thread::spawn(move || {
+                    stopper.stop();
+                }));
+            });
+            assert_eq!(outcome, WaitOutcome::Stopped);
+            assert!(started.elapsed() < Duration::from_secs(5));
+            handle
+                .into_inner()
+                .expect("handle slot")
+                .expect("stopper spawned")
+                .join()
+                .expect("stopper thread joins");
+        }
+
+        #[test]
+        fn pre_stopped_sampler_does_not_sample() {
+            let signal = ShutdownSignal::new();
+            signal.stop();
+            let mut samples = 0_u32;
+            run_sampler(&signal, Duration::from_secs(30), || samples += 1);
+            assert_eq!(samples, 0);
+        }
+
+        #[test]
+        fn active_sampler_samples_once_then_stops_on_signal() {
+            let signal = Arc::new(ShutdownSignal::new());
+            let stopper = Arc::clone(&signal);
+            let mut samples = 0_u32;
+            run_sampler(&signal, Duration::from_secs(30), || {
+                samples += 1;
+                stopper.stop();
+            });
+            assert_eq!(samples, 1);
+        }
+
+        #[test]
+        fn repeated_stop_is_idempotent() {
+            let signal = ShutdownSignal::new();
+            signal.stop();
+            signal.stop();
+            assert_eq!(
+                signal.wait_timeout(Duration::from_secs(30)),
+                WaitOutcome::Stopped
+            );
+        }
     }
 }
 

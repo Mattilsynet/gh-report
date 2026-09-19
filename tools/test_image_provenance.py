@@ -41,12 +41,26 @@ class ImageProvenance(unittest.TestCase):
     def test_display_version_remains_separate(self):
         steps = self.workflow["jobs"]["build"]["steps"]
         build = next(step for step in steps if step.get("id") == "build-push")["with"]
-        self.assertEqual(build["build-args"].splitlines(), [f"APP_VERSION={TAG}"])
+        self.assertEqual(
+            build["build-args"].splitlines(),
+            [f"APP_VERSION={TAG}", f"APP_GIT_SHA={SHA}"],
+        )
         self.assertEqual(build["tags"].splitlines(), ["${{ env.IMAGE }}:latest", f"${{{{ env.IMAGE }}}}:{TAG}"])
         dockerfile = (ROOT / build["file"]).read_text()
         self.assertIn("\nARG APP_VERSION\n", dockerfile)
-        self.assertIn('APP_VERSION="$APP_VERSION" cargo build --release --locked -p gh-report', dockerfile)
+        self.assertIn("\nARG APP_GIT_SHA\n", dockerfile)
+        self.assertIn(
+            'APP_VERSION="$APP_VERSION" APP_GIT_SHA="$APP_GIT_SHA" '
+            "cargo build --release --locked -p gh-report",
+            dockerfile,
+        )
         self.assertNotIn(REVISION, dockerfile)
+
+    def test_build_stamp_inputs_reach_the_binary(self):
+        build_rs = (ROOT / "crates/gh-report/build.rs").read_text()
+        for var in ("APP_VERSION", "APP_GIT_SHA"):
+            self.assertIn(f"cargo:rerun-if-env-changed={var}", build_rs)
+            self.assertIn(f'env::var("{var}")', build_rs)
 
     def test_mutable_source_identity_is_rejected(self):
         for source in (TAG, "${{ github.ref }}", "latest", "v1.2.3", ""):
