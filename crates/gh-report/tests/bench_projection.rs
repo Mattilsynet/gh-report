@@ -1,9 +1,3 @@
-#![allow(
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::too_many_lines
-)]
-
 use cherry_pit_core::Projection;
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
@@ -16,8 +10,27 @@ use gh_report::event::DomainEvent;
 use gh_report::projection::{EvidenceProjection, EvidenceProjectionEvent};
 use pardosa::file::FileStorageAdapter;
 use pardosa::prelude::*;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::io::Write as _;
 use std::time::Instant;
+
+const EVENT_EPOCH_SECONDS: u64 = 1_726_130_000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WriteMode {
+    NativeFrames,
+    DurableAppend,
+}
+
+impl WriteMode {
+    fn label(self) -> &'static str {
+        match self {
+            WriteMode::NativeFrames => "native-frames",
+            WriteMode::DurableAppend => "durable-append",
+        }
+    }
+}
 
 fn sample_claim(epoch: u64) -> OwnershipClaimRecord {
     OwnershipClaimRecord {
@@ -31,11 +44,23 @@ fn sample_claim(epoch: u64) -> OwnershipClaimRecord {
     }
 }
 
+fn event_nanos(seq: usize) -> u64 {
+    (EVENT_EPOCH_SECONDS + seq as u64) * 1_000_000_000
+}
+
+fn observation_timestamp(seq: usize) -> String {
+    let second = i64::try_from(EVENT_EPOCH_SECONDS + seq as u64).expect("observation second");
+    jiff::Timestamp::from_second(second)
+        .expect("observation second in range")
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
 fn generate_evidence(repo_idx: usize, seq: usize) -> RepositoryEvidence {
     let name = format!("repo-{repo_idx}");
-    let ts = format!("2026-09-12T10:{:02}:{:02}Z", (seq / 60) % 60, seq % 60);
+    let ts = observation_timestamp(seq);
     let sec_pass = !(repo_idx + seq).is_multiple_of(3);
-    let bp_pass = (repo_idx + seq).is_multiple_of(2);
+    let bp_pass = seq.is_multiple_of(2);
 
     RepositoryEvidence {
         repository: Repository {
@@ -119,61 +144,136 @@ fn generate_evidence(repo_idx: usize, seq: usize) -> RepositoryEvidence {
     }
 }
 
-fn apply_projection_event(projection: &mut EvidenceProjection, event: EvidenceProjectionEvent) {
-    let envelope = match cherry_pit_core::EventEnvelope::new(
+fn domain_event(repo_idx: usize, seq: usize) -> DomainEvent {
+    let native: gh_report::event::RepositoryEvidence = generate_evidence(repo_idx, seq)
+        .try_into()
+        .expect("native evidence");
+    DomainEvent::RepositoryStateCaptured {
+        domain_key: NonEmptyEventString::new(format!("org/repo-{repo_idx}")).expect("domain key"),
+        repo_name: NonEmptyEventString::new(format!("repo-{repo_idx}")).expect("repo name"),
+        timestamp: Timestamp::new(event_nanos(seq)).expect("event timestamp"),
+        evidence: Some(native),
+    }
+}
+
+fn next_envelope(
+    seq: usize,
+    fibers: usize,
+    heads: &mut HashMap<[u8; 16], EventEnvelope>,
+    payload_bytes: &mut usize,
+) -> EventEnvelope {
+    let repo_idx = seq % fibers;
+    let fiber_id = derive_fiber_id(&format!("org/repo-{repo_idx}"));
+    let mut payload = Vec::new();
+    domain_event(repo_idx, seq)
+        .encode_payload(&mut payload)
+        .expect("encode payload");
+    *payload_bytes += payload.len();
+
+    let event_id = *uuid::Uuid::now_v7().as_bytes();
+    let envelope = match heads.get(&fiber_id) {
+        Some(prev) => EventEnvelope::chain(prev, event_id, payload).expect("chain"),
+        None => EventEnvelope::genesis(event_id, fiber_id, payload).expect("genesis"),
+    };
+    heads.insert(fiber_id, envelope.clone());
+    envelope
+}
+
+fn build_store(
+    adapter: &FileStorageAdapter,
+    total: usize,
+    fibers: usize,
+    mode: WriteMode,
+) -> usize {
+    let mut session = adapter.create(&sample_claim(1)).expect("create session");
+    let mut heads: HashMap<[u8; 16], EventEnvelope> = HashMap::with_capacity(fibers);
+    let mut payload_bytes = 0usize;
+
+    match mode {
+        WriteMode::DurableAppend => {
+            for seq in 0..total {
+                let envelope = next_envelope(seq, fibers, &mut heads, &mut payload_bytes);
+                let verdict = session
+                    .append_envelope_verdict(&envelope)
+                    .expect("append envelope");
+                assert!(
+                    matches!(verdict, pardosa::store::WriteLandingVerdict::Landed(_)),
+                    "durable append must land at seq {seq}"
+                );
+            }
+            drop(session);
+        }
+        WriteMode::NativeFrames => {
+            drop(session);
+            let file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(adapter.pgno_path())
+                .expect("append-open created .pgno");
+            let mut out = std::io::BufWriter::with_capacity(1 << 20, file);
+            for seq in 0..total {
+                let envelope = next_envelope(seq, fibers, &mut heads, &mut payload_bytes);
+                let mut envelope_bytes = Vec::new();
+                envelope.encode(&mut envelope_bytes);
+                let mut frame = Vec::new();
+                ContainerFrame::encode_payload(&envelope_bytes, &mut frame);
+                out.write_all(&frame).expect("write frame");
+            }
+            out.into_inner()
+                .expect("flush store")
+                .sync_data()
+                .expect("sync store");
+        }
+    }
+
+    assert_eq!(heads.len(), fibers.min(total), "retained head cardinality");
+    payload_bytes
+}
+
+fn apply_envelope(projection: &mut EvidenceProjection, stored: &EventEnvelope) {
+    let event = DomainEvent::decode_payload(&stored.payload).expect("decode domain event");
+    let projection_event = match event {
+        DomainEvent::RepositoryStateCaptured {
+            domain_key,
+            evidence,
+            ..
+        } => EvidenceProjectionEvent::RepositoryStateCaptured {
+            detached: stored.header.detached,
+            domain_key: domain_key.as_str().to_string(),
+            evidence: evidence.map(|e| Box::new(e.into())),
+        },
+        DomainEvent::RepositoryDeleted {
+            domain_key,
+            repo_name,
+            detected_at,
+        } => EvidenceProjectionEvent::RepositoryDeleted {
+            domain_key: domain_key.as_str().to_string(),
+            repo_name: repo_name.as_str().to_string(),
+            detected_at: detected_at.as_nanos().to_string(),
+        },
+        other => panic!("unexpected benchmark event: {other:?}"),
+    };
+    let envelope = cherry_pit_core::EventEnvelope::new(
         uuid::Uuid::now_v7(),
         cherry_pit_core::AggregateId::new(std::num::NonZeroU64::MIN),
         std::num::NonZeroU64::MIN,
         jiff::Timestamp::now(),
         None,
         None,
-        event,
-    ) {
-        Ok(envelope) => envelope,
-        Err(error) => panic!("projection envelope invariant violated: {error}"),
-    };
+        projection_event,
+    )
+    .expect("projection envelope");
     projection.apply(&envelope);
 }
 
-fn apply_event_to_projection(
-    projection: &mut EvidenceProjection,
-    event: &DomainEvent,
-    detached: bool,
-) {
-    match event {
-        DomainEvent::RepositoryStateCaptured {
-            domain_key,
-            evidence,
-            ..
-        } => {
-            apply_projection_event(
-                projection,
-                EvidenceProjectionEvent::RepositoryStateCaptured {
-                    detached,
-                    domain_key: domain_key.as_str().to_string(),
-                    evidence: evidence.as_ref().map(|e| Box::new((*e).clone().into())),
-                },
-            );
-        }
-        DomainEvent::RepositoryDeleted {
-            domain_key,
-            repo_name,
-            detected_at,
-        } => {
-            apply_projection_event(
-                projection,
-                EvidenceProjectionEvent::RepositoryDeleted {
-                    domain_key: domain_key.as_str().to_string(),
-                    repo_name: repo_name.as_str().to_string(),
-                    detected_at: detected_at.as_nanos().to_string(),
-                },
-            );
-        }
-        _ => {}
+fn project(envelopes: &[EventEnvelope]) -> EvidenceProjection {
+    let mut projection = EvidenceProjection::default();
+    for stored in envelopes {
+        apply_envelope(&mut projection, stored);
     }
+    projection
 }
 
-fn compute_projection_digest(projection: &EvidenceProjection) -> u64 {
+fn projection_digest(projection: &EvidenceProjection) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let snapshot = projection.sorted_snapshot();
     snapshot.len().hash(&mut hasher);
@@ -186,204 +286,62 @@ fn compute_projection_digest(projection: &EvidenceProjection) -> u64 {
     hasher.finish()
 }
 
-fn run_staged_benchmark(total_events: usize, batch_size: usize, distinct_repos: usize) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let store_path = tmp.path().join(format!("bench_{total_events}.pgno"));
-    let adapter = FileStorageAdapter::new(&store_path);
+fn expected_latest_seq(total: usize, fibers: usize, repo_idx: usize) -> usize {
+    let steps = (total - repo_idx - 1) / fibers;
+    repo_idx + steps * fibers
+}
 
-    let claim = sample_claim(1);
-    let mut session = adapter.create(&claim).expect("create session");
-
-    println!(
-        "\n--- [STAGE: {total_events} events, batch_size: {batch_size}, fibers: {distinct_repos}] ---"
-    );
-
-    let start_write = Instant::now();
-    let mut events_written = 0usize;
-    let mut bytes_written = 0usize;
-
-    let mut latest_env_by_fiber: std::collections::HashMap<[u8; 16], EventEnvelope> =
-        std::collections::HashMap::with_capacity(distinct_repos);
-
-    for chunk_start in (0..total_events).step_by(batch_size) {
-        let chunk_end = (chunk_start + batch_size).min(total_events);
-        let chunk_len = chunk_end - chunk_start;
-        let mut batch_envelopes = Vec::with_capacity(chunk_len);
-
-        for i in chunk_start..chunk_end {
-            let repo_idx = i % distinct_repos;
-            let domain_key = format!("org/repo-{repo_idx}");
-            let fiber_id = derive_fiber_id(&domain_key);
-            let evidence = generate_evidence(repo_idx, i);
-            let native_evidence: gh_report::event::RepositoryEvidence =
-                evidence.try_into().expect("try_into native evidence");
-
-            let domain_event = DomainEvent::RepositoryStateCaptured {
-                domain_key: NonEmptyEventString::new(domain_key).unwrap(),
-                repo_name: NonEmptyEventString::new(format!("repo-{repo_idx}")).unwrap(),
-                timestamp: Timestamp::new((1_726_130_000 + i as u64) * 1_000_000_000).unwrap(),
-                evidence: Some(native_evidence),
-            };
-
-            let mut payload = Vec::new();
-            domain_event
-                .encode_payload(&mut payload)
-                .expect("encode payload");
-            bytes_written += payload.len();
-
-            let event_id = *uuid::Uuid::now_v7().as_bytes();
-            let env = if let Some(prev) = latest_env_by_fiber.get(&fiber_id) {
-                EventEnvelope::chain(prev, event_id, payload).expect("chain")
-            } else {
-                EventEnvelope::genesis(event_id, fiber_id, payload).expect("genesis")
-            };
-            latest_env_by_fiber.insert(fiber_id, env.clone());
-            batch_envelopes.push(env);
+fn assert_stored_chain_and_heads(envelopes: &[EventEnvelope], total: usize, fibers: usize) {
+    let mut head_by_fiber: HashMap<[u8; 16], ([u8; 16], usize)> = HashMap::with_capacity(fibers);
+    for (idx, stored) in envelopes.iter().enumerate() {
+        if let Some((prev_event_id, prev_idx)) = head_by_fiber.get(&stored.header.fiber_id) {
+            assert_eq!(
+                stored.header.precursor, *prev_event_id,
+                "same-fiber stored chain order violated at index {idx} (previous {prev_idx})"
+            );
         }
+        head_by_fiber.insert(stored.header.fiber_id, (stored.header.event_id, idx));
+    }
+    assert_eq!(head_by_fiber.len(), fibers, "stored fiber cardinality");
 
-        for env in batch_envelopes {
-            let verdict = session
-                .append_envelope_verdict(&env)
-                .expect("append envelope");
-            assert!(matches!(
-                verdict,
-                pardosa::store::WriteLandingVerdict::Landed(_)
-            ));
-            events_written += 1;
+    for repo_idx in 0..fibers {
+        let fiber_id = derive_fiber_id(&format!("org/repo-{repo_idx}"));
+        let (_, head_idx) = head_by_fiber
+            .get(&fiber_id)
+            .unwrap_or_else(|| panic!("missing stored fiber for repo-{repo_idx}"));
+        let expected_idx = expected_latest_seq(total, fibers, repo_idx);
+        assert_eq!(
+            *head_idx, expected_idx,
+            "repo-{repo_idx} stored fiber head position"
+        );
+        match DomainEvent::decode_payload(&envelopes[*head_idx].payload).expect("decode head") {
+            DomainEvent::RepositoryStateCaptured { timestamp, .. } => assert_eq!(
+                timestamp.as_nanos(),
+                event_nanos(expected_idx),
+                "repo-{repo_idx} fiber head identity (alias-free per-event marker)"
+            ),
+            other => panic!("unexpected fiber head event: {other:?}"),
         }
     }
-
-    let write_duration = start_write.elapsed();
-    let write_secs = write_duration.as_secs_f64();
-    let write_throughput = (events_written as f64) / write_secs;
-    let write_mb_s = ((bytes_written as f64) / (1024.0 * 1024.0)) / write_secs;
-
-    println!(
-        "WRITE: {events_written} events in {write_secs:.3}s => {write_throughput:.0} ev/s ({write_mb_s:.2} MB/s)"
-    );
-
-    let start_replay = Instant::now();
-    let mut reader = adapter.open_read().expect("open_read");
-    let envelopes = reader.read_all_envelopes().expect("read_all_envelopes");
-    let read_all_duration = start_replay.elapsed();
-    assert_eq!(envelopes.len(), total_events);
-
-    let mut projection = EvidenceProjection::default();
-    let start_apply = Instant::now();
-    let mut decode_micros_total = 0u128;
-
-    for env in &envelopes {
-        let t0 = Instant::now();
-        let domain_event = DomainEvent::decode_payload(&env.payload).expect("decode domain event");
-        decode_micros_total += t0.elapsed().as_micros();
-        apply_event_to_projection(&mut projection, &domain_event, env.header.detached);
-    }
-
-    let apply_duration = start_apply.elapsed();
-    let total_replay_duration = start_replay.elapsed();
-    let replay_secs = total_replay_duration.as_secs_f64();
-    let replay_throughput = (total_events as f64) / replay_secs;
-    let decode_avg_us = (decode_micros_total as f64) / (total_events as f64);
-    let apply_avg_us = (apply_duration.as_micros() as f64) / (total_events as f64);
-
-    println!(
-        "REPLAY: {total_events} events in {replay_secs:.3}s => {replay_throughput:.0} ev/s (disk read: {:.3}s, decode avg: {decode_avg_us:.2}µs/ev, apply avg: {apply_avg_us:.2}µs/ev)",
-        read_all_duration.as_secs_f64()
-    );
-
-    let projection_digest = compute_projection_digest(&projection);
-    assert_eq!(projection.repositories.len(), distinct_repos);
-
-    let mut cold_reader = adapter.open_read().expect("cold open_read");
-    let cold_envelopes = cold_reader.read_all_envelopes().expect("cold read");
-    assert_eq!(cold_envelopes.len(), total_events);
-    assert_eq!(
-        cold_reader.rolling_commitment().current_commitment(),
-        reader.rolling_commitment().current_commitment()
-    );
-
-    let mut cold_projection = EvidenceProjection::default();
-    for env in &cold_envelopes {
-        let domain_event = DomainEvent::decode_payload(&env.payload).expect("decode cold event");
-        apply_event_to_projection(&mut cold_projection, &domain_event, env.header.detached);
-    }
-    let cold_digest = compute_projection_digest(&cold_projection);
-    assert_eq!(
-        projection_digest, cold_digest,
-        "Cold projection digest must match warm projection digest"
-    );
 }
 
-#[test]
-fn test_staged_projection_benchmark_1k_10k() {
-    run_staged_benchmark(1_000, 250, 20);
-    run_staged_benchmark(10_000, 1_000, 50);
-    if std::env::var("BENCH_SCALE").is_ok() {
-        run_staged_benchmark(100_000, 2_500, 100);
-    }
-}
-
-#[test]
-fn test_staged_projection_benchmark_1m() {
-    if std::env::var("BENCH_1M").is_err() {
-        eprintln!("Skipping 1M benchmark; run with BENCH_1M=1 to execute.");
-        return;
-    }
-    run_staged_benchmark(1_000_000, 5_000, 200);
-}
-
-fn unique_evidence_timestamp(seq: usize) -> String {
-    let second = i64::try_from(1_726_130_000u64 + seq as u64).expect("candidate timestamp second");
-    jiff::Timestamp::from_second(second)
-        .expect("candidate timestamp in range")
-        .strftime("%Y-%m-%dT%H:%M:%SZ")
-        .to_string()
-}
-
-fn generate_unique_evidence(repo_idx: usize, seq: usize) -> RepositoryEvidence {
-    let mut evidence = generate_evidence(repo_idx, seq);
-    let ts = unique_evidence_timestamp(seq);
-    evidence.checks.security_policy.timestamp.clone_from(&ts);
-    evidence.checks.secret_scanning.timestamp.clone_from(&ts);
-    evidence
-        .checks
-        .dependabot_security_updates
-        .timestamp
-        .clone_from(&ts);
-    evidence.checks.branch_protection.timestamp.clone_from(&ts);
-    evidence.checks.codeowners.timestamp = ts;
-    evidence
-}
-
-fn expected_latest_seq(total_events: usize, distinct_repos: usize, repo_idx: usize) -> usize {
-    let mut seq = repo_idx;
-    let mut last = repo_idx;
-    while seq < total_events {
-        last = seq;
-        seq += distinct_repos;
-    }
-    last
-}
-
-fn assert_expected_latest_state(
-    projection: &EvidenceProjection,
-    total_events: usize,
-    distinct_repos: usize,
-) {
+fn assert_expected_latest_state(projection: &EvidenceProjection, total: usize, fibers: usize) {
     let snapshot = projection.sorted_snapshot();
-    assert_eq!(snapshot.len(), distinct_repos, "fiber cardinality");
-    let mut by_name = std::collections::HashMap::with_capacity(distinct_repos);
-    for item in &snapshot {
-        by_name.insert(item.repository.name.clone(), item);
-    }
-    let mut observed_timestamps = std::collections::HashSet::with_capacity(distinct_repos);
-    for repo_idx in 0..distinct_repos {
-        let seq = expected_latest_seq(total_events, distinct_repos, repo_idx);
-        let expected = generate_unique_evidence(repo_idx, seq);
+    assert_eq!(snapshot.len(), fibers, "projected fiber cardinality");
+    let by_name: HashMap<String, _> = snapshot
+        .iter()
+        .map(|item| (item.repository.name.clone(), item))
+        .collect();
+
+    let mut observations = HashSet::with_capacity(fibers);
+    for repo_idx in 0..fibers {
+        let seq = expected_latest_seq(total, fibers, repo_idx);
+        let expected = generate_evidence(repo_idx, seq);
         let name = format!("repo-{repo_idx}");
         let actual = by_name
             .get(&name)
             .unwrap_or_else(|| panic!("missing projected repository {name}"));
+
         assert_eq!(actual.repository.id, expected.repository.id, "{name} id");
         assert_eq!(
             format!("{:?}", actual.repository.visibility),
@@ -402,7 +360,7 @@ fn assert_expected_latest_state(
         );
         assert_eq!(
             actual.checks.security_policy.timestamp, expected.checks.security_policy.timestamp,
-            "{name} latest timestamp (staleness/order oracle) at seq {seq}"
+            "{name} latest observation (staleness oracle) at seq {seq}"
         );
         assert_eq!(
             actual.checks.codeowners.timestamp, expected.checks.codeowners.timestamp,
@@ -413,282 +371,206 @@ fn assert_expected_latest_state(
             "{name} latest branch_protection observation at seq {seq}"
         );
         assert!(
-            observed_timestamps.insert(actual.checks.security_policy.timestamp.clone()),
-            "{name} projected observation must be unique across fibers at seq {seq}"
+            observations.insert(actual.checks.security_policy.timestamp.clone()),
+            "{name} projected observation must be alias-free at seq {seq}"
         );
     }
-    assert_eq!(
-        observed_timestamps.len(),
-        distinct_repos,
-        "projected latest observations must be alias-free"
-    );
+
+    assert_eq!(observations.len(), fibers, "projected observations aliased");
 }
 
-fn expected_event_nanos(seq: usize) -> u64 {
-    (1_726_130_000 + seq as u64) * 1_000_000_000
-}
-
-fn assert_stored_chain_and_head_identity(
-    envelopes: &[EventEnvelope],
-    total_events: usize,
-    distinct_repos: usize,
-) {
-    let mut head_by_fiber: std::collections::HashMap<[u8; 16], ([u8; 16], usize)> =
-        std::collections::HashMap::with_capacity(distinct_repos);
-    for (idx, env) in envelopes.iter().enumerate() {
-        let fiber_id = env.header.fiber_id;
-        if let Some((prev_event_id, prev_idx)) = head_by_fiber.get(&fiber_id) {
-            assert_eq!(
-                env.header.precursor, *prev_event_id,
-                "same-fiber stored chain order violated at stream index {idx} (previous index {prev_idx})"
-            );
-        }
-        head_by_fiber.insert(fiber_id, (env.header.event_id, idx));
-    }
-    assert_eq!(
-        head_by_fiber.len(),
-        distinct_repos,
-        "stored-stream fiber cardinality"
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "event counts are converted to f64 only to print throughput rates"
+)]
+fn run_stage(total: usize, fibers: usize, mode: WriteMode) {
+    assert!(
+        total / fibers >= 2,
+        "stage must exercise update depth per fiber"
     );
-
-    for repo_idx in 0..distinct_repos {
-        let fiber_id = derive_fiber_id(&format!("org/repo-{repo_idx}"));
-        let (_, head_idx) = head_by_fiber
-            .get(&fiber_id)
-            .unwrap_or_else(|| panic!("missing stored fiber for repo-{repo_idx}"));
-        let expected_idx = expected_latest_seq(total_events, distinct_repos, repo_idx);
-        assert_eq!(
-            *head_idx, expected_idx,
-            "repo-{repo_idx} stored fiber head position"
-        );
-        let head_event = DomainEvent::decode_payload(&envelopes[*head_idx].payload)
-            .expect("decode fiber head payload");
-        match head_event {
-            DomainEvent::RepositoryStateCaptured { timestamp, .. } => {
-                assert_eq!(
-                    timestamp.as_nanos(),
-                    expected_event_nanos(expected_idx),
-                    "repo-{repo_idx} fiber head identity (alias-free per-event marker)"
-                );
-            }
-            other => panic!("unexpected fiber head event: {other:?}"),
-        }
-    }
-}
-
-#[test]
-fn stale_by_3600_alias_witness() {
-    let latest = generate_evidence(0, 9_950);
-    let stale = generate_evidence(0, 6_350);
-    assert_eq!(
-        latest.checks.security_policy.timestamp, stale.checks.security_policy.timestamp,
-        "generate_evidence aliases every 3600 sequences; evidence-equality is not a head oracle"
-    );
-    assert_eq!(
-        format!("{:?}", latest.checks.security_policy.status),
-        format!("{:?}", stale.checks.security_policy.status)
-    );
-    assert_ne!(
-        expected_event_nanos(9_950),
-        expected_event_nanos(6_350),
-        "per-event envelope identity marker must distinguish the stale-by-3600 witness"
-    );
-}
-
-#[test]
-fn unique_candidate_observation_is_alias_free() {
-    let aliased_latest = generate_evidence(0, 9_950);
-    let aliased_stale = generate_evidence(0, 6_350);
-    assert_eq!(
-        aliased_latest.checks.security_policy.timestamp,
-        aliased_stale.checks.security_policy.timestamp,
-        "original generator still aliases every 3600 sequences"
-    );
-
-    let latest = generate_unique_evidence(0, 9_950);
-    let stale = generate_unique_evidence(0, 6_350);
-    assert_ne!(
-        latest.checks.security_policy.timestamp, stale.checks.security_policy.timestamp,
-        "candidate observation must distinguish the stale-by-3600 witness"
-    );
-    assert_ne!(
-        latest.checks.codeowners.timestamp,
-        stale.checks.codeowners.timestamp
-    );
-    assert_eq!(
-        latest.checks.security_policy.timestamp.len(),
-        aliased_latest.checks.security_policy.timestamp.len(),
-        "candidate observation stays fixed-width"
-    );
-    assert_eq!(
-        format!("{:?}", latest.checks.security_policy.status),
-        format!("{:?}", aliased_latest.checks.security_policy.status),
-        "candidate preserves status distribution"
-    );
-    assert_eq!(
-        format!("{:?}", latest.checks.branch_protection.status),
-        format!("{:?}", aliased_latest.checks.branch_protection.status)
-    );
-    assert_eq!(latest.repository.id, aliased_latest.repository.id);
-}
-
-fn write_fixture_artefact(
-    adapter: &FileStorageAdapter,
-    total_events: usize,
-    distinct_repos: usize,
-) -> (usize, std::time::Duration, std::time::Duration) {
-    use std::io::Write as _;
-
-    let mut meta_bytes = Vec::new();
-    meta_bytes.extend_from_slice(&ContainerHeader::new().to_bytes());
-    let mut claim_bytes = Vec::new();
-    OwnershipRecord::OwnershipClaim(sample_claim(1)).encode(&mut claim_bytes);
-    let mut claim_frame = Vec::new();
-    ContainerFrame::encode_payload(&claim_bytes, &mut claim_frame);
-    meta_bytes.extend_from_slice(&claim_frame);
-    let mut meta_file = std::fs::File::create(adapter.meta_path()).expect("create .meta");
-    meta_file.write_all(&meta_bytes).expect("write .meta");
-    meta_file.sync_data().expect("sync .meta");
-
-    let pgno_file = std::fs::File::create(adapter.pgno_path()).expect("create .pgno");
-    let mut out = std::io::BufWriter::with_capacity(1 << 20, pgno_file);
-    out.write_all(&ContainerHeader::new().to_bytes())
-        .expect("write container header");
-
-    let mut latest_env_by_fiber: std::collections::HashMap<[u8; 16], EventEnvelope> =
-        std::collections::HashMap::with_capacity(distinct_repos);
-    let mut bytes_written = 0usize;
-    let mut gen_elapsed = std::time::Duration::ZERO;
-    let mut io_elapsed = std::time::Duration::ZERO;
-
-    for i in 0..total_events {
-        let t_gen = Instant::now();
-        let repo_idx = i % distinct_repos;
-        let domain_key = format!("org/repo-{repo_idx}");
-        let fiber_id = derive_fiber_id(&domain_key);
-        let evidence = generate_unique_evidence(repo_idx, i);
-        let native_evidence: gh_report::event::RepositoryEvidence =
-            evidence.try_into().expect("try_into native evidence");
-        let domain_event = DomainEvent::RepositoryStateCaptured {
-            domain_key: NonEmptyEventString::new(domain_key).unwrap(),
-            repo_name: NonEmptyEventString::new(format!("repo-{repo_idx}")).unwrap(),
-            timestamp: Timestamp::new((1_726_130_000 + i as u64) * 1_000_000_000).unwrap(),
-            evidence: Some(native_evidence),
-        };
-        let mut payload = Vec::new();
-        domain_event
-            .encode_payload(&mut payload)
-            .expect("encode payload");
-        bytes_written += payload.len();
-
-        let event_id = *uuid::Uuid::now_v7().as_bytes();
-        let env = if let Some(prev) = latest_env_by_fiber.get(&fiber_id) {
-            EventEnvelope::chain(prev, event_id, payload).expect("chain")
-        } else {
-            EventEnvelope::genesis(event_id, fiber_id, payload).expect("genesis")
-        };
-        let mut env_bytes = Vec::new();
-        env.encode(&mut env_bytes);
-        latest_env_by_fiber.insert(fiber_id, env);
-        gen_elapsed += t_gen.elapsed();
-
-        let t_io = Instant::now();
-        let mut frame = Vec::new();
-        ContainerFrame::encode_payload(&env_bytes, &mut frame);
-        out.write_all(&frame).expect("write frame");
-        io_elapsed += t_io.elapsed();
-    }
-
-    let t_io = Instant::now();
-    let file = out.into_inner().expect("flush fixture");
-    file.sync_data().expect("sync fixture");
-    io_elapsed += t_io.elapsed();
-
-    (bytes_written, gen_elapsed, io_elapsed)
-}
-
-fn run_fixture_projection_candidate(total_events: usize, distinct_repos: usize) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let store_path = tmp.path().join(format!("fixture_{total_events}.pgno"));
-    let adapter = FileStorageAdapter::new(&store_path);
+    let adapter = FileStorageAdapter::new(tmp.path().join(format!("bench_{total}.pgno")));
 
-    println!("\n--- [FIXTURE STAGE: {total_events} events, fibers: {distinct_repos}] ---");
-
-    let start_build = Instant::now();
-    let (bytes_written, gen_elapsed, io_elapsed) =
-        write_fixture_artefact(&adapter, total_events, distinct_repos);
-    let build_secs = start_build.elapsed().as_secs_f64();
+    let start_write = Instant::now();
+    let payload_bytes = build_store(&adapter, total, fibers, mode);
+    let write_secs = start_write.elapsed().as_secs_f64();
+    let file_bytes = std::fs::metadata(adapter.pgno_path())
+        .expect("store metadata")
+        .len();
     println!(
-        "FIXTURE BUILD: {total_events} events in {build_secs:.3}s => {:.0} ev/s ({:.2} MB/s) [generate: {:.3}s, frame+io: {:.3}s]",
-        (total_events as f64) / build_secs,
-        ((bytes_written as f64) / (1024.0 * 1024.0)) / build_secs,
-        gen_elapsed.as_secs_f64(),
-        io_elapsed.as_secs_f64()
+        "\n--- [{}: {total} events, {fibers} fibers, depth {}] ---\nWRITE: {write_secs:.3}s => {:.0} ev/s (payload {payload_bytes} B, file {file_bytes} B)",
+        mode.label(),
+        total / fibers,
+        (total as f64) / write_secs
     );
 
     let start_replay = Instant::now();
-    let mut reader = adapter.open_read().expect("open_read fixture");
-    let envelopes = reader
-        .read_all_envelopes()
-        .expect("read_all_envelopes fixture");
-    let read_all_duration = start_replay.elapsed();
-    assert_eq!(envelopes.len(), total_events, "fixture event count");
-    assert_stored_chain_and_head_identity(&envelopes, total_events, distinct_repos);
+    let mut reader = adapter.open_read().expect("open_read");
+    let envelopes = reader.read_all_envelopes().expect("read_all_envelopes");
+    let read_secs = start_replay.elapsed().as_secs_f64();
+    assert_eq!(envelopes.len(), total, "stored event count");
+    assert_stored_chain_and_heads(&envelopes, total, fibers);
 
-    let mut projection = EvidenceProjection::default();
-    let start_apply = Instant::now();
-    let mut decode_micros_total = 0u128;
-    for env in &envelopes {
-        let t0 = Instant::now();
-        let domain_event = DomainEvent::decode_payload(&env.payload).expect("decode domain event");
-        decode_micros_total += t0.elapsed().as_micros();
-        apply_event_to_projection(&mut projection, &domain_event, env.header.detached);
-    }
-    let apply_duration = start_apply.elapsed();
+    let projection = project(&envelopes);
     let replay_secs = start_replay.elapsed().as_secs_f64();
     println!(
-        "FIXTURE REPLAY: {total_events} events in {replay_secs:.3}s => {:.0} ev/s (disk read: {:.3}s, nested decode avg: {:.2}\u{b5}s/ev, decode+apply avg: {:.2}\u{b5}s/ev)",
-        (total_events as f64) / replay_secs,
-        read_all_duration.as_secs_f64(),
-        (decode_micros_total as f64) / (total_events as f64),
-        (apply_duration.as_micros() as f64) / (total_events as f64)
+        "REPLAY: {replay_secs:.3}s => {:.0} ev/s (disk read {read_secs:.3}s)",
+        (total as f64) / replay_secs
     );
 
-    let start_validate = Instant::now();
-    let projection_digest = compute_projection_digest(&projection);
-    assert_eq!(projection.repositories.len(), distinct_repos);
-    assert_expected_latest_state(&projection, total_events, distinct_repos);
+    assert_eq!(projection.repositories.len(), fibers);
+    assert_expected_latest_state(&projection, total, fibers);
+    let warm_digest = projection_digest(&projection);
+    let warm_commitment = reader.rolling_commitment().current_commitment();
+    drop(projection);
+    drop(envelopes);
+    drop(reader);
 
-    let mut cold_reader = adapter.open_read().expect("cold open_read fixture");
-    let cold_envelopes = cold_reader.read_all_envelopes().expect("cold read fixture");
-    assert_eq!(cold_envelopes.len(), total_events);
+    let mut cold_reader = adapter.open_read().expect("cold open_read");
+    let cold_envelopes = cold_reader.read_all_envelopes().expect("cold read");
+    assert_eq!(cold_envelopes.len(), total, "reopened event count");
     assert_eq!(
         cold_reader.rolling_commitment().current_commitment(),
-        reader.rolling_commitment().current_commitment()
+        warm_commitment,
+        "reopened rolling commitment must match"
     );
-    let mut cold_projection = EvidenceProjection::default();
-    for env in &cold_envelopes {
-        let domain_event = DomainEvent::decode_payload(&env.payload).expect("decode cold event");
-        apply_event_to_projection(&mut cold_projection, &domain_event, env.header.detached);
-    }
+    let cold_projection = project(&cold_envelopes);
     assert_eq!(
-        projection_digest,
-        compute_projection_digest(&cold_projection),
-        "Cold fixture projection digest must match warm fixture projection digest"
+        projection_digest(&cold_projection),
+        warm_digest,
+        "reopened projection digest must match warm digest"
     );
-    assert_expected_latest_state(&cold_projection, total_events, distinct_repos);
-    println!(
-        "FIXTURE VALIDATE: {:.3}s (expected-latest-state oracle over {distinct_repos} fibers)",
-        start_validate.elapsed().as_secs_f64()
+    assert_expected_latest_state(&cold_projection, total, fibers);
+}
+
+#[test]
+fn projection_reconstructs_latest_state_at_scale() {
+    run_stage(1_000, 20, WriteMode::NativeFrames);
+    run_stage(10_000, 50, WriteMode::NativeFrames);
+    if std::env::var("BENCH_SCALE").is_ok() {
+        run_stage(100_000, 100, WriteMode::DurableAppend);
+    }
+}
+
+#[test]
+fn projection_reconstructs_latest_state_after_durable_append() {
+    run_stage(200, 20, WriteMode::DurableAppend);
+}
+
+#[test]
+fn projection_reconstructs_latest_state_1m() {
+    if std::env::var("BENCH_1M").is_err() {
+        eprintln!("Skipping 1M benchmark; run with BENCH_1M=1 to execute.");
+        return;
+    }
+    run_stage(1_000_000, 200, WriteMode::DurableAppend);
+}
+
+#[test]
+fn native_frame_store_is_readable_by_the_production_adapter() {
+    run_stage(4, 2, WriteMode::NativeFrames);
+}
+
+#[test]
+fn generated_observations_are_alias_free() {
+    assert_ne!(
+        generate_evidence(0, 9_950).checks.security_policy.timestamp,
+        generate_evidence(0, 6_350).checks.security_policy.timestamp,
+        "observation must distinguish the stale-by-3600 witness"
+    );
+    assert_ne!(
+        event_nanos(9_950),
+        event_nanos(6_350),
+        "per-event envelope identity marker must distinguish the stale-by-3600 witness"
+    );
+    assert_eq!(
+        generate_evidence(0, 0)
+            .checks
+            .security_policy
+            .timestamp
+            .len(),
+        generate_evidence(0, 999_999)
+            .checks
+            .security_policy
+            .timestamp
+            .len(),
+        "observation stays fixed-width"
     );
 }
 
 #[test]
-fn test_fixture_projection_candidate() {
-    if std::env::var("BENCH_FIXTURE").is_ok() {
-        run_fixture_projection_candidate(1_000, 20);
-        run_fixture_projection_candidate(10_000, 50);
-    } else {
-        run_fixture_projection_candidate(200, 20);
+fn generated_stream_covers_both_status_outcomes() {
+    for (total, fibers) in [(1_000usize, 20usize), (10_000, 50)] {
+        let mut security = HashSet::new();
+        let mut protection = HashSet::new();
+        let mut visibility = HashSet::new();
+        for seq in 0..total {
+            let evidence = generate_evidence(seq % fibers, seq);
+            security.insert(format!("{:?}", evidence.checks.security_policy.status));
+            protection.insert(format!("{:?}", evidence.checks.branch_protection.status));
+            visibility.insert(format!("{:?}", evidence.repository.visibility));
+        }
+        assert_eq!(security.len(), 2, "stream security_policy mix at {total}");
+        assert_eq!(
+            protection.len(),
+            2,
+            "stream branch_protection mix at {total}"
+        );
+        assert_eq!(visibility.len(), 2, "stream visibility mix at {total}");
+
+        let mut head_security = HashSet::new();
+        let mut head_protection = HashSet::new();
+        for repo_idx in 0..fibers {
+            let seq = expected_latest_seq(total, fibers, repo_idx);
+            let evidence = generate_evidence(repo_idx, seq);
+            head_security.insert(format!("{:?}", evidence.checks.security_policy.status));
+            head_protection.insert(format!("{:?}", evidence.checks.branch_protection.status));
+        }
+        assert_eq!(head_security.len(), 2, "fiber-head security mix at {total}");
+        assert_eq!(
+            head_protection.len(),
+            2,
+            "fiber-head branch_protection mix at {total}"
+        );
+    }
+}
+
+#[test]
+fn generated_stream_covers_both_status_outcomes_at_tiny_scale() {
+    let (total, fibers) = (4usize, 2usize);
+    let heads: Vec<_> = (0..fibers)
+        .map(|repo_idx| generate_evidence(repo_idx, expected_latest_seq(total, fibers, repo_idx)))
+        .collect();
+    let head_security: HashSet<String> = heads
+        .iter()
+        .map(|e| format!("{:?}", e.checks.security_policy.status))
+        .collect();
+    let head_protection: HashSet<String> = heads
+        .iter()
+        .map(|e| format!("{:?}", e.checks.branch_protection.status))
+        .collect();
+    assert_eq!(
+        head_security,
+        HashSet::from(["Pass".to_string()]),
+        "both tiny heads (seq 2, seq 3) pass security; the tiny stage is a format/read smoke test, not a status-mix scenario"
+    );
+    assert_eq!(
+        head_protection.len(),
+        2,
+        "tiny heads still differ on branch_protection"
+    );
+}
+
+#[test]
+fn expected_latest_seq_is_the_last_occurrence_of_each_fiber() {
+    for (total, fibers) in [(1_000usize, 20usize), (10_000, 50), (200, 20), (4, 2)] {
+        for repo_idx in 0..fibers {
+            let seq = expected_latest_seq(total, fibers, repo_idx);
+            assert!(seq < total && seq % fibers == repo_idx);
+            assert!(
+                seq + fibers >= total,
+                "expected_latest_seq({total},{fibers},{repo_idx}) is not the last occurrence"
+            );
+        }
     }
 }
