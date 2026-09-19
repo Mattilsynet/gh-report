@@ -55,6 +55,10 @@ impl Aggregate for Agg {
 
 #[derive(Debug)]
 struct GwStub;
+#[expect(
+    clippy::unimplemented,
+    reason = "trait-required methods never reached by this test; a stub body is the point"
+)]
 impl CommandGateway for GwStub {
     type Aggregate = Agg;
     async fn create<C>(&self, _cmd: C, _ctx: CorrelationContext) -> CreateResult<Agg, C>
