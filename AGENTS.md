@@ -168,13 +168,14 @@ adr-fmt-xdlw9 O3).
   local inner loop. **CI has no dedicated doctest step**: doctests are covered
   by the single `cargo test --workspace --all-features --locked` step at
   `.github/workflows/ci-reusable.yml:138`, exactly as locally. CI is untouched
-  by this tiering change: the 6 required
+  by this tiering change: the 7 required
   contexts and stabsec code-owner review still run full verification
   pre-merge. Nothing is deleted, `#[ignore]`d, or feature-gated by moving
   BOUNDARY to epic granularity; coverage is relocated to where it earns its
   cost, never dropped.
-- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
-  tripwire jobs. No agent tier runs these — not INNER, not MID, not BOUNDARY.
+- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the
+  tripwire jobs (`tools/tripwires.sh --list` for the current check names). No
+  agent tier runs these — not INNER, not MID, not BOUNDARY.
 - **Not covered by the four BOUNDARY commands** (additional CI steps, *not* an
   added prohibition): the `gh-report-web-client` steps inside the
   `build-test-lint` job (`.github/workflows/ci-reusable.yml:16-46`). They split

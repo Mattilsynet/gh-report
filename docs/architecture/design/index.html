@@ -50,9 +50,11 @@
     so illegal compositions — multiple writers per aggregate, async in the
     domain, leaky identity — do not type-check. <code>pardosa*</code> is the
     durable event-store substrate. <code>adr-fmt</code>/<code>adr-srv</code>
-    are the governance plane (out of scope here).
+    are the governance plane (out of scope here; <code>adr-srv</code> retired
+    2026-09, retained here as survey history).
     <code>gh-report</code> is the first non-trivial consumer: load-bearing
-    proof the substrate carries real work.
+    proof the substrate carries real work. It is, as of 2026-09, the one
+    demonstrated application consumer; no second consumer is claimed.
     <span class="cite-src">(AGENTS.md §Intent)</span>
   </p>
   <p>
@@ -706,6 +708,8 @@ flowchart TB
     <code>adr-fmt</code>/<code>adr-srv</code> domains (AFM) are explicitly
     out of scope for this mission's documentation target, per caller
     instructions, though they govern the ADR corpus itself.
+    <code>adr-srv</code> was retired in 2026-09; its AFM records stay in the
+    corpus as historical decisions.
   </p>
 
   <div class="sources">
