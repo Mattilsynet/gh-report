@@ -68,6 +68,18 @@ redirect/GATE_CITATION_WORKFLOW trips the fail-open guard
 redirect/GATE_CITATION_WORKFLOW enforces per-job citation
 timeout/hung cargo probe fails closed
 timeout/uninterpretable bound fails closed
+probe/async-trait warning
+probe/async-trait malformed
+probe/async-trait failed
+probe/non-exhaustive warning
+probe/non-exhaustive malformed
+probe/non-exhaustive failed
+probe/forbid-unsafe-total warning
+probe/forbid-unsafe-total malformed
+probe/forbid-unsafe-total failed
+probe/tree warning
+probe/tree failed
+probe/tree timeout
 "
 EXECUTED=""
 
@@ -93,7 +105,15 @@ expect() {
 "
 
   local out status=0
-  out=$(env "$@" bash "$TRIPWIRES" "$check" 2>&1) || status=$?
+  out=$(env "$@" bash "$TRIPWIRES" "$check" 2>"$SCRATCH/stderr") || status=$?
+  if [ -n "${REQUIRED_STDERR:-}" ] && ! grep -qF -- "$REQUIRED_STDERR" "$SCRATCH/stderr"; then
+    echo "FAIL ${label}: missing stderr diagnostic '${REQUIRED_STDERR}'"
+    printf '     exit=%s stdout=%s\n' "$status" "$out"
+    FAIL=$((FAIL + 1))
+    return 0
+  fi
+  out="${out}
+$(cat "$SCRATCH/stderr")"
 
   if [ "$status" -ne "$want_exit" ]; then
     echo "FAIL ${label}: expected exit ${want_exit}, got ${status}"
@@ -432,6 +452,61 @@ printf 'name: fixture\non:\n  workflow_call:\njobs:\n  uncited:\n    runs-on: ub
 expect "redirect/GATE_CITATION_WORKFLOW enforces per-job citation" 1 "cites no ADR rule id" \
   gate-citation "GATE_CITATION_WORKFLOW=$D/uncited.yml"
 
+echo "== probe channels =="
+D=$(new_ws probe_channels)
+member_pkg "$D" cherry-pit-channel forbid
+printf '[workspace]\nresolver = "3"\nmembers = ["cherry-pit-channel"]\n' > "$D/Cargo.toml"
+lock_ws "$D"
+REAL_CARGO=$(command -v cargo)
+mkdir -p "$D/bin"
+cat > "$D/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = "$PROBE_STAGE" ]; then
+  printf 'warning: async-trait fixture diagnostic\n' >&2
+  case "$PROBE_CASE" in
+    malformed) printf 'not JSON\n'; exit 0 ;;
+    timeout) sleep 300 ;;
+  esac
+  "$REAL_CARGO" "$@"
+  if [ "$PROBE_CASE" = failed ]; then
+    printf 'error: fixture producer failed\n' >&2
+    exit 42
+  fi
+  exit 0
+fi
+exec "$REAL_CARGO" "$@"
+EOF
+chmod +x "$D/bin/cargo"
+for check in async-trait non-exhaustive forbid-unsafe-total; do
+  for scenario in warning malformed failed; do
+    REQUIRED_STDERR='warning: async-trait fixture diagnostic'
+    want_exit=1
+    case "$scenario" in
+      warning) want_exit=0; fragment='' ;;
+      malformed) fragment='parse error' ;;
+      failed) REQUIRED_STDERR='error: fixture producer failed'; fragment='::error::' ;;
+    esac
+    expect "probe/$check $scenario" "$want_exit" "$fragment" "$check" \
+      "PATH=$D/bin:$PATH" "REAL_CARGO=$REAL_CARGO" "PROBE_STAGE=metadata" "PROBE_CASE=$scenario" \
+      "ASYNC_TRAIT_MANIFEST=$D/Cargo.toml" "NON_EXHAUSTIVE_MANIFEST=$D/Cargo.toml" \
+      "FORBID_UNSAFE_MANIFEST=$D/Cargo.toml" "FORBID_UNSAFE_ROOT=$D"
+  done
+done
+for scenario in warning failed timeout; do
+  REQUIRED_STDERR='warning: async-trait fixture diagnostic'
+  want_exit=1
+  case "$scenario" in
+    warning) want_exit=0; fragment='1 cherry-pit-* resolved packages enumerated' ;;
+    failed) REQUIRED_STDERR='error: fixture producer failed'; fragment='a probe error is not a clean result' ;;
+    timeout) fragment='reached NO verdict' ;;
+  esac
+  expect "probe/tree $scenario" "$want_exit" "$fragment" async-trait \
+    "PATH=$D/bin:$PATH" "REAL_CARGO=$REAL_CARGO" "PROBE_STAGE=tree" "PROBE_CASE=$scenario" \
+    "ASYNC_TRAIT_MANIFEST=$D/Cargo.toml" "TRIPWIRE_PROBE_TIMEOUT_SECS=2"
+done
+unset REQUIRED_STDERR
+
 echo "== probe timeout (a timeout reaches no verdict) =="
 
 # A probe killed at the wall clock must not read as "no violation". The bound
@@ -477,6 +552,10 @@ $EXECUTED
 EOF
 
 REQUIRED_COUNT=$(printf '%s' "$REQUIRED_SCENARIOS" | grep -c . || true)
+if [ "$REQUIRED_COUNT" -ne 36 ]; then
+  echo "::error::tripwire-regression: expected 36 registered scenarios, got ${REQUIRED_COUNT}"
+  COVERAGE_FAIL=$((COVERAGE_FAIL + 1))
+fi
 if [ "$((PASS + FAIL))" -ne "$REQUIRED_COUNT" ]; then
   echo "::error::tripwire-regression: ${REQUIRED_COUNT} scenarios required, $((PASS + FAIL)) results recorded"
   COVERAGE_FAIL=$((COVERAGE_FAIL + 1))

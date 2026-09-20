@@ -48,7 +48,7 @@ run_probe() {
   fi
 
   local status=0
-  probe_out=$(timeout -- "$PROBE_TIMEOUT_SECS" "$@" 2>&1) || status=$?
+  probe_out=$(timeout -- "$PROBE_TIMEOUT_SECS" "$@") || status=$?
   case "$status" in
     0) return 0 ;;
     124 | 137)
