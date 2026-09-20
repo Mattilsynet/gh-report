@@ -55,6 +55,14 @@ fut/manifest absent
 fut/probe error is neither clean nor missing
 redirect/FORBID_UNSAFE_MANIFEST reaches enumeration and probe
 redirect/ASYNC_TRAIT_MANIFEST reaches enumeration and tree probe
+external/async-trait clean dependency
+external/async-trait planted dependency
+external/async-trait restored dependency
+external/non-exhaustive planted error
+external/non-exhaustive restored error
+external/non-exhaustive malformed Rust rejected
+external/non-exhaustive restored Rust
+external/non-exhaustive zero Cherry rejected
 redirect/DENY_TOML reaches the ignore-block parser
 redirect/GATE_CITATION_WORKFLOW trips the fail-open guard
 redirect/GATE_CITATION_WORKFLOW enforces per-job citation
@@ -345,8 +353,57 @@ path = "src/lib.rs"
 EOF
 printf '#![forbid(unsafe_code)]\n' > "$D/src/lib.rs"
 lock_ws "$D"
-expect "redirect/ASYNC_TRAIT_MANIFEST reaches enumeration and tree probe" 0 "1 cherry-pit-* workspace members enumerated" \
+expect "redirect/ASYNC_TRAIT_MANIFEST reaches enumeration and tree probe" 0 "1 cherry-pit-* resolved packages enumerated" \
   async-trait "ASYNC_TRAIT_MANIFEST=$D/Cargo.toml"
+
+D=$(new_ws external_consumer)
+E=$(new_ws external_cherry)
+A=$(new_ws external_async)
+member_pkg "$E" cherry-pit-external forbid
+member_pkg "$A" async-trait forbid
+printf '\n[workspace]\n' >> "$E/cherry-pit-external/Cargo.toml"
+printf '\n[workspace]\n' >> "$A/async-trait/Cargo.toml"
+mkdir -p "$D/src"
+printf '#![forbid(unsafe_code)]\n' > "$D/src/lib.rs"
+cat > "$D/Cargo.toml" <<EOF
+[workspace]
+[package]
+name = "external-consumer"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+cherry-pit-external = { path = "$E/cherry-pit-external" }
+EOF
+lock_ws "$D"
+expect "external/async-trait clean dependency" 0 "1 cherry-pit-* resolved packages enumerated" \
+  async-trait "ASYNC_TRAIT_MANIFEST=$D/Cargo.toml"
+cp "$E/cherry-pit-external/Cargo.toml" "$E/clean.toml"
+printf '\n[dependencies]\nasync-trait = { path = "%s/async-trait" }\n' "$A" >> "$E/cherry-pit-external/Cargo.toml"
+lock_ws "$D"
+expect "external/async-trait planted dependency" 1 "cherry-pit-external transitively depends on async-trait" \
+  async-trait "ASYNC_TRAIT_MANIFEST=$D/Cargo.toml"
+cp "$E/clean.toml" "$E/cherry-pit-external/Cargo.toml"
+lock_ws "$D"
+expect "external/async-trait restored dependency" 0 "1 cherry-pit-* resolved packages enumerated" \
+  async-trait "ASYNC_TRAIT_MANIFEST=$D/Cargo.toml"
+printf '#[derive(thiserror::Error)]\n#[non_exhaustive]\npub enum ExternalError { A }\n' > "$E/cherry-pit-external/src/lib.rs"
+expect "external/non-exhaustive planted error" 1 'ExternalError' \
+  non-exhaustive "NON_EXHAUSTIVE_MANIFEST=$D/Cargo.toml"
+printf '#[derive(thiserror::Error)]\npub enum ExternalError { A }\n' > "$E/cherry-pit-external/src/lib.rs"
+expect "external/non-exhaustive restored error" 0 '1 library crates scanned, 1 pub enums, 0 violations' \
+  non-exhaustive "NON_EXHAUSTIVE_MANIFEST=$D/Cargo.toml"
+printf 'pub enum ExternalError {\n' > "$E/cherry-pit-external/src/lib.rs"
+expect "external/non-exhaustive malformed Rust rejected" 1 "failed to parse $E/cherry-pit-external/src/lib.rs" \
+  non-exhaustive "NON_EXHAUSTIVE_MANIFEST=$D/Cargo.toml"
+printf '#[derive(thiserror::Error)]\npub enum ExternalError { A }\n' > "$E/cherry-pit-external/src/lib.rs"
+expect "external/non-exhaustive restored Rust" 0 '1 library crates scanned, 1 pub enums, 0 violations' \
+  non-exhaustive "NON_EXHAUSTIVE_MANIFEST=$D/Cargo.toml"
+D=$(new_ws no_cherry)
+member_pkg "$D" gh-report forbid
+printf '[workspace]\nmembers = ["gh-report"]\n' > "$D/Cargo.toml"
+lock_ws "$D"
+expect "external/non-exhaustive zero Cherry rejected" 1 'invalid library enumeration' \
+  non-exhaustive "NON_EXHAUSTIVE_MANIFEST=$D/Cargo.toml"
 
 # DENY_TOML: bare-string ignore form is rejected, a verdict the real deny.toml
 # does not produce.

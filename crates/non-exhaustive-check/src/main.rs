@@ -1,5 +1,4 @@
-//! CI hard-gate: flag library `pub enum` error types that derive `thiserror::Error`
-//! but lack `#[non_exhaustive]`, excluding `repr` and serde DTOs.
+//! CI hard-gate: reject `#[non_exhaustive]` on public error enums.
 //!
 //! Run `--help` for usage and the exact FLAG-IFF heuristic (see [`HELP_TEXT`]).
 //! Only literal `pub enum` tokens `syn` can parse are inspected; macro-generated
@@ -9,26 +8,14 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
-const LIBRARY_CRATES: &[&str] = &[
-    "crates/cherry-pit-core",
-    "crates/cherry-pit-app",
-    "crates/cherry-pit-gateway",
-    "crates/cherry-pit-merger",
-    "crates/cherry-pit-projection",
-    "crates/cherry-pit-storage",
-    "crates/cherry-pit-web",
-    "crates/cherry-pit-wq",
-    "crates/gh-report",
-];
-
 const HELP_TEXT: &str =
     "non-exhaustive-check - CI hard-gate enforcing CLOSED error enums (C4.5/C4.6)
 
 USAGE:
-    non-exhaustive-check [ROOT]
+    non-exhaustive-check SOURCE_DIRECTORY...
 
-ROOT defaults to the workspace root, discovered by walking up from the
-current directory until a Cargo.toml containing [workspace] is found.
+Directories are required. tools/tripwires.sh non-exhaustive resolves library
+targets from locked Cargo metadata, including external Cherry dependencies.
 
 HEURISTIC (FLAG-IFF):
     An enum is a violation iff:
@@ -56,32 +43,27 @@ fn main() {
         return;
     }
 
-    let root = match args.first() {
-        Some(r) => PathBuf::from(r),
-        None => default_root(),
-    };
+    assert!(!args.is_empty(), "source directories are required");
 
     let mut crates_scanned = 0usize;
     let mut enums_scanned = 0usize;
     let mut violations: Vec<Violation> = Vec::new();
 
-    for crate_rel in LIBRARY_CRATES {
-        let src_dir = root.join(crate_rel).join("src");
-        if !src_dir.is_dir() {
-            continue;
-        }
+    for source in &args {
+        let src_dir = PathBuf::from(source);
+        assert!(src_dir.is_dir(), "missing source directory: {source}");
         crates_scanned += 1;
 
         let mut rs_files: Vec<PathBuf> = Vec::new();
         collect_rs_files(&src_dir, &mut rs_files);
         rs_files.sort();
+        assert!(!rs_files.is_empty(), "no Rust sources: {source}");
 
         for file in rs_files {
             let content = std::fs::read_to_string(&file)
                 .unwrap_or_else(|e| panic!("failed to read {}: {e}", file.display()));
-            let Ok(parsed) = syn::parse_file(&content) else {
-                continue;
-            };
+            let parsed = syn::parse_file(&content)
+                .unwrap_or_else(|e| panic!("failed to parse {}: {e}", file.display()));
             let mut enums: Vec<&syn::ItemEnum> = Vec::new();
             collect_enums(&parsed.items, &mut enums);
 
@@ -89,12 +71,8 @@ fn main() {
                 enums_scanned += 1;
                 if is_violation(item_enum) {
                     let line = enum_span_line(item_enum);
-                    let rel = file
-                        .strip_prefix(&root)
-                        .unwrap_or(file.as_path())
-                        .to_path_buf();
                     violations.push(Violation {
-                        path: rel,
+                        path: file.clone(),
                         line,
                         enum_name: item_enum.ident.to_string(),
                     });
@@ -126,28 +104,6 @@ fn main() {
         violations.len()
     );
     std::process::exit(1);
-}
-
-fn default_root() -> PathBuf {
-    let start = std::env::current_dir().expect("current directory must be readable");
-    let mut candidate = start.as_path();
-    loop {
-        let manifest = candidate.join("Cargo.toml");
-        if manifest.is_file() {
-            let content = std::fs::read_to_string(&manifest)
-                .unwrap_or_else(|e| panic!("failed to read {}: {e}", manifest.display()));
-            if content.contains("[workspace]") {
-                return candidate.to_path_buf();
-            }
-        }
-        candidate = match candidate.parent() {
-            Some(p) => p,
-            None => panic!(
-                "no workspace root (Cargo.toml with [workspace]) found above {}",
-                start.display()
-            ),
-        };
-    }
 }
 
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {

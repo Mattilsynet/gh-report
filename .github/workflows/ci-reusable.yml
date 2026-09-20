@@ -183,7 +183,7 @@ jobs:
         run: tools/tripwires.sh fence-converge
 
   # Hard gate: every public library `pub enum` deriving `thiserror::Error`
-  # must carry `#[non_exhaustive]` (RST-0006:R1), enforced by the
+  # must NOT carry `#[non_exhaustive]` (RST-0006:R1), enforced by the
   # `non-exhaustive-check` crate (RST-0006:R3 authorises the CI gate). The
   # tool is deliberately conservative — under-flagging (missing a
   # macro-generated enum) is the safe failure mode; over-flagging is not,
@@ -198,7 +198,7 @@ jobs:
         with:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: run non-exhaustive-check against the workspace root (RST-0006:R1+R3)
+      - name: scan consumer and resolved external Cherry libraries (RST-0006:R1+R3)
         run: tools/tripwires.sh non-exhaustive
 
   # Tripwire: ban crate/module-level inner `dead_code` suppression in library
@@ -211,6 +211,9 @@ jobs:
   # ...))]`) remain permitted: they are item-local and reasoned. Scope is
   # `src/` only — integration `tests/**` type-witness files legitimately use
   # file-level suppression and are out of scope.
+  # Consumer sources remain checked here. External Cherry source quality and
+  # library tests are owned by acje/cherry-pit CI at the exact Cargo.lock rev;
+  # see README.md "Canonical Cherry gate ownership" for immutable evidence.
   dead-code-inner-suppression-tripwire:
     name: ban module-level dead_code suppression (crates/*/src)
     runs-on: ubuntu-latest

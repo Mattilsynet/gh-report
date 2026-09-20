@@ -1,7 +1,7 @@
 # CHE-0084. Extraction Eligibility and Pardosa Adapter Placement
 
 Date: 2026-07-02
-Last-reviewed: 2026-09-05 — amended — R9 no longer names a CI mechanism: the pardosa-dep-deny tripwire was retired with its only subject crate cherry-pit-sd-viz (CHE-0094 retired); R5 unweakened, re-arm obligation recorded (COM-0035:R5 via RST-0007:R6)
+Last-reviewed: 2026-09-20 — amended — R9 names the canonical producer CI mechanism rearmed for the outer adapter; follows the 2026-09-05 retirement of pardosa-dep-deny with its only subject crate cherry-pit-sd-viz (CHE-0094 retired); R5 remains unweakened
 Tier: B
 Status: Accepted
 Crates: gh-report, pardosa
@@ -34,17 +34,21 @@ R7 [5]: The Phase-2 fiber-store example is ruled: extract the generic one-fiber-
 
 R8 [5]: If a candidate cannot pass R1 or would need a `cherry-pit-*` crate with a pardosa dependency, it is not extraction-eligible under this ADR; author a later superseding ADR rather than adding a fourth placement home.
 
-R9 [5]: R5 carries no CI mechanism at present. The former build-time tripwire
-(job id build-test-lint, step "deny pardosa deps in cherry-pit-sd-viz",
-.github/workflows/ci-reusable.yml) was retired together with its only subject
-crate, `cherry-pit-sd-viz`, when that crate was deleted; a `cargo tree` probe
-against a nonexistent package cannot fail, so retaining the step would have
-reported green while asserting nothing. R5 remains binding and unweakened. The
-next crate that R4 places in the pardosa-family adapter position MUST
-re-establish an equivalent build-time tripwire naming that crate, and this
-rule is amended at that time to name the new job id and step (COM-0017:R4).
+R9 [5]: Canonical `acje/cherry-pit` CI MUST enforce R5 in job `build-test-lint`,
+step "deny async-trait and rearm pardosa-cherry-pit-projection DAG guard",
+`.github/workflows/ci.yml`. The producer owns the outer adapter source gate;
+gh-report consumes its exact reviewed revision. New adapters MUST retain
+equivalent named graph enforcement rather than probing deleted local paths.
 
 ## Consequences
+
+Canonical cutover evidence (2026-09-20): the outer adapter and its rearmed
+producer DAG guard are owned by `acje/cherry-pit` at
+[`bae8df87873c842e86113183ea892075c6debbab`](https://github.com/acje/cherry-pit/blob/bae8df87873c842e86113183ea892075c6debbab/.github/workflows/ci.yml),
+job `build-test-lint`, step `deny async-trait and rearm pardosa-cherry-pit-projection DAG guard`.
+gh-report consumes the canonical libraries and test bridge; GitHub policy stays
+local. The historical retirement in R9 is followed by that producer-owned
+rearm, rather than an empty local path probe.
 
 Positive: Phase 2 no longer argues home; the fiber-store moves to a `pardosa-fiber-store`-style crate while preserving CHE-0010 severance and the PGN public facade.
 

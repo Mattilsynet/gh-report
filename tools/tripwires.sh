@@ -85,8 +85,8 @@ check_projection_lock() {
   fi
 }
 
-# Scope: every cherry-pit-* package of the workspace, enumerated structurally
-# via `cargo metadata --no-deps` rather than a literal list or a hand-rolled
+# Scope: every resolved cherry-pit-* package, including canonical git dependencies,
+# enumerated via `cargo metadata` rather than a literal list or a hand-rolled
 # manifest parser — a literal silently drops coverage on a rename or a new
 # crate, which is how a renamed crate went uncovered while the check stayed
 # green (ghr-8602n), and a line-oriented parser both drops a same-line first
@@ -123,8 +123,8 @@ check_async_trait() {
   fi
 
   local meta
-  if ! run_probe "async-trait" cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest"; then
-    echo "::error::async-trait: cargo metadata --locked --no-deps --manifest-path ${manifest} FAILED — a failed workspace enumeration is an ERROR, not an empty member set, refusing to fold it into the no-violation verdict (CHE-0025:R1+R2)"
+  if ! run_probe "async-trait" cargo metadata --locked --format-version 1 --manifest-path "$manifest"; then
+    echo "::error::async-trait: cargo metadata --locked --manifest-path ${manifest} FAILED — a failed dependency enumeration is an ERROR, not an empty member set, refusing to fold it into the no-violation verdict (CHE-0025:R1+R2)"
     printf '%s\n' "$probe_out"
     return 1
   fi
@@ -163,7 +163,7 @@ check_async_trait() {
     return 1
   fi
   if [ "$crate_count" -eq 0 ]; then
-    echo "::error::async-trait: enumerated ZERO cherry-pit-* workspace members from $manifest — fail-open guard tripped, refusing to pass silently (CHE-0025:R1+R2)"
+    echo "::error::async-trait: enumerated ZERO cherry-pit-* resolved packages from $manifest — fail-open guard tripped, refusing to pass silently (CHE-0025:R1+R2)"
     return 1
   fi
 
@@ -186,7 +186,7 @@ check_async_trait() {
   done
 
   if [ "$fail" -eq 0 ]; then
-    echo "async-trait: ${crate_count} cherry-pit-* workspace members enumerated from ${manifest} carry no async-trait edge (CHE-0025:R1+R2)"
+    echo "async-trait: ${crate_count} cherry-pit-* resolved packages enumerated from ${manifest} carry no async-trait edge (CHE-0025:R1+R2)"
   fi
   return $fail
 }
@@ -262,8 +262,32 @@ check_dead_code_suppression() {
 }
 
 check_non_exhaustive() {
-  if ! cargo run -p non-exhaustive-check --quiet -- "$ROOT"; then
-    echo "::error::forbidden #[non_exhaustive] on a library error enum (RST-0006:R1+R3 closed enumeration policy)"
+  local manifest="${NON_EXHAUSTIVE_MANIFEST:-$ROOT/Cargo.toml}"
+  local selection roots source
+  local -a directories=()
+  if ! run_probe "non-exhaustive" cargo metadata --locked --format-version 1 --manifest-path "$manifest"; then
+    printf '::error::non-exhaustive: metadata failed, no verdict (RST-0006:R3)\n%s\n' "$probe_out"
+    return 1
+  fi
+  if ! selection=$(jq -ce '
+    [.packages[] | select(.name == "gh-report" or (.name | startswith("cherry-pit-")))
+      | {name, source, roots: [.targets[] | select(any(.kind[]; . == "lib" or . == "rlib" or . == "cdylib" or . == "staticlib")) | .src_path] | unique}]
+    | if ([.[] | select(.name | startswith("cherry-pit-"))] | length) == 0 or any(.[]; (.roots | length) != 1) then error("missing or ambiguous library targets") else . end
+  ' <<< "$probe_out"); then
+    echo '::error::non-exhaustive: invalid library enumeration (RST-0006:R3)'
+    return 1
+  fi
+  if ! roots=$(jq -r '.[].roots[]' <<< "$selection"); then return 1; fi
+  printf 'non-exhaustive resolved libraries: %s\n' "$selection"
+  while IFS= read -r source; do
+    if [[ "$source" != /* || ! -f "$source" ]]; then
+      echo "::error::non-exhaustive: missing absolute library target $source (RST-0006:R3)"
+      return 1
+    fi
+    directories+=("${source%/*}")
+  done <<< "$roots"
+  if ! cargo run --locked -p non-exhaustive-check --quiet -- "${directories[@]}"; then
+    echo "::error::non-exhaustive checker failed: inspect diagnostics for violations or incomplete scanning (RST-0006:R1+R3)"
     return 1
   fi
 }

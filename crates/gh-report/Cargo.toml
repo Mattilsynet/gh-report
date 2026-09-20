@@ -33,9 +33,9 @@ profiling = ["dep:dhat"]
 # Q3). Never a default dependency.
 dhat = { version = "0.3.3", optional = true }
 # cherry-pit-wq — M5 B2 swap target for worker_pool / work_queue / rate_limit / pagination / budget re-exports
-cherry-pit-wq = { version = "0.2.0", path = "../cherry-pit-wq" }
+cherry-pit-wq = { workspace = true }
 # cherry-pit-storage — M5 B3 swap target for PersistenceError / RunLock / build_snapshot_signature re-exports (CHE-0053:R3 flat surface)
-cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
+cherry-pit-storage = { workspace = true }
 cherry-pit-gateway = { workspace = true }
 cherry-pit-app = { workspace = true }
 
@@ -145,6 +145,8 @@ moka = { workspace = true }
 # Structured JSON logging is handled by infra::cloud_logging (custom layer)
 
 [dev-dependencies]
+cherry-pit-merger = { workspace = true }
+pardosa-cherry-pit-test-support = { workspace = true }
 async-nats = { workspace = true }
 # HTTP mocking
 wiremock = { workspace = true }
