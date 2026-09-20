@@ -18,9 +18,9 @@ Two serialization decisions exist:
 
 1. **CHE-0031** (superseded; retired lineage now covers pardosa-genome
    store encoding, not gateway format) — originally named MessagePack
-   encoding for `cherry-pit-gateway`'s `MsgpackFileStore`. The gateway's
-   `rmp-serde` choice is retained; this ADR's table and Boundary Rules
-   now govern it directly.
+   encoding for `cherry-pit-gateway`'s `MsgpackFileStore`. CHE-0100
+   retired that store: neither it nor its `rmp-serde` dependency
+   exists, so the gateway now owns no serialization format.
 2. **PAR-0006** — pardosa-genome as the primary
    serialization for the `pardosa` crate. Optimised for zero-copy
    reads, compile-time schema hashing, and integrated compression.
@@ -44,11 +44,11 @@ R3 [5]: Feature flags gate serialization dependencies so users opt in
 
 | Crate | Serialization | Governing ADR |
 |-------|--------------|---------------|
-| `cherry-pit-core` | None — domain traits are format-agnostic. `DomainEvent: Serialize + DeserializeOwned` enables any serde backend. | CHE-0010 |
+| `cherry-pit-core` | None — domain traits are format-agnostic. `DomainEvent` carries no serde supertrait; `EventEnvelope` declares `#[serde(bound(...))]` so any serde backend works for events that opt in. | CHE-0010 |
 | `cherry-pit-gateway` | None; store retired (CHE-0100). `MsgpackFileStore` and its `rmp-serde` dependency no longer exist. | CHE-0100 |
 | `pardosa` | pardosa-genome as primary. MsgPack and JSON as feature-gated fallbacks for debugging and interop. | PAR-0006 |
 | `pardosa-genome` | Defines the genome binary wire format. Serde-native with `GenomeSafe` marker trait. | GEN-0001 through GEN-0033 |
-| `cherry-pit-web` (planned) | JSON via `serde_json` for HTTP API responses. Format determined by web conventions, not event storage. | — |
+| `cherry-pit-web` | JSON via `serde_json` for HTTP API responses; the router declares its own `Serialize` bound on the aggregate's event type. Format determined by web conventions, not event storage. | CHE-0010 |
 
 ### Boundary Rules
 
