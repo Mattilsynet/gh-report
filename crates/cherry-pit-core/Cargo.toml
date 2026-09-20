@@ -29,10 +29,10 @@ testing = []
 serde = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
-# Pardosa-encoding was removed from the workspace
-# (pardosa-deletion-1779100000); DomainEvent bounds on
-# serde::{Serialize, DeserializeOwned}. Removal is complete — no
-# pardosa-encoding dependency remains in this manifest.
+# serde is used by EventEnvelope and the other core value types, not
+# by the DomainEvent supertrait set, which carries no serde bound
+# (CHE-0010 R1, CHE-0045 R1-R2). Pardosa-encoding removal is complete:
+# no pardosa-encoding dependency remains in this manifest.
 
 [dev-dependencies]
 proptest = { workspace = true }

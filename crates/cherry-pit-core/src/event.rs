@@ -9,20 +9,20 @@ use crate::error::EnvelopeError;
 ///
 /// Events are immutable facts — something that happened. They are the
 /// source of truth in an event-sourced system. Every event must be
-/// cloneable (for fan-out to multiple consumers) and serde-serializable
-/// for substrate-side persistence + transport.
-/// (CHE-0010 R1–R3 [amended; see ADR-debt issue]: supertrait bounds
-/// `Clone` + `Send` + `Sync` + `'static` + `serde::Serialize` +
-/// `serde::de::DeserializeOwned`. The legacy `pardosa-encoding` crate
-/// (binary `Encode`/`Decode`) has been removed from these bounds; the
-/// wire format is chosen by infrastructure, not fixed here (CHE-0045
-/// R1-R2). This is unrelated to the current `pardosa` substrate
-/// crates, which remain live.
-/// CHE-0022 R1–R5: event enum evolution rules — no `#[non_exhaustive]`,
-/// immutable `event_type()` strings, new fields as `Option<T>`;
-/// CHE-0045 R1–R2: domain events format-agnostic, serde chosen by infra.
-/// ADR cleanup deferred per user mission scope (pardosa-deletion-1779100000):
-/// CHE-0064:R2 supersession ADR not yet written.)
+/// cloneable (for fan-out to multiple consumers) and shareable across
+/// threads.
+///
+/// Supertrait bounds are `Clone` + `Send` + `Sync` + `'static`
+/// (CHE-0010 R1). Serialization is deliberately not among them: domain
+/// events are format-agnostic and the wire format is chosen by
+/// infrastructure (CHE-0045 R1–R2). Serializing consumers —
+/// [`EventEnvelope`]'s serde impls and the HTTP response paths —
+/// declare `Serialize` / `DeserializeOwned` as their own bounds, so an
+/// event that is never serialized needs no serde impls.
+///
+/// Event enums must not be `#[non_exhaustive]`, and an `event_type()`
+/// string must never change once events of that type exist in a log
+/// (CHE-0022).
 ///
 /// # Examples
 ///
@@ -43,7 +43,7 @@ use crate::error::EnvelopeError;
 ///     }
 /// }
 /// ```
-pub trait DomainEvent: Clone + Send + Sync + 'static + Serialize + DeserializeOwned {
+pub trait DomainEvent: Clone + Send + Sync + 'static {
     /// A stable string identifier for this event type.
     ///
     /// Used for routing, schema registry, and deserialization dispatch.
