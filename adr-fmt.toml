@@ -55,7 +55,9 @@ description = """\
     Design philosophy, EDA/DDD/hexagonal architecture, domain model \
     traits (aggregates, commands, events, policies), infrastructure \
     ports, concurrency, delivery, storage backends, workspace tooling, \
-    testing strategy, and build configuration."""
+    testing strategy, and build configuration. Cherry libraries are external; \
+    their producer governance is owned by acje/cherry-pit. These mappings \
+    retain consumer contract lookup, not local source ownership."""
 crates = [
     "cherry-pit-core",
     "cherry-pit-gateway",

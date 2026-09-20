@@ -6,8 +6,8 @@ global `~/.config/opencode/AGENTS.md` (auto-loaded) — not repeated here.
 
 ## What this repo is
 
-Rust workspace (edition 2024, MSRV 1.98, resolver 3, 12 member crates) shipping one
-binary plus an ADR-governed library family and a large ADR corpus.
+Rust workspace (edition 2024, MSRV 1.98, resolver 3, 3 member crates) shipping one
+binary, web client and checker, consuming an external ADR-governed library family.
 
 - Binary (real entrypoint): `gh-report` (GitHub org evidence collector + HTML
   reporter daemon). Two tools are **not** built here and are consumed as
@@ -16,12 +16,15 @@ binary plus an ADR-governed library family and a large ADR corpus.
   and therefore no workspace-dependency pin; and `comment-free`
   (doc-lint tool) from `acje/comment-free`, which has no library consumers
   here and therefore no workspace-dependency pin.
-- `cherry-pit-*` — event-sourcing substrate consumed by `gh-report`.
+- `cherry-pit-*` — external event-sourcing substrate from `acje/cherry-pit`,
+  all eight crates pinned to `bae8df87873c842e86113183ea892075c6debbab`.
+  The outer `pardosa-cherry-pit-test-support` uses the same revision as a
+  consumer dev-dependency. Library tests/fixtures are owned and run upstream;
+  local workspace tests do not run git dependencies' test targets.
 - `pardosa*` — `.pgno` event-store substrate + a NATS/JetStream backend
   (`pardosa-nats`). **External, not workspace members**: consumed as git
   dependencies from `acje/pardosa` at the rev pinned in
-  `[workspace.dependencies]` (`Cargo.toml:148-149`). The only `pardosa`-named
-  member built here is `crates/pardosa-cherry-pit-test-support`. `cherry-pit`
+  `[workspace.dependencies]`. No `pardosa`-named workspace member remains. `cherry-pit`
   does **not** depend on `pardosa` (severed per CHE-0010); don't reintroduce
   that edge. Because `pardosa` / `pardosa-nats` are dependencies rather than
   members, their **test targets are not part of this workspace's test set** —
@@ -90,6 +93,12 @@ adr-fmt-xdlw9 O3).
   the clippy line as at INNER). `--workspace` /
   `--all-features` are FORBIDDEN at this tier — MID stays scoped to the
   computed package list, never the whole graph.
+
+  The historical path-only recipe below applies to local member changes only.
+  For external Cherry adoption, use full locked metadata's `resolve.nodes`
+  reverse edges and intersect the result with `workspace_members`; the current
+  affected member is gh-report. Producer test targets stay upstream. See
+  README.md "Canonical Cherry gate ownership" for source-gate ownership.
 
   Reverse-dependent closure is mechanically computable, not a judgement
   call — verified against `cherry-pit-core` (historical run, 8 transitive
@@ -397,9 +406,7 @@ non-trivial consumer of that substrate, not the source of the constraints.
     `--check=artifacts`, `--check=conventions`, `--check=pollution`, and
     `--check-health`.
 - `cherry-pit-*` atomic-write protocol is CHE-0032 (temp → fsync → rename →
-  parent-dir fsync); the production path in
-  `cherry-pit-gateway/src/event_store/msgpack_file.rs::write_atomic` already
-  implements it. `cherry-pit-gateway` genuinely uses MessagePack on disk;
+  parent-dir fsync). The canonical gateway has no MessagePack backend;
   `gh-report` persists domain events via native pardosa (`.pgno`, default
   backend, CHE-0074), and (per CHE-0099, msgpack-removal-2 Direction A)
   its scheduler + sweep-timeout streams are ephemeral in-process stores

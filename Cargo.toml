@@ -1,18 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/cherry-pit-app",
-    "crates/cherry-pit-core",
-    "crates/cherry-pit-gateway",
-    "crates/cherry-pit-merger",
-    "crates/cherry-pit-projection",
-    "crates/cherry-pit-wq",
-    "crates/cherry-pit-storage",
-    "crates/cherry-pit-web",
     "crates/gh-report",
     "crates/gh-report-web-client",
     "crates/non-exhaustive-check",
-    "crates/pardosa-cherry-pit-test-support",
 ]
 
 # gh-report-web-client is wasm32-only (Leptos CSR, CHE-0087 R6): excluded
@@ -20,17 +11,8 @@ members = [
 # drives the wasm crate on the host toolchain. It builds under an explicit
 # `--target wasm32-unknown-unknown` (or `-p gh-report-web-client`) only.
 default-members = [
-    "crates/cherry-pit-app",
-    "crates/cherry-pit-core",
-    "crates/cherry-pit-gateway",
-    "crates/cherry-pit-merger",
-    "crates/cherry-pit-projection",
-    "crates/cherry-pit-wq",
-    "crates/cherry-pit-storage",
-    "crates/cherry-pit-web",
     "crates/gh-report",
     "crates/non-exhaustive-check",
-    "crates/pardosa-cherry-pit-test-support",
 ]
 
 [workspace.package]
@@ -118,12 +100,15 @@ clap = { version = "4", features = ["derive"] }
 ron = "0.12"
 
 # === Internal ===
-cherry-pit-core = { path = "crates/cherry-pit-core", version = "0.1.0" }
-cherry-pit-gateway = { path = "crates/cherry-pit-gateway", version = "0.1.0" }
-cherry-pit-projection = { path = "crates/cherry-pit-projection", version = "0.1.0" }
-cherry-pit-web = { path = "crates/cherry-pit-web", version = "0.1.0" }
-cherry-pit-app = { path = "crates/cherry-pit-app", version = "0.1.0" }
-cherry-pit-merger = { path = "crates/cherry-pit-merger", version = "0.1.0" }
+cherry-pit-core = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.1.0" }
+cherry-pit-gateway = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.1.0" }
+cherry-pit-projection = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.1.0" }
+cherry-pit-web = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.1.0" }
+cherry-pit-app = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.1.0" }
+cherry-pit-merger = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.1.0" }
+cherry-pit-wq = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.2.0" }
+cherry-pit-storage = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.1.0" }
+pardosa-cherry-pit-test-support = { git = "https://github.com/acje/cherry-pit", rev = "bae8df87873c842e86113183ea892075c6debbab", version = "0.0.0" }
 pardosa = { git = "https://github.com/acje/pardosa", rev = "d1fd21a9746c6b7a285549bb1890ac0f21f838eb", version = "0.5.5" }
 pardosa-nats = { git = "https://github.com/acje/pardosa", rev = "d1fd21a9746c6b7a285549bb1890ac0f21f838eb", version = "0.5.5" }
 

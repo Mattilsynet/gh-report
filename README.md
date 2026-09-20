@@ -30,9 +30,9 @@ cargo run -p gh-report -- --dump-baseline --org <your-org> --store-dir ./store
 ```
 
 Operational recovery procedures live at
-[`crates/cherry-pit-gateway/RUNBOOKS.md`](crates/cherry-pit-gateway/RUNBOOKS.md).
+[`cherry-pit-gateway/RUNBOOKS.md`](https://github.com/acje/cherry-pit/blob/bae8df87873c842e86113183ea892075c6debbab/crates/cherry-pit-gateway/RUNBOOKS.md).
 
-## Why a 15-crate workspace behind one dashboard
+## Workspace and canonical dependencies
 
 `gh-report` is built on a `cherry-pit-*` event-sourcing substrate (core,
 gateway, projection, app, web, work-queue, storage primitives), with durable
@@ -43,10 +43,16 @@ upstream, not a member here) keeps the ADR corpus this workspace is built
 against internally consistent;
 `comment-free` enforces the workspace's no-`//`-comments rule and is
 likewise consumed from canonical upstream rather than built here.
-Why the substrate is developed here as a first-class concern, rather than only as
-an implementation detail of `gh-report`, is recorded in [`AGENTS.md`](AGENTS.md)
-§ Intent — that is the canonical statement of product stance; this README does not
-restate it.
+Cherry is maintained in [`acje/cherry-pit`](https://github.com/acje/cherry-pit).
+All eight Cherry crates and the outer test bridge use the exact git revision
+`bae8df87873c842e86113183ea892075c6debbab` in `Cargo.toml` and `Cargo.lock`.
+This workspace retains `gh-report`, `gh-report-web-client`, and
+`non-exhaustive-check`. GitHub policy and native application stores stay here.
+
+The former embedded library tests and fixtures live at that canonical revision;
+Cargo does not execute dependency test targets in this consumer workspace.
+Canonical PR #5 passed all four Linux checks. Consumer verification exercises
+the application and `canonical_cherry_bridge` persistence/type-identity test.
 
 - **`gh-report`** — the dashboard described above.
   See [`crates/gh-report/`](crates/gh-report/).
@@ -71,6 +77,27 @@ restate it.
   supply cross-cutting principles applied to all crates.
 
 This is a Rust workspace (edition 2024, MSRV 1.98).
+
+## Canonical Cherry gate ownership
+
+The canonical pin is `bae8df87873c842e86113183ea892075c6debbab`.
+Producer evidence is [PR #5's completed CI run](https://github.com/acje/cherry-pit/actions/runs/35520271360)
+and its [revision-qualified workflow](https://github.com/acje/cherry-pit/blob/bae8df87873c842e86113183ea892075c6debbab/.github/workflows/ci.yml).
+
+| Gate / tests | Consumer scope | Producer scope |
+|---|---|---|
+| Closed error enums | Locked metadata selects gh-report and all resolved Cherry library targets; missing targets or zero Cherry packages fail | Canonical library source gate |
+| async-trait | All resolved `cherry-pit-*` dependency trees, including git dependencies | Canonical DAG gate |
+| dead-code source suppression | Actual remaining `crates/*/src` consumer code | External libraries checked by producer `dead-code-inner-suppression-tripwire`; job 106103029927 passed |
+| forbid unsafe | Four compilation roots in three local members | Producer static source gate in `build-test-lint`; job 106103030059 passed |
+| Library tests and fixtures | Not executed by dependency adoption; actual `canonical_cherry_bridge` type/persistence test stays local | All transferred library tests/fixtures retained at canonical revision |
+
+Consumer boundary on 2026-09-20: 1,699 passed, zero failed/ignored
+(1,657 gh-report including doctests, 33 web-client including its doctest,
+9 checker). The earlier 1,650 run lacked all-features and the other members.
+Producer's previously recorded 947 tests are separate evidence, not added to
+consumer counts. Browser execution remains incomplete locally until matching
+wasm-bindgen 0.2.128 tooling and Chrome/chromedriver are available.
 
 ## Quickstart — adr-fmt
 
