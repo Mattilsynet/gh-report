@@ -186,6 +186,16 @@ adr-fmt-xdlw9 O3).
   pre-merge. Nothing is deleted, `#[ignore]`d, or feature-gated by moving
   BOUNDARY to epic granularity; coverage is relocated to where it earns its
   cost, never dropped.
+- **Cutover traffic guard** (locally runnable entry point, per local-gate
+  doctrine): `python3.12 -B tools/test_cutover_guard.py` — mocked regression for
+  `tools/cutover_guard.py` and the wiring of `.github/workflows/cutover.yml`.
+  It performs no cloud reads or writes. The same suite runs as the workflow's
+  first validation step after checkout (`Guard Self-Test`), before Google Cloud
+  authentication and before any traffic mutation, so a red guard cannot reach a
+  real rollout. The guard
+  rejects a `percent` input of `0` outright instead of silently skipping, and
+  treats tagged zero-traffic revisions (entries with no `percent`) as serving
+  nothing.
 - **CI-ONLY** (never in the local loop): CI owns deny, audit, and the
   tripwire jobs (`tools/tripwires.sh --list` for the current check names). No
   agent tier runs these — not INNER, not MID, not BOUNDARY.
