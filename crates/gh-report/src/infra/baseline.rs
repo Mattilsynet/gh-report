@@ -171,11 +171,11 @@ pub fn should_reuse(
 /// are correctly cached.
 fn is_total_failure(evidence: &RepositoryEvidence) -> bool {
     let c = &evidence.checks;
-    c.security_policy.status == SecurityPolicyStatus::Unknown
-        && c.secret_scanning.status == SecretScanningStatus::Unknown
+    c.security_policy.status() == SecurityPolicyStatus::Unknown
+        && c.secret_scanning.status() == SecretScanningStatus::Unknown
         && c.dependabot_security_updates.status == DependabotStatus::Unknown
         && c.branch_protection.status == BranchProtectionStatus::Unknown
-        && c.codeowners.status == CodeownersStatus::Unknown
+        && c.codeowners.status() == CodeownersStatus::Unknown
 }
 
 /// Build a baseline from a slice of evidence (typically the projection's
@@ -428,11 +428,11 @@ mod tests {
         let mut ev = test_fixtures::all_passing_evidence("halted-repo");
         ev.repository.updated_at =
             crate::domain::repository::UpdatedAt::new("2026-04-09T12:00:00Z");
-        ev.checks.security_policy.status = SecurityPolicyStatus::Unknown;
-        ev.checks.secret_scanning.status = SecretScanningStatus::Unknown;
+        ev.checks.security_policy = crate::test_fixtures::policy_unknown();
+        ev.checks.secret_scanning = crate::test_fixtures::secret_unknown();
         ev.checks.dependabot_security_updates.status = DependabotStatus::Unknown;
         ev.checks.branch_protection.status = BranchProtectionStatus::Unknown;
-        ev.checks.codeowners.status = CodeownersStatus::Unknown;
+        ev.checks.codeowners = crate::test_fixtures::codeowners_unknown();
 
         let baseline = build_baseline(&[ev]);
         assert!(
@@ -444,11 +444,13 @@ mod tests {
     #[test]
     fn is_total_failure_false_when_policy_not_applicable() {
         let mut ev = test_fixtures::all_passing_evidence("na-repo");
-        ev.checks.security_policy.status = SecurityPolicyStatus::NotApplicable;
-        ev.checks.secret_scanning.status = SecretScanningStatus::Unknown;
+        ev.checks.security_policy = crate::domain::checks::SecurityPolicyResult::NotApplicable {
+            timestamp: ev.checks.security_policy.timestamp().to_string(),
+        };
+        ev.checks.secret_scanning = crate::test_fixtures::secret_unknown();
         ev.checks.dependabot_security_updates.status = DependabotStatus::Unknown;
         ev.checks.branch_protection.status = BranchProtectionStatus::Unknown;
-        ev.checks.codeowners.status = CodeownersStatus::Unknown;
+        ev.checks.codeowners = crate::test_fixtures::codeowners_unknown();
 
         assert!(
             !is_total_failure(&ev),

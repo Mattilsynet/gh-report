@@ -570,6 +570,8 @@ pub struct OrgAlertSummary {
     pub collection_status: CollectionStatus,
     /// Human-readable reason if collection was not successful.
     pub collection_reason: Option<String>,
+    /// HTTP status returned by the org alert endpoint, if known.
+    pub http_status: Option<u16>,
     /// Per-repository alert summaries keyed by repository ID.
     pub per_repo: HashMap<String, RepoAlertSummary>,
     /// Distribution of open alerts by age bucket (e.g., `"0_7_days"` → count).
@@ -607,7 +609,7 @@ pub fn build_owner_repo_map<'a>(
     let mut owner_repos: HashMap<String, (String, Vec<&'a RepositoryEvidence>)> = HashMap::new();
 
     for repo in &active {
-        let Some(parsed) = &repo.checks.codeowners.parsed else {
+        let Some(parsed) = repo.checks.codeowners.parsed() else {
             continue;
         };
 

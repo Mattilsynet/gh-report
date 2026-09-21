@@ -875,8 +875,8 @@ fn build_alert_free_view_model(
         let archived = repo.repository.archived;
         let ss = &repo.checks.secret_scanning;
 
-        if ss.status == SecretScanningStatus::Enabled && ss.alerts_observable {
-            match ss.has_open_alerts {
+        if ss.status() == SecretScanningStatus::Enabled && ss.alerts_observable() {
+            match ss.has_open_alerts() {
                 Some(true) => eligible.push(DenominatorRepoRow::new(
                     repo_name,
                     repo_url,
@@ -900,13 +900,15 @@ fn build_alert_free_view_model(
                 }),
             }
         } else {
-            let reason_label = if ss.status == SecretScanningStatus::Disabled {
+            let reason_label = if ss.status_mismatch() {
+                "Secret scanning disabled (status mismatch)"
+            } else if ss.status() == SecretScanningStatus::Disabled {
                 "Secret scanning disabled"
-            } else if ss.status == SecretScanningStatus::PermissionDenied {
+            } else if ss.status() == SecretScanningStatus::PermissionDenied {
                 "Permission denied"
-            } else if ss.status == SecretScanningStatus::Unknown {
+            } else if ss.status() == SecretScanningStatus::Unknown {
                 "Unknown"
-            } else if !ss.alerts_observable {
+            } else if !ss.alerts_observable() {
                 "Alerts unobservable"
             } else {
                 "Not applicable"
@@ -1960,8 +1962,8 @@ fn compute_repo_score(
     checks: &crate::domain::checks::RepositoryChecks,
     tiers: &CoverageTiers,
 ) -> (Option<f64>, String, CoverageTier, &'static str) {
-    let alert_free_cat = if checks.secret_scanning.alerts_observable {
-        match checks.secret_scanning.has_open_alerts {
+    let alert_free_cat = if checks.secret_scanning.alerts_observable() {
+        match checks.secret_scanning.has_open_alerts() {
             Some(false) => ScoreCategory::Pass,
             Some(true) => ScoreCategory::Fail,
             None => ScoreCategory::Excluded(crate::domain::checks::ExclusionReason::Unknown),
@@ -1971,12 +1973,12 @@ fn compute_repo_score(
     };
 
     let categories = [
-        ScoreCategory::from(checks.security_policy.status),
-        ScoreCategory::from(checks.secret_scanning.status),
+        ScoreCategory::from(&checks.security_policy),
+        ScoreCategory::from(&checks.secret_scanning),
         alert_free_cat,
         ScoreCategory::from(checks.dependabot_security_updates.status),
         checks.branch_protection.score_category(),
-        ScoreCategory::from(checks.codeowners.status),
+        ScoreCategory::from(&checks.codeowners),
     ];
 
     let mut pass = 0u32;
@@ -2018,12 +2020,11 @@ fn compute_repo_score(
 ///   (file found but not downloaded) → NOT orphaned.
 fn is_orphaned(repo: &RepositoryEvidence) -> bool {
     let codeowners = &repo.checks.codeowners;
-    match codeowners.status {
+    match codeowners.status() {
         CodeownersStatus::Absent => true,
         CodeownersStatus::Unknown => false,
         CodeownersStatus::Conforming | CodeownersStatus::NonConforming => codeowners
-            .parsed
-            .as_ref()
+            .parsed()
             .is_some_and(|p| p.unique_owners.is_empty()),
     }
 }
@@ -2293,14 +2294,14 @@ fn unknown_or_pending_dot(pending: bool) -> StatusDot {
 fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<StatusDot> {
     let pending = is_pending_repo(checks);
 
-    let policy_dot = match checks.security_policy.status {
+    let policy_dot = match checks.security_policy.status() {
         SecurityPolicyStatus::Pass => StatusDot::new(DotState::Pass, "pass"),
         SecurityPolicyStatus::Fail => StatusDot::new(DotState::Fail, "fail"),
         SecurityPolicyStatus::Unknown => unknown_or_pending_dot(pending),
         SecurityPolicyStatus::NotApplicable => StatusDot::new(DotState::NotApplicable, "N/A"),
     };
 
-    let secret_dot = match checks.secret_scanning.status {
+    let secret_dot = match checks.secret_scanning.status() {
         SecretScanningStatus::Enabled => StatusDot::new(DotState::Pass, "enabled"),
         SecretScanningStatus::Disabled => StatusDot::new(DotState::Fail, "disabled"),
         SecretScanningStatus::PermissionDenied => {
@@ -2309,10 +2310,10 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
         SecretScanningStatus::Unknown => unknown_or_pending_dot(pending),
     };
 
-    let alert_dot = if pending || checks.secret_scanning.status == SecretScanningStatus::Unknown {
+    let alert_dot = if pending || checks.secret_scanning.status() == SecretScanningStatus::Unknown {
         unknown_or_pending_dot(pending)
-    } else if checks.secret_scanning.alerts_observable {
-        match checks.secret_scanning.has_open_alerts {
+    } else if checks.secret_scanning.alerts_observable() {
+        match checks.secret_scanning.has_open_alerts() {
             Some(false) => StatusDot::new(DotState::Pass, "alert-free"),
             Some(true) => StatusDot::new(DotState::Fail, "open alerts"),
             None => unknown_or_pending_dot(pending),
@@ -2335,7 +2336,7 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
         BranchProtectionStatus::Unknown => unknown_or_pending_dot(pending),
     };
 
-    let codeowners_dot = match checks.codeowners.status {
+    let codeowners_dot = match checks.codeowners.status() {
         CodeownersStatus::Conforming => StatusDot::new(DotState::Pass, "conforming"),
         CodeownersStatus::NonConforming => StatusDot::new(DotState::Fail, "non-conforming"),
         CodeownersStatus::Absent => StatusDot::new(DotState::Fail, "absent"),

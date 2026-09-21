@@ -11,7 +11,10 @@ use tracing::{debug, instrument, trace, warn};
 
 use crate::collector::codeowners_parser::{self, ParsedCodeowners};
 use crate::config;
-use crate::domain::checks::{CodeownersResult, CodeownersStatus};
+use crate::domain::checks::{
+    CodeownersContent, CodeownersNonConformingLocation, CodeownersResult, CodeownersStatus,
+    IndeterminateReason,
+};
 use crate::domain::codeowners::CodeownersTruncationReason;
 use crate::domain::repository::Repository;
 use crate::github::client::GitHubClient;
@@ -32,12 +35,29 @@ fn is_file_response(result: &crate::github::client::ApiOutcome) -> bool {
 
 /// Build a `CodeownersResult` from the given status, path, and timestamp.
 fn build_result(status: CodeownersStatus, path: Option<&str>, timestamp: &str) -> CodeownersResult {
-    CodeownersResult {
-        status,
-        path: path.map(str::to_string),
-        timestamp: timestamp.to_string(),
-        parsed: None,
-        truncation: None,
+    let timestamp = timestamp.to_string();
+    match (status, path) {
+        (CodeownersStatus::Conforming, _) => CodeownersResult::Conforming {
+            content: CodeownersContent::Unparsed,
+            timestamp,
+        },
+        (CodeownersStatus::NonConforming, Some("docs/CODEOWNERS")) => {
+            CodeownersResult::NonConforming {
+                location: CodeownersNonConformingLocation::Docs,
+                content: CodeownersContent::Unparsed,
+                timestamp,
+            }
+        }
+        (CodeownersStatus::NonConforming, _) => CodeownersResult::NonConforming {
+            location: CodeownersNonConformingLocation::Root,
+            content: CodeownersContent::Unparsed,
+            timestamp,
+        },
+        (CodeownersStatus::Absent, _) => CodeownersResult::Absent { timestamp },
+        (CodeownersStatus::Unknown, _) => CodeownersResult::Unobservable {
+            reason: IndeterminateReason::Invalid,
+            timestamp,
+        },
     }
 }
 
@@ -49,16 +69,24 @@ fn build_result_with_parsed(
     timestamp: &str,
     parsed_or_truncation: Result<ParsedCodeowners, CodeownersTruncationReason>,
 ) -> CodeownersResult {
-    let (parsed, truncation) = match parsed_or_truncation {
-        Ok(p) => (Some(p), None),
-        Err(reason) => (None, Some(reason)),
+    let content = match parsed_or_truncation {
+        Ok(p) => CodeownersContent::Parsed(p),
+        Err(reason) => CodeownersContent::Truncated(reason),
     };
-    CodeownersResult {
-        status,
-        path: Some(path.to_string()),
-        timestamp: timestamp.to_string(),
-        parsed,
-        truncation,
+    match build_result(status, Some(path), timestamp) {
+        CodeownersResult::Conforming { timestamp, .. } => {
+            CodeownersResult::Conforming { content, timestamp }
+        }
+        CodeownersResult::NonConforming {
+            location,
+            timestamp,
+            ..
+        } => CodeownersResult::NonConforming {
+            location,
+            content,
+            timestamp,
+        },
+        other => other,
     }
 }
 
@@ -144,7 +172,7 @@ enum PathProbe {
     Found(CodeownersStatus, &'static str, serde_json::Value),
     /// Permission denied or transient failure — evaluation should stop
     /// and report `unknown`.
-    Indeterminate,
+    Indeterminate(IndeterminateReason),
     /// No file at this path; caller should try the next candidate.
     NotFound,
 }
@@ -171,10 +199,26 @@ async fn probe_path(
         };
         return PathProbe::Found(status, path, data);
     }
-    if outcome.status_code() == Some(403) || outcome.is_retryable() {
-        return PathProbe::Indeterminate;
+    match (outcome.is_ok(), outcome.status_code()) {
+        (false, Some(401 | 403)) => PathProbe::Indeterminate(IndeterminateReason::PermissionDenied),
+        (false, Some(404)) => PathProbe::NotFound,
+        (false, Some(429)) => PathProbe::Indeterminate(IndeterminateReason::RateLimited),
+        (false, _) if outcome.is_retryable() => {
+            PathProbe::Indeterminate(IndeterminateReason::Transient)
+        }
+        (true, _)
+            if outcome.data().is_some_and(|data| {
+                data.is_array()
+                    || matches!(
+                        data.get("type").and_then(serde_json::Value::as_str),
+                        Some("dir" | "symlink" | "submodule")
+                    )
+            }) =>
+        {
+            PathProbe::NotFound
+        }
+        _ => PathProbe::Indeterminate(IndeterminateReason::Invalid),
     }
-    PathProbe::NotFound
 }
 
 /// Evaluate CODEOWNERS for a repository.
@@ -225,9 +269,12 @@ pub async fn evaluate(
                 let parsed_or_truncation = try_parse_content(&data, &repo.name);
                 return build_result_with_parsed(status, path, run_timestamp, parsed_or_truncation);
             }
-            PathProbe::Indeterminate => {
+            PathProbe::Indeterminate(reason) => {
                 debug!(repo = %repo.name, path, status = "unknown", "CODEOWNERS path check failed (403 or transient)");
-                return build_result(CodeownersStatus::Unknown, None, run_timestamp);
+                return CodeownersResult::Unobservable {
+                    reason,
+                    timestamp: run_timestamp.to_string(),
+                };
             }
             PathProbe::NotFound => {}
         }
@@ -240,6 +287,30 @@ pub async fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn malformed_and_unauthorized_codeowners_remain_unobservable() {
+        for (response, reason) in [
+            (
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({})),
+                IndeterminateReason::Invalid,
+            ),
+            (error_status(401), IndeterminateReason::PermissionDenied),
+        ] {
+            let server = MockServer::start().await;
+            mount_candidate(
+                &server,
+                "repo",
+                config::CONFORMING_CODEOWNERS_PATH,
+                response,
+            )
+            .await;
+            let result = evaluate_repo(&server, "repo").await;
+            assert!(
+                matches!(result, CodeownersResult::Unobservable { reason: actual, .. } if actual == reason)
+            );
+        }
+    }
     use crate::github::auth::GitHubCredential;
     use crate::github::budget::BudgetGate;
     use std::sync::Arc;
@@ -359,9 +430,9 @@ mod tests {
         );
         let result = evaluate(&client, &repo, "2026-01-01T00:00:00+00:00").await;
 
-        assert_eq!(result.status, CodeownersStatus::NonConforming);
-        assert_eq!(result.path.as_deref(), Some(config::DOCS_CODEOWNERS_PATH));
-        let parsed = result.parsed.expect("docs/CODEOWNERS should parse");
+        assert_eq!(result.status(), CodeownersStatus::NonConforming);
+        assert_eq!(result.path(), Some(config::DOCS_CODEOWNERS_PATH));
+        let parsed = result.parsed().expect("docs/CODEOWNERS should parse");
         assert_eq!(parsed.entries[0].owners, vec!["@org/security"]);
     }
 
@@ -378,12 +449,9 @@ mod tests {
 
         let result = evaluate_repo(&server, "conforming").await;
 
-        assert_eq!(result.status, CodeownersStatus::Conforming);
-        assert_eq!(
-            result.path.as_deref(),
-            Some(config::CONFORMING_CODEOWNERS_PATH)
-        );
-        let parsed = result.parsed.expect(".github/CODEOWNERS should parse");
+        assert_eq!(result.status(), CodeownersStatus::Conforming);
+        assert_eq!(result.path(), Some(config::CONFORMING_CODEOWNERS_PATH));
+        let parsed = result.parsed().expect(".github/CODEOWNERS should parse");
         assert_eq!(parsed.entries[0].owners, vec!["@org/security"]);
     }
 
@@ -407,12 +475,9 @@ mod tests {
 
         let result = evaluate_repo(&server, "root-only").await;
 
-        assert_eq!(result.status, CodeownersStatus::NonConforming);
-        assert_eq!(
-            result.path.as_deref(),
-            Some(config::NON_CONFORMING_CODEOWNERS_PATH)
-        );
-        let parsed = result.parsed.expect("root CODEOWNERS should parse");
+        assert_eq!(result.status(), CodeownersStatus::NonConforming);
+        assert_eq!(result.path(), Some(config::NON_CONFORMING_CODEOWNERS_PATH));
+        let parsed = result.parsed().expect("root CODEOWNERS should parse");
         assert_eq!(parsed.entries[0].owners, vec!["@org/platform"]);
     }
 
@@ -425,9 +490,9 @@ mod tests {
 
         let result = evaluate_repo(&server, "no-owners").await;
 
-        assert_eq!(result.status, CodeownersStatus::Absent);
-        assert!(result.path.is_none());
-        assert!(result.parsed.is_none());
+        assert_eq!(result.status(), CodeownersStatus::Absent);
+        assert!(result.path().is_none());
+        assert!(result.parsed().is_none());
     }
 
     #[tokio::test]
@@ -439,8 +504,8 @@ mod tests {
 
         let result = evaluate_repo(&server, "denied").await;
 
-        assert_eq!(result.status, CodeownersStatus::Unknown);
-        assert!(result.path.is_none());
+        assert_eq!(result.status(), CodeownersStatus::Unknown);
+        assert!(result.path().is_none());
         assert_eq!(
             requested_paths(&server).await,
             vec![format!(
@@ -470,8 +535,8 @@ mod tests {
 
         let result = evaluate_repo(&server, "denied-then-file").await;
 
-        assert_eq!(result.status, CodeownersStatus::Unknown);
-        assert!(result.parsed.is_none());
+        assert_eq!(result.status(), CodeownersStatus::Unknown);
+        assert!(result.parsed().is_none());
         assert_eq!(
             requested_paths(&server).await,
             vec![format!(
@@ -490,8 +555,8 @@ mod tests {
 
         let result = evaluate_repo(&server, "flaky").await;
 
-        assert_eq!(result.status, CodeownersStatus::Unknown);
-        assert!(result.path.is_none());
+        assert_eq!(result.status(), CodeownersStatus::Unknown);
+        assert!(result.path().is_none());
         let first_candidate = format!(
             "/repos/test-org/flaky/contents/{}",
             config::CONFORMING_CODEOWNERS_PATH
@@ -521,7 +586,7 @@ mod tests {
 
         let result = evaluate_repo(&server, "absent-then-file").await;
 
-        assert_eq!(result.status, CodeownersStatus::Unknown);
+        assert_eq!(result.status(), CodeownersStatus::Unknown);
         assert_eq!(
             requested_paths(&server).await,
             vec![

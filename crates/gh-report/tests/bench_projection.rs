@@ -1,8 +1,8 @@
 use cherry_pit_core::Projection;
 use gh_report::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
-    CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
-    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
+    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersContent,
+    CodeownersResult, DependabotResult, DependabotStatus, EnabledProvenance, ProbeSource,
+    RepositoryChecks, SecretScanningAlerts, SecretScanningResult, SecurityPolicyResult,
 };
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
@@ -88,21 +88,24 @@ fn generate_evidence(repo_idx: usize, seq: usize) -> RepositoryEvidence {
             license_spdx: Some("MIT".to_string()),
         },
         checks: RepositoryChecks {
-            security_policy: SecurityPolicyResult {
-                status: if sec_pass {
-                    SecurityPolicyStatus::Pass
-                } else {
-                    SecurityPolicyStatus::Fail
-                },
-                evidence: SecurityPolicyEvidence::Setting,
-                path: None,
-                timestamp: ts.clone(),
+            security_policy: if sec_pass {
+                SecurityPolicyResult::EnabledBySetting {
+                    timestamp: ts.clone(),
+                }
+            } else {
+                SecurityPolicyResult::Absent {
+                    timestamp: ts.clone(),
+                }
             },
-            secret_scanning: SecretScanningResult {
-                status: SecretScanningStatus::Enabled,
-                has_open_alerts: Some(false),
-                alerts_observable: true,
-                reason: None,
+            secret_scanning: SecretScanningResult::Enabled {
+                provenance: EnabledProvenance::Metadata {
+                    http_status: None,
+                    alerts: SecretScanningAlerts::Observable {
+                        source: ProbeSource::PerRepoEndpoint,
+                        has_open_alerts: false,
+                        http_status: None,
+                    },
+                },
                 timestamp: ts.clone(),
             },
             dependabot_security_updates: DependabotResult {
@@ -131,12 +134,9 @@ fn generate_evidence(repo_idx: usize, seq: usize) -> RepositoryEvidence {
                 },
                 timestamp: ts.clone(),
             },
-            codeowners: CodeownersResult {
-                status: CodeownersStatus::Conforming,
-                path: Some(".github/CODEOWNERS".to_string()),
+            codeowners: CodeownersResult::Conforming {
+                content: CodeownersContent::Unparsed,
                 timestamp: ts,
-                parsed: None,
-                truncation: None,
             },
         },
         last_commit: None,
@@ -185,7 +185,16 @@ fn build_store(
     fibers: usize,
     mode: WriteMode,
 ) -> usize {
-    let mut session = adapter.create(&sample_claim(1)).expect("create session");
+    let descriptor = pardosa::prelude::AdmittedDescriptor::try_from_descriptor(
+        pardosa::prelude::SchemaDescriptor::new(
+            DomainEvent::SCHEMA_VERSION,
+            DomainEvent::schema_descriptor(),
+        ),
+    )
+    .expect("admit descriptor");
+    let mut session = adapter
+        .create(&sample_claim(1), &descriptor)
+        .expect("create session");
     let mut heads: HashMap<[u8; 16], EventEnvelope> = HashMap::with_capacity(fibers);
     let mut payload_bytes = 0usize;
 
@@ -213,9 +222,11 @@ fn build_store(
             for seq in 0..total {
                 let envelope = next_envelope(seq, fibers, &mut heads, &mut payload_bytes);
                 let mut envelope_bytes = Vec::new();
-                envelope.encode(&mut envelope_bytes);
+                envelope
+                    .encode(&mut envelope_bytes)
+                    .expect("encode envelope");
                 let mut frame = Vec::new();
-                ContainerFrame::encode_payload(&envelope_bytes, &mut frame);
+                ContainerFrame::encode_payload(&envelope_bytes, &mut frame).expect("encode frame");
                 out.write_all(&frame).expect("write frame");
             }
             out.into_inner()
@@ -280,7 +291,7 @@ fn projection_digest(projection: &EvidenceProjection) -> u64 {
     for item in &snapshot {
         item.repository.id.hash(&mut hasher);
         item.repository.name.hash(&mut hasher);
-        (item.checks.security_policy.status as u8).hash(&mut hasher);
+        (item.checks.security_policy.status() as u8).hash(&mut hasher);
         (item.checks.branch_protection.status as u8).hash(&mut hasher);
     }
     hasher.finish()
@@ -349,8 +360,8 @@ fn assert_expected_latest_state(projection: &EvidenceProjection, total: usize, f
             "{name} visibility"
         );
         assert_eq!(
-            format!("{:?}", actual.checks.security_policy.status),
-            format!("{:?}", expected.checks.security_policy.status),
+            format!("{:?}", actual.checks.security_policy.status()),
+            format!("{:?}", expected.checks.security_policy.status()),
             "{name} security_policy status at seq {seq}"
         );
         assert_eq!(
@@ -359,11 +370,13 @@ fn assert_expected_latest_state(projection: &EvidenceProjection, total: usize, f
             "{name} branch_protection status at seq {seq}"
         );
         assert_eq!(
-            actual.checks.security_policy.timestamp, expected.checks.security_policy.timestamp,
+            actual.checks.security_policy.timestamp(),
+            expected.checks.security_policy.timestamp(),
             "{name} latest observation (staleness oracle) at seq {seq}"
         );
         assert_eq!(
-            actual.checks.codeowners.timestamp, expected.checks.codeowners.timestamp,
+            actual.checks.codeowners.timestamp(),
+            expected.checks.codeowners.timestamp(),
             "{name} latest codeowners observation at seq {seq}"
         );
         assert_eq!(
@@ -371,7 +384,7 @@ fn assert_expected_latest_state(projection: &EvidenceProjection, total: usize, f
             "{name} latest branch_protection observation at seq {seq}"
         );
         assert!(
-            observations.insert(actual.checks.security_policy.timestamp.clone()),
+            observations.insert(actual.checks.security_policy.timestamp().to_string()),
             "{name} projected observation must be alias-free at seq {seq}"
         );
     }
@@ -474,8 +487,14 @@ fn native_frame_store_is_readable_by_the_production_adapter() {
 #[test]
 fn generated_observations_are_alias_free() {
     assert_ne!(
-        generate_evidence(0, 9_950).checks.security_policy.timestamp,
-        generate_evidence(0, 6_350).checks.security_policy.timestamp,
+        generate_evidence(0, 9_950)
+            .checks
+            .security_policy
+            .timestamp(),
+        generate_evidence(0, 6_350)
+            .checks
+            .security_policy
+            .timestamp(),
         "observation must distinguish the stale-by-3600 witness"
     );
     assert_ne!(
@@ -487,12 +506,12 @@ fn generated_observations_are_alias_free() {
         generate_evidence(0, 0)
             .checks
             .security_policy
-            .timestamp
+            .timestamp()
             .len(),
         generate_evidence(0, 999_999)
             .checks
             .security_policy
-            .timestamp
+            .timestamp()
             .len(),
         "observation stays fixed-width"
     );
@@ -506,7 +525,7 @@ fn generated_stream_covers_both_status_outcomes() {
         let mut visibility = HashSet::new();
         for seq in 0..total {
             let evidence = generate_evidence(seq % fibers, seq);
-            security.insert(format!("{:?}", evidence.checks.security_policy.status));
+            security.insert(format!("{:?}", evidence.checks.security_policy.status()));
             protection.insert(format!("{:?}", evidence.checks.branch_protection.status));
             visibility.insert(format!("{:?}", evidence.repository.visibility));
         }
@@ -523,7 +542,7 @@ fn generated_stream_covers_both_status_outcomes() {
         for repo_idx in 0..fibers {
             let seq = expected_latest_seq(total, fibers, repo_idx);
             let evidence = generate_evidence(repo_idx, seq);
-            head_security.insert(format!("{:?}", evidence.checks.security_policy.status));
+            head_security.insert(format!("{:?}", evidence.checks.security_policy.status()));
             head_protection.insert(format!("{:?}", evidence.checks.branch_protection.status));
         }
         assert_eq!(head_security.len(), 2, "fiber-head security mix at {total}");
@@ -543,7 +562,7 @@ fn generated_stream_covers_both_status_outcomes_at_tiny_scale() {
         .collect();
     let head_security: HashSet<String> = heads
         .iter()
-        .map(|e| format!("{:?}", e.checks.security_policy.status))
+        .map(|e| format!("{:?}", e.checks.security_policy.status()))
         .collect();
     let head_protection: HashSet<String> = heads
         .iter()

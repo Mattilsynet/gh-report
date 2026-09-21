@@ -2660,8 +2660,8 @@ fn count_secret_scanning_unobservable(repos: &[RepositoryEvidence]) -> u32 {
     let count = repos
         .iter()
         .filter(|repo| {
-            repo.checks.secret_scanning.status == SecretScanningStatus::Enabled
-                && !repo.checks.secret_scanning.alerts_observable
+            repo.checks.secret_scanning.status() == SecretScanningStatus::Enabled
+                && !repo.checks.secret_scanning.alerts_observable()
         })
         .count();
     u32::try_from(count).unwrap_or(u32::MAX)

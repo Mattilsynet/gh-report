@@ -178,8 +178,12 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 
     let shutdown_signal = Arc::new(Mutex::new(None));
     let shutdown_signal_slot = Arc::clone(&shutdown_signal);
+    let reconciliation_state = Arc::clone(&app_state);
     let shutdown = async move {
-        let signal = crate::infra::signal::wait_for_shutdown_signal().await;
+        let signal = tokio::select! {
+            signal = crate::infra::signal::wait_for_shutdown_signal() => signal,
+            () = reconciliation_state.wait_for_reconciliation() => return,
+        };
         *shutdown_signal_slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(signal);
@@ -255,6 +259,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     )
     .await;
 
+    app_state.ensure_write_admission()?;
     server_result.map_err(|e| crate::error::ServerError::Runtime(e.to_string()))?;
 
     info!(
@@ -402,6 +407,7 @@ impl FenceSignal {
 
 enum DeliveryStep {
     Delivered,
+    ReconciliationRequired(PersistenceError),
     Unpersisted(PersistenceError),
     Fenced(FenceSignal),
 }
@@ -722,6 +728,12 @@ async fn rearm_fenced_team_refresh_tick(
         }
         Err(error) => {
             if let Some(failure) = last_failure {
+                if let AppError::Persistence(error @ PersistenceError::Indeterminate(_)) =
+                    failure.error
+                {
+                    state.stop_for_reconciliation(error);
+                    return;
+                }
                 crate::app::team_refresh::log_tick_failure(&failure.error, &failure.context);
             }
             error!(
@@ -786,6 +798,9 @@ fn spawn_collection_loop(
         }
 
         loop {
+            if state.ensure_write_admission().is_err() {
+                return;
+            }
             match next_collection_tick(
                 &mut cancel,
                 Duration::from_secs(crate::config::COLLECTION_INTERVAL_SECS),
@@ -793,12 +808,14 @@ fn spawn_collection_loop(
             .await
             {
                 NextTick::Cancel => {
-                    info!("collection loop cancelled — exiting");
                     return;
                 }
                 NextTick::Run => {}
             }
             let cfg = scheduled_run_config(&config, &force_flag, &force_refresh_flag);
+            if state.ensure_write_admission().is_err() {
+                return;
+            }
             match Box::pin(collect::run_with_outcome(cfg, Arc::clone(&state))).await {
                 Ok(collect::CollectionOutcome::Completed) => {
                     info!(
@@ -887,6 +904,9 @@ fn spawn_team_refresh_loop(
         run_one_team_refresh_tick(&state, &client, &events_dir, backend, nats.as_ref()).await;
 
         loop {
+            if state.ensure_write_admission().is_err() {
+                return;
+            }
             match next_collection_tick(
                 &mut cancel,
                 Duration::from_secs(crate::config::TEAM_REFRESH_INTERVAL_SECS),
@@ -953,10 +973,17 @@ async fn run_one_team_refresh_tick(
     backend: crate::config::runtime::PardosaBackend,
     nats: Result<&crate::config::runtime::NatsStoreConfig, &ConfigError>,
 ) {
+    if state.ensure_write_admission().is_err() {
+        return;
+    }
     let fetched_at = jiff::Timestamp::now().to_string();
     if let Err(failure) =
         crate::app::team_refresh::run_team_refresh_tick(state, client, &fetched_at).await
     {
+        if let AppError::Persistence(error @ PersistenceError::Indeterminate(_)) = failure.error {
+            state.stop_for_reconciliation(error);
+            return;
+        }
         if matches!(
             failure.error,
             AppError::Persistence(PersistenceError::FencedConflict { .. })
@@ -1070,6 +1097,9 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
     recorder: Arc<R>,
 ) {
     while let Some(outcome) = rx.recv().await {
+        if state.ensure_write_admission().is_err() {
+            break;
+        }
         let (source, duration, correlation) = match &outcome {
             JobOutcome::Success {
                 source,
@@ -1090,6 +1120,9 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
         };
 
         let _gate = state.evidence().delivery_gate.lock().await;
+        if state.ensure_write_admission().is_err() {
+            break;
+        }
         let active = state.evidence().scheduled_run.load_full();
         let owner = match &source {
             JobSource::ScheduledBatch => match active.as_ref() {
@@ -1161,6 +1194,7 @@ fn apply_owned_delivery_step(
     owner: Option<&super::evidence_service::ScheduledRun>,
 ) {
     match step {
+        DeliveryStep::ReconciliationRequired(error) => state.stop_for_reconciliation(error),
         DeliveryStep::Fenced(signal) => state.fence_active_run(signal),
         DeliveryStep::Delivered => {
             if let Some(owner) = owner {
@@ -1186,6 +1220,7 @@ fn apply_owned_delivery_step(
 #[cfg(test)]
 fn apply_delivery_step(state: &Arc<AppState>, step: DeliveryStep, source: &JobSource) {
     match step {
+        DeliveryStep::ReconciliationRequired(error) => state.stop_for_reconciliation(error),
         DeliveryStep::Fenced(signal) => state.fence_active_run(signal),
         DeliveryStep::Delivered | DeliveryStep::Unpersisted(_) => {
             if matches!(source, JobSource::ScheduledBatch) {
@@ -1226,9 +1261,8 @@ fn handle_success_outcome<R: RepoRecorder + ?Sized>(
 ///
 /// A `Conflict` is the OCC fence rejecting this writer: it must reach a
 /// run boundary as a typed error (CHE-0088:R3 no-swallow) so the run
-/// aborts (PGN-0016:R2). Every other category keeps its existing
-/// log-and-continue handling — the propagation is scoped to the fence,
-/// not widened to all persist failures.
+/// aborts (PGN-0016:R2). Reconciliation stops admission independently of
+/// fencing; other categories retain their existing handling.
 fn classify_persist_failure(
     failure: WriteFailure,
     domain_key: &str,
@@ -1237,6 +1271,9 @@ fn classify_persist_failure(
     duration: Duration,
 ) -> DeliveryStep {
     log_job_persist_failure(&failure, domain_key, repo_name, source, duration);
+    if failure.category == crate::app::write_policy::WritePolicyCategory::ReconciliationRequired {
+        return DeliveryStep::ReconciliationRequired(failure.error);
+    }
     match FenceSignal::from_failure(failure) {
         Ok(signal) => DeliveryStep::Fenced(signal),
         Err(failure) => DeliveryStep::Unpersisted(failure.error),
@@ -1336,6 +1373,11 @@ fn classify_failure_state_persist_failure(
     domain_key: &str,
     repo_name: &str,
 ) -> DeliveryStep {
+    if write_failure.category
+        == crate::app::write_policy::WritePolicyCategory::ReconciliationRequired
+    {
+        return DeliveryStep::ReconciliationRequired(write_failure.error);
+    }
     tracing::error!(
         key = %domain_key,
         repo = %repo_name,
@@ -2231,6 +2273,47 @@ mod tests {
              not strictly less than one refresh interval — the loop is still \
              sleeping before its first tick"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconciliation_refresh_exits_before_next_tick_without_fence_resync() {
+        tokio::time::resume();
+        let (state, dir) = team_refresh_test_state().await;
+        seed_platform_codeowners_repo(&state);
+        let before = state.event_store.events().unwrap().len();
+        state
+            .team_event_store
+            .fail_writes_for_test(pardosa::prelude::FailureCondition::TransportUnavailable);
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(wiremock::matchers::path(
+            "/orgs/test-org/teams/platform/members",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([{"login":"octocat"}])),
+        )
+        .mount(&server)
+        .await;
+        install_team_refresh_client(&state, &server.uri()).await;
+        let config = team_refresh_test_config(dir.path());
+        let (_cancel, rx) = tokio::sync::watch::channel(false);
+        let handle = spawn_team_refresh_loop(&config, Arc::clone(&state), rx);
+        tokio::time::timeout(Duration::from_secs(30), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        let count = state.event_store.events().unwrap().len();
+        assert_eq!(count, before + 1);
+        assert!(state.ensure_write_admission().is_err());
+        assert!(!state.run_is_fenced());
+        assert!(state.projection_team_rosters_snapshot().is_empty());
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(config::TEAM_REFRESH_INTERVAL_SECS)).await;
+        assert_eq!(state.event_store.events().unwrap().len(), count);
+        assert!(state.last_completed_run.load().is_none());
     }
 
     #[tokio::test(start_paused = true)]
@@ -3155,7 +3238,7 @@ mod tests {
                 Err(crate::app::team_refresh::TickFailure {
                     error: AppError::Persistence(
                         cherry_pit_storage::PersistenceError::BackendUnavailable {
-                            reason: "nats down".to_string(),
+                            source: "nats down".into(),
                         },
                     ),
                     context: crate::app::write_policy::WriteFailureContextOwned::default(),
@@ -3187,7 +3270,7 @@ mod fence_propagation_tests {
 
     fn transient_failure() -> WriteFailure {
         WriteFailure::classify(PersistenceError::BackendUnavailable {
-            reason: "backend down".to_string(),
+            source: "backend down".into(),
         })
     }
 
@@ -3313,6 +3396,56 @@ mod fence_propagation_tests {
             Some(PersistenceError::BackendUnavailable { .. })
         ));
         assert!(!state.run_is_fenced());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_delivery_stops_owned_and_unowned_admission() {
+        for owned in [false, true] {
+            let state = AppState::new().await;
+            let tracker = crate::app::work_queue::BatchTracker::new(2);
+            let owner = Arc::new(super::super::evidence_service::ScheduledRun {
+                id: uuid::Uuid::now_v7(),
+                tracker: Arc::clone(&tracker),
+                failure: std::sync::Mutex::new(None),
+            });
+            state
+                .evidence()
+                .scheduled_run
+                .store(Arc::new(Some(Arc::clone(&owner))));
+            state.set_active_batch_tracker(Some(Arc::clone(&tracker)));
+            let recorder = ScriptedRecorder::failing(WriteFailure::classify(
+                PersistenceError::Indeterminate(Box::new(std::io::Error::other("unknown"))),
+            ));
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            for _ in 0..2 {
+                tx.send(JobOutcome::Success {
+                    domain_key: "repo".to_string(),
+                    result: crate::test_fixtures::all_passing_evidence("repo"),
+                    source: if owned {
+                        JobSource::ScheduledBatch
+                    } else {
+                        JobSource::External {
+                            id: "id".to_string(),
+                            kind: "push".to_string(),
+                        }
+                    },
+                    duration: Duration::ZERO,
+                    correlation: cherry_pit_core::CorrelationContext::correlated(owner.id),
+                })
+                .await
+                .unwrap();
+            }
+            drop(tx);
+            delivery_loop_with_recorder(rx, Arc::clone(&state), Arc::clone(&recorder)).await;
+            assert_eq!(recorder.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(state.ensure_write_admission().is_err());
+            assert!(!state.run_is_fenced());
+            assert_eq!(tracker.remaining(), 0);
+            assert!(state.last_completed_run.load().is_none());
+            tokio::time::timeout(Duration::from_secs(1), state.wait_for_reconciliation())
+                .await
+                .unwrap();
+        }
     }
 
     /// `GAP-1`: a record whose persist was fenced must not complete a batch
@@ -3517,11 +3650,13 @@ mod fence_propagation_tests {
 
     struct ScriptedRecorder {
         result: std::sync::Mutex<Option<WriteFailure>>,
+        calls: std::sync::atomic::AtomicUsize,
     }
 
     impl ScriptedRecorder {
         fn failing(failure: WriteFailure) -> Arc<Self> {
             Arc::new(Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
                 result: std::sync::Mutex::new(Some(failure)),
             })
         }
@@ -3535,6 +3670,7 @@ mod fence_propagation_tests {
             _repo_name: &str,
             _timestamp: &str,
         ) -> Result<(), WriteFailure> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match self.result.lock().unwrap().take() {
                 Some(failure) => Err(failure),
                 None => Ok(()),
@@ -3608,6 +3744,7 @@ mod fence_propagation_tests {
     async fn successful_failure_state_persist_stays_delivered() {
         let (state, domain_key) = state_with_projected_repo().await;
         let recorder = Arc::new(ScriptedRecorder {
+            calls: std::sync::atomic::AtomicUsize::new(0),
             result: std::sync::Mutex::new(None),
         });
 

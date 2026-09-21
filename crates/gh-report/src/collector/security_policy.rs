@@ -6,9 +6,12 @@
 use tracing::{debug, instrument, trace};
 
 use crate::config;
-use crate::domain::checks::{SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus};
+use crate::domain::checks::{
+    IndeterminateReason, SecurityPolicyEvidence, SecurityPolicyPath, SecurityPolicyResult,
+    SecurityPolicyStatus,
+};
 use crate::domain::repository::Repository;
-use crate::github::client::GitHubClient;
+use crate::github::client::{ApiOutcome, GitHubClient};
 use cherry_pit_web::sanitize_path_segment;
 
 /// Build a `SecurityPolicyResult` from the given components.
@@ -18,11 +21,38 @@ fn build_result(
     path: Option<&str>,
     timestamp: &str,
 ) -> SecurityPolicyResult {
-    SecurityPolicyResult {
-        status,
-        evidence,
-        path: path.map(str::to_string),
-        timestamp: timestamp.to_string(),
+    let timestamp = timestamp.to_string();
+    match (status, evidence, path) {
+        (SecurityPolicyStatus::Pass, SecurityPolicyEvidence::Setting, _) => {
+            SecurityPolicyResult::EnabledBySetting { timestamp }
+        }
+        (SecurityPolicyStatus::Pass, SecurityPolicyEvidence::File, Some(path)) => {
+            match SecurityPolicyPath::new(path) {
+                Some(path) => SecurityPolicyResult::EnabledByFile { path, timestamp },
+                None => SecurityPolicyResult::Unobservable {
+                    reason: IndeterminateReason::Invalid,
+                    timestamp,
+                },
+            }
+        }
+        (SecurityPolicyStatus::Fail, SecurityPolicyEvidence::Absent, _) => {
+            SecurityPolicyResult::Absent { timestamp }
+        }
+        (SecurityPolicyStatus::NotApplicable, _, _) => {
+            SecurityPolicyResult::NotApplicable { timestamp }
+        }
+        (_, SecurityPolicyEvidence::PermissionDenied, _) => SecurityPolicyResult::Unobservable {
+            reason: IndeterminateReason::PermissionDenied,
+            timestamp,
+        },
+        (_, SecurityPolicyEvidence::TransientError, _) => SecurityPolicyResult::Unobservable {
+            reason: IndeterminateReason::Transient,
+            timestamp,
+        },
+        _ => SecurityPolicyResult::Unobservable {
+            reason: IndeterminateReason::Invalid,
+            timestamp,
+        },
     }
 }
 
@@ -44,7 +74,7 @@ pub async fn evaluate(
             debug!(repo = %repo.name, error = %e, "skipping security policy: invalid repo name");
             return build_result(
                 SecurityPolicyStatus::Unknown,
-                SecurityPolicyEvidence::TransientError,
+                SecurityPolicyEvidence::CollectionError,
                 None,
                 run_timestamp,
             );
@@ -80,8 +110,10 @@ pub async fn evaluate(
         );
     }
 
-    let mut saw_permission_denied = repo_details.status_code() == Some(403);
-    let mut saw_retryable_error = repo_details.is_retryable();
+    let mut saw_permission_denied = matches!(repo_details.status_code(), Some(401 | 403));
+    let mut saw_retryable_error =
+        repo_details.is_retryable() && repo_details.status_code() != Some(429);
+    let mut other_failure = policy_failure(&repo_details, false);
 
     if let Some(result) = check_policy_files(
         client,
@@ -89,6 +121,7 @@ pub async fn evaluate(
         &safe_name,
         &mut saw_permission_denied,
         &mut saw_retryable_error,
+        &mut other_failure,
         run_timestamp,
     )
     .await
@@ -105,7 +138,7 @@ pub async fn evaluate(
             run_timestamp,
         );
     }
-    if saw_retryable_error {
+    if saw_retryable_error && other_failure != Some(IndeterminateReason::RateLimited) {
         debug!(repo = %repo.name, "security policy check hit transient error");
         return build_result(
             SecurityPolicyStatus::Unknown,
@@ -113,6 +146,13 @@ pub async fn evaluate(
             None,
             run_timestamp,
         );
+    }
+
+    if let Some(reason) = other_failure {
+        return SecurityPolicyResult::Unobservable {
+            reason,
+            timestamp: run_timestamp.to_string(),
+        };
     }
 
     debug!(repo = %repo.name, status = "fail", "no security policy found");
@@ -134,6 +174,7 @@ async fn check_policy_files(
     safe_name: &str,
     saw_permission_denied: &mut bool,
     saw_retryable_error: &mut bool,
+    other_failure: &mut Option<IndeterminateReason>,
     run_timestamp: &str,
 ) -> Option<SecurityPolicyResult> {
     for &file_path in config::SECURITY_POLICY_PATHS {
@@ -165,14 +206,58 @@ async fn check_policy_files(
                 run_timestamp,
             ));
         }
-        if content.status_code() == Some(403) {
+        if matches!(content.status_code(), Some(401 | 403)) {
             *saw_permission_denied = true;
         }
-        if content.is_retryable() {
+        if content.is_retryable() && content.status_code() != Some(429) {
             *saw_retryable_error = true;
+        }
+        if let Some(reason) = policy_failure(&content, true) {
+            record_policy_failure(other_failure, reason);
         }
     }
     None
+}
+
+fn policy_failure(outcome: &ApiOutcome, contents: bool) -> Option<IndeterminateReason> {
+    match (outcome.is_ok(), outcome.status_code()) {
+        (true, _) => {
+            let valid = match (contents, outcome.data()) {
+                (true, Some(serde_json::Value::Array(_))) => true,
+                (true, Some(data)) => matches!(
+                    data.get("type").and_then(serde_json::Value::as_str),
+                    Some("file" | "dir" | "submodule" | "symlink")
+                ),
+                (false, Some(data)) => data
+                    .get("is_security_policy_enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .is_some(),
+                _ => false,
+            };
+            (!valid).then_some(IndeterminateReason::Invalid)
+        }
+        (false, Some(401 | 403)) => Some(IndeterminateReason::PermissionDenied),
+        (false, Some(404)) if contents => None,
+        (false, Some(429)) => Some(IndeterminateReason::RateLimited),
+        (false, _) if outcome.is_retryable() => Some(IndeterminateReason::Transient),
+        (false, _) => Some(IndeterminateReason::Invalid),
+    }
+}
+
+fn record_policy_failure(current: &mut Option<IndeterminateReason>, next: IndeterminateReason) {
+    fn priority(reason: IndeterminateReason) -> u8 {
+        match reason {
+            IndeterminateReason::PermissionDenied => 0,
+            IndeterminateReason::PermissionSuspected => 1,
+            IndeterminateReason::RateLimited => 2,
+            IndeterminateReason::Transient => 3,
+            IndeterminateReason::Invalid => 4,
+            IndeterminateReason::Pending => 5,
+        }
+    }
+    if current.is_none_or(|previous| priority(next) < priority(previous)) {
+        *current = Some(next);
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +272,26 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const TS: &str = "2026-01-01T00:00:00+00:00";
+
+    #[test]
+    fn policy_failure_precedence_preserves_rate_limit_over_later_invalid() {
+        for reasons in [
+            [
+                IndeterminateReason::RateLimited,
+                IndeterminateReason::Invalid,
+            ],
+            [
+                IndeterminateReason::Invalid,
+                IndeterminateReason::RateLimited,
+            ],
+        ] {
+            let mut failure = None;
+            for reason in reasons {
+                record_policy_failure(&mut failure, reason);
+            }
+            assert_eq!(failure, Some(IndeterminateReason::RateLimited));
+        }
+    }
 
     fn test_client(base_url: &str) -> GitHubClient {
         let credential = GitHubCredential {
@@ -237,6 +342,34 @@ mod tests {
         }))
     }
 
+    #[tokio::test]
+    async fn malformed_policy_probes_are_not_absence() {
+        let server = MockServer::start().await;
+        mount_details(
+            &server,
+            "repo",
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({})),
+        )
+        .await;
+        for file_path in config::SECURITY_POLICY_PATHS {
+            mount_policy_path(
+                &server,
+                "repo",
+                file_path,
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({})),
+            )
+            .await;
+        }
+        let result = evaluate(&test_client(&server.uri()), &public_repo("repo"), TS).await;
+        assert!(matches!(
+            result,
+            SecurityPolicyResult::Unobservable {
+                reason: IndeterminateReason::Invalid,
+                ..
+            }
+        ));
+    }
+
     fn file_response() -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(serde_json::json!({"type": "file"}))
     }
@@ -274,9 +407,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::Pass);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::Setting);
-        assert!(result.path.is_none());
+        assert_eq!(result.status(), SecurityPolicyStatus::Pass);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::Setting);
+        assert!(result.path().is_none());
         assert_eq!(
             requested_paths(&server).await,
             vec!["/repos/test-org/setting-repo".to_string()]
@@ -303,9 +436,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::Pass);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::File);
-        assert_eq!(result.path.as_deref(), Some(".github/SECURITY.md"));
+        assert_eq!(result.status(), SecurityPolicyStatus::Pass);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::File);
+        assert_eq!(result.path(), Some(".github/SECURITY.md"));
     }
 
     #[tokio::test]
@@ -318,9 +451,9 @@ mod tests {
 
         let result = evaluate(&test_client(&server.uri()), &public_repo("absent-repo"), TS).await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::Fail);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::Absent);
-        assert!(result.path.is_none());
+        assert_eq!(result.status(), SecurityPolicyStatus::Fail);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::Absent);
+        assert!(result.path().is_none());
     }
 
     #[tokio::test]
@@ -333,8 +466,8 @@ mod tests {
 
         let result = evaluate(&test_client(&server.uri()), &public_repo("denied-repo"), TS).await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::Unknown);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::PermissionDenied);
+        assert_eq!(result.status(), SecurityPolicyStatus::Unknown);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::PermissionDenied);
     }
 
     #[tokio::test]
@@ -352,8 +485,8 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::Unknown);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::TransientError);
+        assert_eq!(result.status(), SecurityPolicyStatus::Unknown);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::TransientError);
     }
 
     #[tokio::test]
@@ -364,8 +497,8 @@ mod tests {
 
         let result = evaluate(&test_client(&server.uri()), &repo, TS).await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::NotApplicable);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::NotApplicable);
+        assert_eq!(result.status(), SecurityPolicyStatus::NotApplicable);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::NotApplicable);
         assert!(requested_paths(&server).await.is_empty());
     }
 
@@ -382,9 +515,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::Unknown);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::PermissionDenied);
-        assert!(result.path.is_none());
+        assert_eq!(result.status(), SecurityPolicyStatus::Unknown);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::PermissionDenied);
+        assert!(result.path().is_none());
     }
 
     #[tokio::test]
@@ -400,9 +533,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::Unknown);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::TransientError);
-        assert!(result.path.is_none());
+        assert_eq!(result.status(), SecurityPolicyStatus::Unknown);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::TransientError);
+        assert!(result.path().is_none());
     }
 
     #[tokio::test]
@@ -425,8 +558,8 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result.status, SecurityPolicyStatus::Pass);
-        assert_eq!(result.evidence, SecurityPolicyEvidence::File);
-        assert_eq!(result.path.as_deref(), Some(".github/SECURITY.md"));
+        assert_eq!(result.status(), SecurityPolicyStatus::Pass);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::File);
+        assert_eq!(result.path(), Some(".github/SECURITY.md"));
     }
 }

@@ -23,9 +23,10 @@
 use gh_report::aggregate::metrics::{aggregate_metrics, build_collection_statistics};
 use gh_report::app::state::AppState;
 use gh_report::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
-    CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
-    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
+    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersContent,
+    CodeownersResult, DependabotResult, DependabotStatus, EnabledProvenance, ProbeSource,
+    RepositoryChecks, SecretScanningAlerts, SecretScanningResult, SecurityPolicyEvidence,
+    SecurityPolicyResult, SecurityPolicyStatus,
 };
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
@@ -88,7 +89,7 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
         "visibility must survive replay"
     );
     assert_eq!(
-        archived.checks.security_policy.status,
+        archived.checks.security_policy.status(),
         SecurityPolicyStatus::Pass,
         "security_policy evidence must survive replay"
     );
@@ -221,17 +222,30 @@ fn private_404_absence_fixture() -> Vec<RepositoryEvidence> {
                 license_spdx: None,
             },
             checks: RepositoryChecks {
-                security_policy: SecurityPolicyResult {
-                    status: security_policy_status,
-                    evidence: SecurityPolicyEvidence::Setting,
-                    path: None,
-                    timestamp: ts.to_string(),
+                security_policy: match security_policy_status {
+                    SecurityPolicyStatus::Pass => SecurityPolicyResult::EnabledBySetting {
+                        timestamp: ts.to_string(),
+                    },
+                    SecurityPolicyStatus::Fail => SecurityPolicyResult::Absent {
+                        timestamp: ts.to_string(),
+                    },
+                    SecurityPolicyStatus::NotApplicable => SecurityPolicyResult::NotApplicable {
+                        timestamp: ts.to_string(),
+                    },
+                    SecurityPolicyStatus::Unknown => SecurityPolicyResult::Unobservable {
+                        reason: gh_report::domain::checks::IndeterminateReason::Invalid,
+                        timestamp: ts.to_string(),
+                    },
                 },
-                secret_scanning: SecretScanningResult {
-                    status: SecretScanningStatus::Enabled,
-                    has_open_alerts: Some(false),
-                    alerts_observable: true,
-                    reason: None,
+                secret_scanning: SecretScanningResult::Enabled {
+                    provenance: EnabledProvenance::Metadata {
+                        http_status: None,
+                        alerts: SecretScanningAlerts::Observable {
+                            source: ProbeSource::PerRepoEndpoint,
+                            has_open_alerts: false,
+                            http_status: None,
+                        },
+                    },
                     timestamp: ts.to_string(),
                 },
                 dependabot_security_updates: DependabotResult {
@@ -258,12 +272,8 @@ fn private_404_absence_fixture() -> Vec<RepositoryEvidence> {
                     },
                     timestamp: ts.to_string(),
                 },
-                codeowners: CodeownersResult {
-                    status: CodeownersStatus::Absent,
-                    path: None,
+                codeowners: CodeownersResult::Absent {
                     timestamp: ts.to_string(),
-                    parsed: None,
-                    truncation: None,
                 },
             },
             last_commit: None,
@@ -327,7 +337,7 @@ fn evidence_for(
     visibility: Visibility,
     archived: bool,
     policy_status: SecurityPolicyStatus,
-    policy_evidence: SecurityPolicyEvidence,
+    _policy_evidence: SecurityPolicyEvidence,
 ) -> RepositoryEvidence {
     let ts = "2026-05-20T00:00:00Z";
     RepositoryEvidence {
@@ -352,17 +362,30 @@ fn evidence_for(
             license_spdx: None,
         },
         checks: RepositoryChecks {
-            security_policy: SecurityPolicyResult {
-                status: policy_status,
-                evidence: policy_evidence,
-                path: None,
-                timestamp: ts.to_string(),
+            security_policy: match policy_status {
+                SecurityPolicyStatus::Pass => SecurityPolicyResult::EnabledBySetting {
+                    timestamp: ts.to_string(),
+                },
+                SecurityPolicyStatus::Fail => SecurityPolicyResult::Absent {
+                    timestamp: ts.to_string(),
+                },
+                SecurityPolicyStatus::NotApplicable => SecurityPolicyResult::NotApplicable {
+                    timestamp: ts.to_string(),
+                },
+                SecurityPolicyStatus::Unknown => SecurityPolicyResult::Unobservable {
+                    reason: gh_report::domain::checks::IndeterminateReason::Invalid,
+                    timestamp: ts.to_string(),
+                },
             },
-            secret_scanning: SecretScanningResult {
-                status: SecretScanningStatus::Enabled,
-                has_open_alerts: Some(false),
-                alerts_observable: true,
-                reason: None,
+            secret_scanning: SecretScanningResult::Enabled {
+                provenance: EnabledProvenance::Metadata {
+                    http_status: None,
+                    alerts: SecretScanningAlerts::Observable {
+                        source: ProbeSource::PerRepoEndpoint,
+                        has_open_alerts: false,
+                        http_status: None,
+                    },
+                },
                 timestamp: ts.to_string(),
             },
             dependabot_security_updates: DependabotResult {
@@ -387,12 +410,9 @@ fn evidence_for(
                 },
                 timestamp: ts.to_string(),
             },
-            codeowners: CodeownersResult {
-                status: CodeownersStatus::Conforming,
-                path: Some(".github/CODEOWNERS".to_string()),
+            codeowners: CodeownersResult::Conforming {
+                content: CodeownersContent::Unparsed,
                 timestamp: ts.to_string(),
-                parsed: None,
-                truncation: None,
             },
         },
         last_commit: None,

@@ -104,6 +104,7 @@ pub enum ConfigError {
 #[must_use]
 pub(crate) fn persist_error_variant(error: &PersistenceError) -> &'static str {
     match error {
+        PersistenceError::Indeterminate(_) => "Indeterminate",
         PersistenceError::LockFailed { .. } => "LockFailed",
         PersistenceError::AtomicWriteFailed { .. } => "AtomicWriteFailed",
         PersistenceError::LoadFailed { .. } => "LoadFailed",

@@ -21,6 +21,8 @@ use cherry_pit_web::serve::{CachedPage, PageUpdateEvent};
 /// collection), the WebSocket broadcast channel, the org-level alert
 /// summary, and the batch tracker.
 pub struct EvidenceState {
+    pub(crate) write_admission: std::sync::Mutex<Option<Arc<crate::error::PersistenceError>>>,
+    pub(crate) reconciliation: tokio::sync::Notify,
     /// In-memory HTML page cache, swapped atomically after each collection.
     ///
     /// `None` → no collection has completed yet (server returns 503).
@@ -61,6 +63,8 @@ impl EvidenceState {
     pub(crate) fn new() -> Self {
         let (ws_broadcast, _) = tokio::sync::broadcast::channel::<PageUpdateEvent>(64);
         Self {
+            write_admission: std::sync::Mutex::new(None),
+            reconciliation: tokio::sync::Notify::new(),
             html_cache: ArcSwap::from_pointee(None),
             publication: std::sync::Mutex::new(None),
             ws_broadcast,

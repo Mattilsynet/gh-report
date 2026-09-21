@@ -4,6 +4,10 @@ Repo-specific operational notes. General agent/OODA doctrine, bd/beads
 conventions, bash hygiene, and the Rust no-`//`-comments rule live in the
 global `~/.config/opencode/AGENTS.md` (auto-loaded) — not repeated here.
 
+Cross-repository operational authority is [trunk delivery](docs/trunk-delivery.md).
+Use it for canonical library adoption, exact-head release, and deployed consumer
+acceptance; this repository retains its source and gate authority.
+
 ## What this repo is
 
 Rust workspace (edition 2024, MSRV 1.98, resolver 3, 3 member crates) shipping one
@@ -17,16 +21,19 @@ binary, web client and checker, consuming an external ADR-governed library famil
   (doc-lint tool) from `acje/comment-free`, which has no library consumers
   here and therefore no workspace-dependency pin.
 - `cherry-pit-*` — external event-sourcing substrate from `acje/cherry-pit`,
-  all eight crates pinned to `bae8df87873c842e86113183ea892075c6debbab`.
+  all eight crates pinned to canonical main `ffffa0ddae206a322da9b9b4a94a3ad5e191da6e`.
   The outer `pardosa-cherry-pit-test-support` uses the same revision as a
   consumer dev-dependency. Library tests/fixtures are owned and run upstream;
   local workspace tests do not run git dependencies' test targets.
 - `pardosa*` — `.pgno` event-store substrate + a NATS/JetStream backend
   (`pardosa-nats`). **External, not workspace members**: consumed as git
   dependencies from `acje/pardosa` at the rev pinned in
-  `[workspace.dependencies]`. No `pardosa`-named workspace member remains. `cherry-pit`
-  does **not** depend on `pardosa` (severed per CHE-0010); don't reintroduce
-  that edge. Because `pardosa` / `pardosa-nats` are dependencies rather than
+  `[workspace.dependencies]`, currently canonical main
+  `49ea5ec42a782aa9303b0e6eab2659d59d181e69`. No `pardosa`-named workspace member
+  remains. Neutral Cherry normal/build closures exclude Pardosa per CHE-0084
+  and canonical `acje/cherry-pit` CPP-0001; outer Pardosa-family adapters are
+  cohosted there, and dev/test bridges are permitted. gh-report does not link
+  the outer projection adapter. Because `pardosa` / `pardosa-nats` are dependencies rather than
   members, their **test targets are not part of this workspace's test set** —
   `cargo test -p pardosa` and `cargo test -p pardosa-nats` have no test target
   to run here.
@@ -211,46 +218,24 @@ adr-fmt-xdlw9 O3).
 
 ## Live-NATS tests need a pinned `nats-server` (common CI/local gotcha)
 
-`pardosa-nats`'s `src/test_support.rs` (in the external `acje/pardosa` repo,
-consumed at the pinned rev) spawns a real `nats-server` and
-checks its `--version` against `tools/.nats-server-version` (currently
-2.14.5). Affected tests live in the external `pardosa` crate
-(`dragline::runtime::tests::*jetstream*`) and are therefore **not part of this
-workspace's test set** — no local tier reaches them. To run them
-for real, install
-`nats-server` v2.14.5 onto `PATH`. CI installs it as a step in the
+The consumer native-store harness checks `tools/.nats-server-version`, currently
+2.14.5, and prefers `tools/bin/nats-server` (verified v2.14.5 on 2026-09-21).
+The separately installed `/opt/homebrew/bin/nats-server` reports v2.14.7;
+that does not change this repository's test pin. Producer harness versions are
+owned upstream and must be read from their actual pinned source. Consumer
+store/ACL tests do run here; git dependencies' own test targets do not.
+CI installs the consumer pin as a step in the
 `build-test-lint` job (`.github/workflows/ci-reusable.yml:126-137`,
 checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
 
-**Skip semantics (since PR #58, `ba331a8`) — absence skips, only a broken
-harness fails.** `LiveNats` is a three-way split and the split is the whole
-point:
-
-- `LiveNats::Unavailable` — the executable is absent from `PATH`
-  (`Unavailable::ExecutableAbsent`), or the one present does not match the pin
-  (`Unavailable::VersionMismatch`). **Both SKIP.** `ready_or_skip` prints
-  `SKIP <test>: live nats-server unavailable: <reason>` to stderr and returns
-  `None`, which call sites use as an early return. Neither condition fails a
-  run.
-- `LiveNats::Fatal` — a failed port bind, tempdir, spawn, or readiness wait.
-  **Panics, by design.** A broken harness on a correctly-pinned runner must
-  not silently erase assertions while reporting green.
-
-`Unavailable` is deliberately disjoint from `HarnessError`, so an
-infrastructure fault has no representation on the skip path and cannot reach
-it. The behaviour is pinned by tests in the same file:
-`version_mismatch_still_skips`, `absent_executable_still_skips`, and
-`fatal_harness_fault_does_not_skip`.
-
-Practical consequence: on a machine with no `nats-server`, or with a
-mismatched one, the live-NATS tests **skip and the run still reaches exit 0**.
-There is no expected-failure baseline to memorise — the earlier
-"panics on mismatch" / "exactly 10 test targets / 15 tests" / pinned-2.14.3
-guidance described pre-#58 behaviour and no longer holds. A live-NATS FAILURE
-is now a real signal, not the local default: triage it, do not wave it
-through. With a matching v2.14.5 on `PATH` the tests genuinely execute rather
-than skipping, which is the only configuration that actually exercises them.
+The consumer `store::tests` harness distinguishes unavailable/version-mismatched
+servers (SKIP) from fatal harness failures. Quiet green tests alone do not prove
+live assertions executed; use the harness's visible skip output when establishing
+that evidence. The currently pinned producer instead exposes
+`pardosa_nats::test_support::LiveNatsServer`, which spawns `nats-server` from PATH
+and panics on startup failure; its source does not impose the old consumer
+version/skip policy. Do not carry historical `LiveNats` API claims across pins.
 
 Related, still open: `ghr-89b05be0`. Do not claim `Outcome::Verified` from a
 run that never reached exit 0 — say so explicitly (partial) and cite the

@@ -44,8 +44,8 @@ use crate::config;
 use crate::config::runtime::RuntimeConfig;
 use crate::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
-    CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
-    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
+    DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
+    SecurityPolicyResult,
 };
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::OrgAlertSummary;
@@ -303,6 +303,7 @@ pub(crate) async fn run_with_outcome(
     state: Arc<AppState>,
 ) -> Result<CollectionOutcome, AppError> {
     let _sweep_guard = Arc::clone(&state.sweep_lock).lock_owned().await;
+    state.ensure_write_admission()?;
 
     let mut run = RunMetadata::new(
         config.org_name.clone(),
@@ -322,10 +323,6 @@ pub(crate) async fn run_with_outcome(
     let result = run_collection_inner(&config, &mut run, &corr_ctx, &state).await;
 
     state.current_run.store(Arc::new(None));
-
-    if matches!(result, Ok(CollectionOutcome::Completed)) {
-        state.last_completed_run.store(Arc::new(Some(run.clone())));
-    }
 
     result
 }
@@ -1019,23 +1016,17 @@ impl SweepSaga {
 
         match result {
             Ok((pages, warm_start)) => {
-                self.phase = SweepPhase::Completed;
-                info!(
-                    batch_id = %sweep.run().run_id,
-                    duration_ms = self.elapsed_ms(),
-                    repo_count = inventory.active_repos().len(),
-                    timestamp = %jiff::Timestamp::now(),
-                    "sweep completed"
-                );
-
-                let page_count = commit_cached_pages(state, sweep.run(), pages);
-
-                info!(
-                    page_count = page_count,
-                    warm_start,
-                    timestamp = %jiff::Timestamp::now(),
-                    "evidence published"
-                );
+                commit_terminal_publication(state, sweep.run_mut(), pages, |run| {
+                    self.phase = SweepPhase::Completed;
+                    info!(
+                        batch_id = %run.run_id,
+                        duration_ms = self.elapsed_ms(),
+                        repo_count = inventory.active_repos().len(),
+                        timestamp = %jiff::Timestamp::now(),
+                        warm_start,
+                        "sweep completed"
+                    );
+                })?;
                 Ok(())
             }
             Err(e) => {
@@ -1130,6 +1121,9 @@ where
     let result = publish();
 
     tracker.retire(expected.saturating_sub(result.accepted));
+    if state.ensure_write_admission().is_err() {
+        tracker.drain();
+    }
     RunStart::Published(PublishedBatch {
         tracker,
         owner,
@@ -1141,6 +1135,7 @@ where
 /// the partial publisher. Returns `false` if the queue rejected all jobs
 /// (caller should abort the sweep).
 async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppError> {
+    params.state.ensure_write_admission()?;
     let BatchParams {
         pending,
         run_timestamp,
@@ -1227,6 +1222,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         error!(error = ?e, "partial publisher task panicked");
     }
 
+    state.ensure_write_admission()?;
     batch_outcome(fence)?;
     match owner
         .failure
@@ -1403,18 +1399,16 @@ async fn finalize_and_publish(
     )
     .await?;
 
-    run.complete();
-
     let entries = client.export_cache();
     if !entries.is_empty() {
         state.store_client_repo_detail_cache(entries).await;
     }
 
-    info!(
+    debug!(
         run_id = %run.run_id,
         repos = evidence.collection_statistics.total_repos,
         api_calls = client.budget_total_calls() - budget_baseline,
-        "collection run complete"
+        "collection render prepared"
     );
 
     Ok((pages, evidence.assessment_metadata.warm_start))
@@ -2661,6 +2655,22 @@ fn render_publication_cache(
 
 /// Commit pre-built cached pages: atomically replace the html cache
 /// pointer and notify WebSocket subscribers.
+fn commit_terminal_publication(
+    state: &Arc<AppState>,
+    run: &mut RunMetadata,
+    candidate: PublicationCandidate,
+    before_publication: impl FnOnce(&RunMetadata),
+) -> Result<usize, PersistenceError> {
+    state.admitted_write(|_| {
+        run.complete();
+        before_publication(run);
+        let count = commit_cached_pages(state, run, candidate);
+        state.last_completed_run.store(Arc::new(Some(run.clone())));
+        info!(page_count = count, run_id = %run.run_id, "evidence published");
+        Ok(count)
+    })
+}
+
 pub(crate) fn commit_cached_pages(
     state: &Arc<AppState>,
     run: &RunMetadata,
@@ -2823,7 +2833,7 @@ fn reuse_from_baseline(
         if org_alerts_contradict_baseline(&evidence, repo, org_summary) {
             debug!(
                 repo = %repo.name,
-                baseline_open = ?evidence.checks.secret_scanning.has_open_alerts,
+                baseline_open = ?evidence.checks.secret_scanning.has_open_alerts(),
                 fresh_open = org_summary
                     .per_repo
                     .get(&ghas_scanning::scope_key(repo))
@@ -2860,7 +2870,7 @@ fn org_alerts_contradict_baseline(
     if org_summary.collection_status != crate::domain::status::CollectionStatus::Success {
         return false;
     }
-    let Some(baseline_open) = evidence.checks.secret_scanning.has_open_alerts else {
+    let Some(baseline_open) = evidence.checks.secret_scanning.has_open_alerts() else {
         return false;
     };
     let fresh_open = org_summary
@@ -3205,33 +3215,32 @@ fn failure_evidence_with_reason(
     reason: &str,
 ) -> RepositoryEvidence {
     let default_branch = repo.default_branch.clone();
-    let (sp_status, sp_evidence) = if repo.is_public() {
-        (
-            SecurityPolicyStatus::Unknown,
-            SecurityPolicyEvidence::CollectionError,
-        )
+    let security_policy = if repo.is_public() {
+        SecurityPolicyResult::Unobservable {
+            reason: if reason == "pending" {
+                crate::domain::checks::IndeterminateReason::Pending
+            } else {
+                crate::domain::checks::IndeterminateReason::Invalid
+            },
+            timestamp: run_timestamp.to_string(),
+        }
     } else {
-        (
-            SecurityPolicyStatus::NotApplicable,
-            SecurityPolicyEvidence::NotApplicable,
-        )
+        SecurityPolicyResult::NotApplicable {
+            timestamp: run_timestamp.to_string(),
+        }
     };
     RepositoryEvidence {
         repository: (**repo).clone(),
         checks: RepositoryChecks {
-            security_policy: SecurityPolicyResult {
-                status: sp_status,
-                evidence: sp_evidence,
-                path: None,
-                timestamp: run_timestamp.to_string(),
-            },
-            secret_scanning: SecretScanningResult {
-                status: SecretScanningStatus::Unknown,
-                has_open_alerts: None,
-                alerts_observable: false,
-                reason: Some(reason.to_string()),
-                timestamp: run_timestamp.to_string(),
-            },
+            security_policy,
+            secret_scanning: SecretScanningResult::unobservable(
+                if reason == "pending" {
+                    crate::domain::checks::SecretScanningFailureReason::Pending
+                } else {
+                    crate::domain::checks::SecretScanningFailureReason::Invalid
+                },
+                run_timestamp,
+            ),
             dependabot_security_updates: DependabotResult {
                 status: DependabotStatus::Unknown,
                 reason: Some(reason.to_string()),
@@ -3254,12 +3263,13 @@ fn failure_evidence_with_reason(
                 },
                 timestamp: run_timestamp.to_string(),
             },
-            codeowners: CodeownersResult {
-                status: CodeownersStatus::Unknown,
-                path: None,
+            codeowners: CodeownersResult::Unobservable {
+                reason: if reason == "pending" {
+                    crate::domain::checks::IndeterminateReason::Pending
+                } else {
+                    crate::domain::checks::IndeterminateReason::Invalid
+                },
                 timestamp: run_timestamp.to_string(),
-                parsed: None,
-                truncation: None,
             },
         },
         last_commit: None,
@@ -3996,6 +4006,9 @@ mod tests {
     use crate::config::dashboard::DashboardConfig;
     use crate::domain::auth::AuthMode;
     use crate::domain::auth::{Capability, TokenTier};
+    use crate::domain::checks::{
+        CodeownersStatus, SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyStatus,
+    };
     use crate::domain::repository::Visibility;
     use crate::github::auth::CapabilityStatus;
     use crate::test_fixtures;
@@ -4135,10 +4148,7 @@ mod tests {
     #[test]
     fn charge_of_classifies_all_six_evaluate_calls() {
         use crate::app::worker_pool::SettleOutcome;
-        use crate::domain::checks::{
-            BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
-            SecurityPolicyStatus,
-        };
+        use crate::domain::checks::{BranchProtectionStatus, DependabotStatus};
 
         let evaluator = LiveEvaluator::with_shared_org_summary(
             test_github_client(),
@@ -4158,13 +4168,13 @@ mod tests {
             ("security_policy", {
                 let mut r = sample_repo("security-policy-charged");
                 r.repo_details_not_modified = false;
-                r.checks.security_policy.status = SecurityPolicyStatus::Fail;
+                r.checks.security_policy = crate::test_fixtures::policy_fail();
                 r
             }),
             ("ghas_scanning/secret_scanning", {
                 let mut r = sample_repo("ghas-scanning-charged");
                 r.repo_details_not_modified = false;
-                r.checks.secret_scanning.status = SecretScanningStatus::Disabled;
+                r.checks.secret_scanning = crate::test_fixtures::secret_disabled();
                 r
             }),
             ("dependabot_security_updates", {
@@ -4182,7 +4192,7 @@ mod tests {
             ("codeowners", {
                 let mut r = sample_repo("codeowners-charged");
                 r.repo_details_not_modified = false;
-                r.checks.codeowners.status = CodeownersStatus::Absent;
+                r.checks.codeowners = crate::test_fixtures::codeowners_absent();
                 r
             }),
         ];
@@ -6007,11 +6017,11 @@ mod tests {
         let ev = failure_evidence(&repo, "2026-04-09T12:00:00+00:00");
 
         assert_eq!(
-            ev.checks.security_policy.status,
+            ev.checks.security_policy.status(),
             SecurityPolicyStatus::Unknown
         );
         assert_eq!(
-            ev.checks.secret_scanning.status,
+            ev.checks.secret_scanning.status(),
             SecretScanningStatus::Unknown
         );
         assert_eq!(
@@ -6022,12 +6032,12 @@ mod tests {
             ev.checks.branch_protection.status,
             BranchProtectionStatus::Unknown
         );
-        assert_eq!(ev.checks.codeowners.status, CodeownersStatus::Unknown);
+        assert_eq!(ev.checks.codeowners.status(), CodeownersStatus::Unknown);
         assert_eq!(
-            ev.checks.security_policy.evidence,
+            ev.checks.security_policy.evidence(),
             SecurityPolicyEvidence::CollectionError
         );
-        assert_eq!(ev.checks.codeowners.path, None);
+        assert_eq!(ev.checks.codeowners.path(), None);
     }
 
     /// Helper: create a `RepositoryEvidence` from a domain `Repository`.
@@ -6040,10 +6050,7 @@ mod tests {
         let repo = Arc::new(test_repository("panicked"));
         let ev = failure_evidence_with_reason(&repo, "2026-04-09T12:00:00+00:00", "task_panicked");
 
-        assert_eq!(
-            ev.checks.secret_scanning.reason.as_deref(),
-            Some("task_panicked")
-        );
+        assert_eq!(ev.checks.secret_scanning.reason(), Some("collection_error"));
         assert_eq!(
             ev.checks.dependabot_security_updates.reason.as_deref(),
             Some("task_panicked")
@@ -6053,7 +6060,7 @@ mod tests {
             Some("task_panicked")
         );
         assert_eq!(
-            ev.checks.security_policy.status,
+            ev.checks.security_policy.status(),
             SecurityPolicyStatus::Unknown
         );
     }
@@ -6069,16 +6076,16 @@ mod tests {
             failure_evidence_with_reason(&repo, "2026-04-09T12:00:00+00:00", "collection_error");
 
         assert_eq!(
-            ev.checks.security_policy.status,
+            ev.checks.security_policy.status(),
             SecurityPolicyStatus::NotApplicable,
             "non-public repo failure evidence should use NotApplicable"
         );
         assert_eq!(
-            ev.checks.security_policy.evidence,
+            ev.checks.security_policy.evidence(),
             SecurityPolicyEvidence::NotApplicable,
         );
         assert_eq!(
-            ev.checks.secret_scanning.status,
+            ev.checks.secret_scanning.status(),
             SecretScanningStatus::Unknown
         );
     }
@@ -6093,12 +6100,12 @@ mod tests {
         let ev = failure_evidence_with_reason(&repo, "2026-04-09T12:00:00+00:00", "pending");
 
         assert_eq!(
-            ev.checks.security_policy.status,
+            ev.checks.security_policy.status(),
             SecurityPolicyStatus::NotApplicable,
             "non-public repo with pending reason should use NotApplicable"
         );
         assert_eq!(
-            ev.checks.security_policy.evidence,
+            ev.checks.security_policy.evidence(),
             SecurityPolicyEvidence::NotApplicable,
         );
     }
@@ -6145,6 +6152,7 @@ mod tests {
         OrgAlertSummary {
             collection_status: crate::domain::status::CollectionStatus::Success,
             collection_reason: None,
+            http_status: Some(200),
             per_repo: HashMap::new(),
             open_secret_alert_age_buckets: config::empty_age_buckets(),
             total_open_secret_alerts: 0,
@@ -6738,9 +6746,8 @@ mod tests {
         let repo = test_fixtures::make_repository("repo-1", false, Visibility::Public);
         let mut evidence = test_fixtures::evidence_from_repository(&repo, &observed_at);
         evidence.repository.updated_at = crate::domain::repository::UpdatedAt::new(old_updated_at);
-        evidence.checks.secret_scanning.status = secret_status;
-        evidence.checks.secret_scanning.has_open_alerts = has_open_alerts;
-        evidence.checks.secret_scanning.alerts_observable = has_open_alerts.is_some();
+        evidence.checks.secret_scanning =
+            crate::test_fixtures::secret_for_status(secret_status, has_open_alerts, None);
         evidence.checks.codeowners = test_fixtures::codeowners_with_owners(&["@org/sec-team"]);
         seed_baseline(dir, state, vec![("repo-1", old_updated_at, evidence)]);
 
@@ -6901,7 +6908,7 @@ mod tests {
                     .await;
             let mut evidence = test_fixtures::evidence_from_repository(&repo, ts);
             evidence.checks.codeowners = test_fixtures::codeowners_with_owners(&["@org/sec-team"]);
-            if secret_scanning.status == SecretScanningStatus::Unknown {
+            if secret_scanning.status() == SecretScanningStatus::Unknown {
                 evidence.checks.branch_protection.status = BranchProtectionStatus::Unknown;
             }
             evidence.checks.secret_scanning = secret_scanning;
@@ -6989,7 +6996,7 @@ mod tests {
             .projection_render_snapshot()
             .expect("projection snapshot must exist after admission");
         let repositories = snapshot.repositories();
-        let snapshot_alerts = repositories[0].checks.secret_scanning.has_open_alerts;
+        let snapshot_alerts = repositories[0].checks.secret_scanning.has_open_alerts();
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories,
@@ -8306,6 +8313,74 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn terminal_decision_serializes_stop_and_preserves_prior_cache() {
+        for stop_first in [true, false] {
+            let state = AppState::new().await;
+            let mut run = test_run_meta();
+            let cache = HashMap::from([(
+                "prior".to_string(),
+                crate::app::state::CachedPage::new("prior", b"prior".to_vec()),
+            )]);
+            state.html_cache().store(Arc::new(Some(cache)));
+            let prior = state.html_cache().load_full();
+            let mut rx = state.ws_subscribe();
+            let evidence = crate::test_fixtures::all_passing_evidence("terminal-repo");
+            state
+                .record_repo(
+                    "terminal-repo",
+                    evidence,
+                    "terminal-repo",
+                    "2026-07-16T00:00:00Z",
+                )
+                .unwrap();
+            assert_eq!(state.event_store.events().unwrap().len(), 1);
+            let pages = HashMap::from([(
+                "next".to_string(),
+                crate::app::state::CachedPage::new("next", b"next".to_vec()),
+            )]);
+            let candidate = PublicationCandidate {
+                retained_pages: pages.clone(),
+                pages,
+                quality: PublicationQuality::default(),
+                render_input: None,
+                attempt: String::new(),
+                stage: PublicationStage::Terminal,
+            };
+            if stop_first {
+                let other = Arc::clone(&state);
+                tokio::spawn(async move {
+                    other.stop_for_reconciliation(PersistenceError::Indeterminate(Box::new(
+                        std::io::Error::other("stop before terminal"),
+                    )));
+                })
+                .await
+                .unwrap();
+            }
+            let mut terminal_announced = false;
+            let outcome = commit_terminal_publication(&state, &mut run, candidate, |_| {
+                terminal_announced = true;
+            });
+            if stop_first {
+                assert!(matches!(outcome, Err(PersistenceError::Indeterminate(_))));
+                assert!(Arc::ptr_eq(&prior, &state.html_cache().load_full()));
+                assert!(run.completed_at.is_none());
+                assert!(!terminal_announced);
+                assert!(state.last_completed_run.load().is_none());
+                assert!(rx.try_recv().is_err());
+            } else {
+                outcome.unwrap();
+                state.stop_for_reconciliation(PersistenceError::Indeterminate(Box::new(
+                    std::io::Error::other("later stop"),
+                )));
+                assert!(run.completed_at.is_some());
+                assert!(terminal_announced);
+                assert!(state.last_completed_run.load().is_some());
+                assert!(rx.try_recv().is_ok());
+            }
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn admission_retains_complete_pages_and_only_broadcasts_changes() {
         let config = sample_config();
@@ -8640,11 +8715,16 @@ mod tests {
             ..sample_config()
         };
         let mut repo = crate::test_fixtures::all_passing_evidence("repo");
-        repo.checks.codeowners.parsed = Some(crate::domain::codeowners::ParsedCodeowners {
-            entries: Vec::new(),
-            unique_owners: vec!["@TestOrg/platform".into()],
-            skipped_lines: 0,
-        });
+        repo.checks.codeowners = CodeownersResult::Conforming {
+            timestamp: repo.checks.codeowners.timestamp().into(),
+            content: crate::domain::checks::CodeownersContent::Parsed(
+                crate::domain::codeowners::ParsedCodeowners {
+                    entries: Vec::new(),
+                    unique_owners: vec!["@TestOrg/platform".into()],
+                    skipped_lines: 0,
+                },
+            ),
+        };
         state.lock_projection().load_baseline(vec![repo.clone()]);
         let inventory =
             AdmittedInventory::from_test_repos(vec![Arc::new(repo.repository.clone())], true);
@@ -8828,14 +8908,18 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
         let config = sample_config();
         let mut repo = crate::test_fixtures::all_passing_evidence("repo");
-        repo.checks.security_policy.timestamp.clear();
-        repo.checks.secret_scanning.timestamp.clear();
+        repo.checks.security_policy = SecurityPolicyResult::EnabledBySetting {
+            timestamp: String::new(),
+        };
+        repo.checks.secret_scanning = repo.checks.secret_scanning.with_timestamp("");
         repo.checks.dependabot_security_updates.timestamp.clear();
         repo.checks.branch_protection.timestamp.clear();
-        repo.checks.codeowners.timestamp.clear();
+        repo.checks.codeowners = repo.checks.codeowners.with_timestamp("");
         state.lock_projection().load_baseline(vec![repo.clone()]);
         assert!(warm_start_from_baseline(&config, &state).await);
-        repo.checks.codeowners.status = CodeownersStatus::Absent;
+        repo.checks.codeowners = CodeownersResult::Absent {
+            timestamp: repo.checks.codeowners.timestamp().into(),
+        };
         state.lock_projection().load_baseline(vec![repo]);
         assert!(warm_start_from_baseline(&config, &state).await);
         assert!(
@@ -9050,12 +9134,16 @@ mod tests {
     #[test]
     fn admission_capture_ignores_failed_check_run_timestamp() {
         let mut repo = failure_evidence(&arc_repo("repo"), "2026-09-06T12:00:00Z");
-        repo.checks.codeowners.status = CodeownersStatus::Absent;
-        repo.checks.codeowners.timestamp = "2026-01-01T00:00:00Z".into();
+        repo.checks.codeowners = CodeownersResult::Absent {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
         assert!(
             matches!(CaptureTime::from_checks(&repo.checks), CaptureTime::Captured(at) if at == "2026-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap())
         );
-        repo.checks.secret_scanning.reason = Some("pending".into());
+        repo.checks.secret_scanning = SecretScanningResult::unobservable(
+            crate::domain::checks::SecretScanningFailureReason::Pending,
+            repo.checks.secret_scanning.timestamp(),
+        );
         assert_eq!(
             crate::domain::evidence::RepositoryReadState::from_checks(&repo.checks),
             crate::domain::evidence::RepositoryReadState::Observed
@@ -9066,18 +9154,22 @@ mod tests {
     fn admission_equal_clockless_repositories_preserve_but_changed_content_does_not() {
         for timestamp in ["", "malformed"] {
             let mut repo = crate::test_fixtures::all_passing_evidence("repo");
-            repo.checks.security_policy.timestamp = timestamp.into();
-            repo.checks.secret_scanning.timestamp = timestamp.into();
+            repo.checks.security_policy = SecurityPolicyResult::EnabledBySetting {
+                timestamp: timestamp.into(),
+            };
+            repo.checks.secret_scanning = repo.checks.secret_scanning.with_timestamp(timestamp);
             repo.checks.dependabot_security_updates.timestamp = timestamp.into();
             repo.checks.branch_protection.timestamp = timestamp.into();
-            repo.checks.codeowners.timestamp = timestamp.into();
+            repo.checks.codeowners = repo.checks.codeowners.with_timestamp(timestamp);
             let quality =
                 PublicationQuality::from_evidence(&admission_evidence(vec![repo.clone()]), None);
             assert!(
                 quality.preserves(&quality),
                 "identical protected evidence makes no freshness claim"
             );
-            repo.checks.codeowners.status = CodeownersStatus::Absent;
+            repo.checks.codeowners = CodeownersResult::Absent {
+                timestamp: repo.checks.codeowners.timestamp().into(),
+            };
             assert!(
                 !PublicationQuality::from_evidence(&admission_evidence(vec![repo]), None)
                     .preserves(&quality)
@@ -9118,11 +9210,19 @@ mod tests {
         let mut repo = crate::test_fixtures::all_passing_evidence("repo");
         let previous =
             PublicationQuality::from_evidence(&admission_evidence(vec![repo.clone()]), None);
-        repo.checks.security_policy.timestamp = "2000-01-01T00:00:00Z".into();
-        repo.checks.secret_scanning.timestamp = "2000-01-01T00:00:00Z".into();
+        repo.checks.security_policy = SecurityPolicyResult::EnabledBySetting {
+            timestamp: "2000-01-01T00:00:00Z".into(),
+        };
+        repo.checks.secret_scanning = repo
+            .checks
+            .secret_scanning
+            .with_timestamp("2000-01-01T00:00:00Z");
         repo.checks.dependabot_security_updates.timestamp = "2000-01-01T00:00:00Z".into();
         repo.checks.branch_protection.timestamp = "2000-01-01T00:00:00Z".into();
-        repo.checks.codeowners.timestamp = "2000-01-01T00:00:00Z".into();
+        repo.checks.codeowners = repo
+            .checks
+            .codeowners
+            .with_timestamp("2000-01-01T00:00:00Z");
         let incoming = PublicationQuality::from_evidence(&admission_evidence(vec![repo]), None);
         assert!(
             !incoming.preserves(&previous),
@@ -9298,7 +9398,7 @@ mod tests {
             include_unread_repositories(Vec::new(), &pp.inventory, &pp.run.timestamp());
         assert_eq!(repositories[0].repository.name, "unread-repo");
         assert_eq!(
-            repositories[0].checks.secret_scanning.reason.as_deref(),
+            repositories[0].checks.secret_scanning.reason(),
             Some("pending")
         );
         assert!(!repositories[0].is_complete());
@@ -9311,11 +9411,16 @@ mod tests {
 
     async fn assert_seeded_roster_member_html(pp: &PartialPublishConfig, state: &Arc<AppState>) {
         let mut repo = crate::test_fixtures::all_passing_evidence("owned-repo");
-        repo.checks.codeowners.parsed = Some(crate::domain::codeowners::ParsedCodeowners {
-            entries: Vec::new(),
-            unique_owners: vec!["@TestOrg/platform".into()],
-            skipped_lines: 0,
-        });
+        repo.checks.codeowners = CodeownersResult::Conforming {
+            timestamp: repo.checks.codeowners.timestamp().into(),
+            content: crate::domain::checks::CodeownersContent::Parsed(
+                crate::domain::codeowners::ParsedCodeowners {
+                    entries: Vec::new(),
+                    unique_owners: vec!["@TestOrg/platform".into()],
+                    skipped_lines: 0,
+                },
+            ),
+        };
         state.lock_projection().load_baseline(vec![repo]);
         partial_render_once(pp, state).await;
         let cache = state.html_cache().load_full();
@@ -9368,7 +9473,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn publication_capture_age_uses_observation_not_publication_time() {
         let mut repo = failure_evidence(&arc_repo("captured-repo"), "2026-09-06T12:00:00Z");
-        repo.checks.codeowners.status = CodeownersStatus::Absent;
+        repo.checks.codeowners = CodeownersResult::Absent {
+            timestamp: repo.checks.codeowners.timestamp().into(),
+        };
         let mut evidence = admission_evidence(vec![repo]);
         evidence.assessment_metadata.run_timestamp = "2026-09-06T12:00:00Z".into();
         for (timestamp, expected) in [
@@ -9377,7 +9484,11 @@ mod tests {
             ("invalid", "unknown for 1 of 1 repositories"),
             ("2026-09-07T12:00:00Z", "unknown for 1 of 1 repositories"),
         ] {
-            evidence.repositories[0].checks.codeowners.timestamp = timestamp.into();
+            evidence.repositories[0].checks.codeowners = evidence.repositories[0]
+                .checks
+                .codeowners
+                .clone()
+                .with_timestamp(timestamp);
             let pages = build_publication_pages(
                 &sample_config(),
                 &evidence,
@@ -9426,12 +9537,16 @@ mod tests {
                 .map(|index| {
                     let mut repo =
                         crate::test_fixtures::all_passing_evidence(&format!("repo-{index}"));
-                    repo.checks.codeowners.parsed =
-                        Some(crate::domain::codeowners::ParsedCodeowners {
-                            entries: Vec::new(),
-                            unique_owners: vec![format!("@TestOrg/team-{}", index % 10)],
-                            skipped_lines: 0,
-                        });
+                    repo.checks.codeowners = CodeownersResult::Conforming {
+                        timestamp: repo.checks.codeowners.timestamp().into(),
+                        content: crate::domain::checks::CodeownersContent::Parsed(
+                            crate::domain::codeowners::ParsedCodeowners {
+                                entries: Vec::new(),
+                                unique_owners: vec![format!("@TestOrg/team-{}", index % 10)],
+                                skipped_lines: 0,
+                            },
+                        ),
+                    };
                     repo
                 })
                 .collect();
@@ -9520,7 +9635,7 @@ mod tests {
             evidence.repositories[0]
                 .checks
                 .secret_scanning
-                .timestamp
+                .timestamp()
                 .parse::<jiff::Timestamp>()
                 .is_ok()
         );

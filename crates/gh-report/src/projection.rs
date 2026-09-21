@@ -832,9 +832,8 @@ mod tests {
     }
 
     fn degraded_evidence(name: &str) -> RepositoryEvidence {
-        use crate::domain::checks::SecurityPolicyStatus;
         let mut evidence = test_fixtures_all_passing(name);
-        evidence.checks.security_policy.status = SecurityPolicyStatus::Unknown;
+        evidence.checks.security_policy = crate::test_fixtures::policy_unknown();
         evidence
     }
 
@@ -862,13 +861,12 @@ mod tests {
 
     #[test]
     fn repository_state_captured_fresh_complete_overwrites_existing_complete() {
-        use crate::domain::checks::SecurityPolicyStatus;
         let mut p = EvidenceProjection::default();
         let first = test_fixtures_all_passing("repo-y");
         apply_repo_event(&mut p, false, "id-repo-y", Some(first));
 
         let mut second = test_fixtures_all_passing("repo-y");
-        second.checks.security_policy.status = SecurityPolicyStatus::Fail;
+        second.checks.security_policy = crate::test_fixtures::policy_fail();
         apply_repo_event(&mut p, false, "id-repo-y", Some(second.clone()));
         assert_eq!(
             p.get("id-repo-y"),
@@ -889,6 +887,7 @@ mod tests {
             alert_summary: OrgAlertSummary {
                 collection_status,
                 collection_reason: None,
+                http_status: None,
                 per_repo: HashMap::new(),
                 open_secret_alert_age_buckets: HashMap::new(),
                 total_open_secret_alerts: 0,
@@ -938,5 +937,160 @@ mod tests {
             7,
             "a fresh complete org observation must still overwrite the prior complete org state"
         );
+    }
+
+    #[test]
+    fn org_replacement_preserves_stored_disabled_mismatch_and_http() {
+        use crate::domain::checks::{DisabledObservation, ProbeSource, SecretScanningResult};
+        use crate::domain::status::CollectionStatus;
+        let mut repo = crate::test_fixtures::all_passing_evidence("mismatch");
+        repo.checks.secret_scanning = SecretScanningResult::Disabled {
+            metadata_http_status: Some(200),
+            observation: DisabledObservation::StatusMismatch {
+                source: ProbeSource::PerRepoEndpoint,
+                http_status: Some(200),
+            },
+            timestamp: "2026-09-21T00:00:00Z".into(),
+        };
+        let native = crate::event::RepositoryEvidence::try_from(repo).unwrap();
+        let mut projection = EvidenceProjection::default();
+        projection.load_baseline(vec![native.into()]);
+        let mut first = org_snapshot(CollectionStatus::Success);
+        first.alert_summary.http_status = Some(200);
+        projection.apply_org_state(first);
+        let mut next = org_snapshot(CollectionStatus::Success);
+        next.alert_summary.http_status = Some(206);
+        projection.apply_org_state(next);
+        let repos = projection.sorted_snapshot();
+        assert!(repos[0].checks.secret_scanning.status_mismatch());
+        let summary = &projection.org_state.as_ref().unwrap().alert_summary;
+        assert_eq!(summary.http_status, Some(206));
+        let metrics = crate::aggregate::metrics::build_secret_scanning_observability_summary(
+            &repos,
+            Some(summary),
+        );
+        assert_eq!(metrics.status_mismatch_count, 1);
+        assert_eq!(metrics.observable_enabled_repositories, 0);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "native decoding, replacement, and per-row rendering form one regression scenario"
+    )]
+    fn native_replacement_render_preserves_mismatch_and_failed_probe_rows() {
+        use crate::domain::checks::{
+            DisabledObservation, ProbeSource, SecretScanningFailureReason, SecretScanningResult,
+        };
+        use crate::domain::status::CollectionStatus;
+        use pardosa::prelude::PardosaType;
+        let observations = [
+            (
+                "repo-mismatch",
+                Some(200),
+                DisabledObservation::StatusMismatch {
+                    source: ProbeSource::OrgSummary,
+                    http_status: Some(200),
+                },
+            ),
+            (
+                "repo-failed",
+                None,
+                DisabledObservation::ProbeFailed {
+                    source: ProbeSource::PerRepoEndpoint,
+                    reason: SecretScanningFailureReason::RateLimited,
+                    http_status: Some(429),
+                },
+            ),
+        ];
+        let mut projection = EvidenceProjection::default();
+        for (name, metadata_http_status, observation) in observations {
+            let mut repo = crate::test_fixtures::all_passing_evidence(name);
+            repo.checks.secret_scanning = SecretScanningResult::Disabled {
+                metadata_http_status,
+                observation,
+                timestamp: "2026-09-21T00:00:00Z".into(),
+            };
+            let expected = repo.checks.secret_scanning.clone();
+            let native = crate::event::RepositoryEvidence::try_from(repo).unwrap();
+            let mut bytes = Vec::new();
+            native.encode_type(&mut bytes).unwrap();
+            let (native, consumed) = crate::event::RepositoryEvidence::decode_type(&bytes).unwrap();
+            assert_eq!(consumed, bytes.len());
+            let repo: crate::domain::evidence::RepositoryEvidence = native.into();
+            assert_eq!(repo.checks.secret_scanning, expected);
+            apply_repo_event(&mut projection, false, name, Some(repo));
+        }
+        for http_status in [Some(200), None] {
+            let mut org = org_snapshot(CollectionStatus::Success);
+            org.alert_summary.http_status = http_status;
+            let native = crate::event::OrgStateCaptured::try_from(org).unwrap();
+            let mut bytes = Vec::new();
+            native.encode_type(&mut bytes).unwrap();
+            let (native, consumed) = crate::event::OrgStateCaptured::decode_type(&bytes).unwrap();
+            assert_eq!(consumed, bytes.len());
+            projection.apply_org_state(native.into());
+        }
+        assert_eq!(
+            projection
+                .org_state
+                .as_ref()
+                .unwrap()
+                .alert_summary
+                .http_status,
+            None
+        );
+        let repos = projection.sorted_snapshot();
+        for repo in &repos {
+            let (_, metadata_http_status, observation) = observations
+                .iter()
+                .find(|(name, _, _)| *name == repo.repository.name)
+                .unwrap();
+            assert_eq!(
+                repo.checks.secret_scanning,
+                SecretScanningResult::Disabled {
+                    metadata_http_status: *metadata_http_status,
+                    observation: *observation,
+                    timestamp: "2026-09-21T00:00:00Z".into(),
+                }
+            );
+        }
+        let summary = crate::aggregate::metrics::build_secret_scanning_observability_summary(
+            &repos,
+            projection.org_state.as_ref().map(|org| &org.alert_summary),
+        );
+        assert_eq!(summary.status_mismatch_count, 1);
+        let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+        assert_eq!(metrics.secret_scanning_counts.disabled, 2);
+        let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+        let evidence = crate::test_fixtures::make_full_evidence(
+            crate::test_fixtures::make_metadata(),
+            stats,
+            metrics,
+            summary,
+            repos,
+        );
+        let pages = crate::report::html::render_dashboard(
+            &evidence,
+            &crate::config::dashboard::DashboardConfig::default(),
+        )
+        .unwrap();
+        let page = &pages["alert_free.html"];
+        for (name, label) in [
+            (
+                "repo-mismatch",
+                "Secret scanning disabled (status mismatch)",
+            ),
+            ("repo-failed", "Secret scanning disabled"),
+        ] {
+            let start = page
+                .find(&format!("data-unmeasured-row data-repo=\"{name}\""))
+                .unwrap();
+            let row = &page[start..start + page[start..].find("</tr>").unwrap()];
+            assert!(row.contains(&format!("<td>{label}</td>")), "{name}: {row}");
+            if name == "repo-failed" {
+                assert!(!row.contains("status mismatch"));
+            }
+        }
     }
 }

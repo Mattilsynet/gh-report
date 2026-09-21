@@ -1,7 +1,7 @@
 # PGN-0006. Error Taxonomy and Typed Failure Surfaces
 
 Date: 2026-06-08
-Last-reviewed: 2026-06-08
+Last-reviewed: 2026-09-21 - amended - reconcile error enumeration clauses with closed policy; retain typed-source and acyclic boundary obligations
 Tier: B
 Status: Accepted
 Crates: pardosa, pardosa-wire, pardosa-file
@@ -16,10 +16,9 @@ Sources rescue ADR-0007 (error taxonomy) primarily; rescue ADR-0021 contributes 
 
 ## Decision
 
-Substrate errors are handcrafted, `Display`-stable, and `thiserror`-free. Runtime errors use `thiserror` and may compose substrate errors via `#[from]` / `#[source]`. Every public error enum is `#[non_exhaustive]`. Schema-hash mismatch and tamper-detection variants are typed first-class — not generic IO. The runtime error graph is acyclic: `PardosaError` may wrap `persist::Error` (one-way) but `persist::Error` must not wrap `PardosaError`; operation-scoped projection kinds at the boundary preserve the diagnostic chain without cycles.
+Substrate errors are handcrafted, `Display`-stable, and `thiserror`-free. Runtime errors use `thiserror` and may compose substrate errors via `#[from]` / `#[source]`. Public error enums are closed. Schema-hash mismatch and tamper-detection variants are typed first-class — not generic IO. The runtime error graph is acyclic: `PardosaError` may wrap `persist::Error` (one-way) but `persist::Error` must not wrap `PardosaError`; operation-scoped projection kinds at the boundary preserve the diagnostic chain without cycles. Historical type names describe the original design, not today's API inventory. Pardosa's canonical specification owns its current surface; this amendment reconciles the consumer corpus without rewriting the imported historical snapshot.
 
-R1 [5]: Every public error enum in the workspace is `#[non_exhaustive]` from
-  day one; downstream `match` arms must include a wildcard arm.
+R1 [5]: Public error enums MUST NOT carry `#[non_exhaustive]`; downstream exhaustive matches remain possible. This enumeration policy does not govern struct field extensibility. RST-0006's syntactic checker covers only its stated thiserror-derived subset, not every `Error` implementation.
 R2 [5]: Substrate errors are handcrafted enum + `impl Display`/`impl Error`,
   with no `thiserror` dependency; runtime errors use `thiserror` and may
   carry substrate errors via `#[from]` or `#[source]`.
@@ -36,7 +35,7 @@ R6 [5]: When a module's API exposes an invariant violation from the root
   enum, not the root error, with `From<RootError>` implementing the
   projection exhaustively.
 R7 [5]: Any future anchor-verification surface uses its own
-  `#[non_exhaustive]` enum distinct from `FileError` and never silently
+  closed enum distinct from `FileError` and never silently
   coerces an authenticator failure into unanchored success.
 
 ## Consequences
@@ -44,8 +43,8 @@ R7 [5]: Any future anchor-verification surface uses its own
 + becomes easier: principled error recovery (delete sidecar vs do-not-delete
   vs drop-and-reopen vs cannot-recover); preserved diagnostic chains
   through `#[source]`; bounded blast radius via projection at boundaries.
-− becomes harder: every downstream `match` carries a wildcard arm
-  (`#[non_exhaustive]`); substrate error variants are more verbose than
+− becomes harder: variant changes require downstream exhaustive-match adaptation;
+  substrate error variants are more verbose than
   the `thiserror`-equivalent.
 risks/migration: removing or renaming a public error variant is a
   pre-publish breaking change per PGN-0009 / PGN-0012; the cycle break
