@@ -6004,6 +6004,105 @@ mod tests {
         handle.await.expect("join");
     }
 
+    async fn read_streamed_excess_request_headers(
+        reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) {
+        use tokio::io::AsyncReadExt;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut headers = [0u8; 1024];
+            for end in 1..=headers.len() {
+                reader
+                    .read_exact(&mut headers[end - 1..end])
+                    .await
+                    .expect("fixture request headers readable");
+                if headers[..end].ends_with(b"\r\n\r\n") {
+                    return;
+                }
+            }
+            panic!("fixture request headers exceed 1024 bytes");
+        })
+        .await
+        .expect("fixture request headers complete within 10s");
+    }
+
+    async fn serve_streamed_excess_first_page(
+        mut socket: tokio::net::TcpStream,
+        addr: std::net::SocketAddr,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        read_streamed_excess_request_headers(&mut socket).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nLink: <http://{addr}/page-2>; rel=\"next\"\r\nConnection: close\r\nContent-Length: 10\r\n\r\n[{{\"id\":1}}]"
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write first page");
+        socket.shutdown().await.expect("close first page");
+        drop(socket);
+    }
+
+    #[tokio::test]
+    async fn request_run_same_origin_later_203_fixture_waits_for_complete_headers() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        use tokio::io::AsyncWriteExt;
+
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        writer
+            .write_all(b"GET /page-1 HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .expect("partial headers");
+        let mut reading = std::pin::pin!(read_streamed_excess_request_headers(&mut reader));
+        poll_fn(|cx| {
+            assert!(reading.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        writer.write_all(b"\r\n").await.expect("header terminator");
+        reading.await;
+    }
+
+    #[tokio::test]
+    async fn request_run_same_origin_later_203_fixture_closes_before_second_connection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let addr = listener.local_addr().expect("local addr");
+            let server = tokio::spawn(async move {
+                let (first, _) = listener.accept().await.expect("first accept");
+                serve_streamed_excess_first_page(first, addr).await;
+                let (mut second, _) = listener.accept().await.expect("second accept");
+                read_streamed_excess_request_headers(&mut second).await;
+            });
+            let mut first = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            first
+                .write_all(b"GET /page-1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .expect("first request");
+            let mut response = String::new();
+            first
+                .read_to_string(&mut response)
+                .await
+                .expect("first EOF");
+            assert!(response.contains("\r\nConnection: close\r\n"));
+            assert!(response.ends_with("\r\n\r\n[{\"id\":1}]"));
+            let mut second = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("reconnect");
+            second
+                .write_all(b"GET /page-2 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .expect("second request");
+            server.await.expect("fixture joined");
+        })
+        .await
+        .expect("fixture lifecycle completes within 10s");
+    }
+
     #[tokio::test]
     async fn request_run_same_origin_later_203_streamed_excess_maps_to_body_read_without_partial_success()
      {
@@ -6012,28 +6111,12 @@ mod tests {
             .expect("local tcp bind should succeed");
         let addr = listener.local_addr().expect("local addr");
         let handle = tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let (mut socket1, _) = listener.accept().await.expect("page 1 connection");
-            let mut buf1 = [0u8; 1024];
-            let _read1 = socket1
-                .read(&mut buf1)
-                .await
-                .expect("page 1 request readable");
-            let resp1 = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nLink: <http://{addr}/page-2>; rel=\"next\"\r\nContent-Length: 10\r\n\r\n[{{\"id\":1}}]"
-            );
-            socket1
-                .write_all(resp1.as_bytes())
-                .await
-                .expect("write resp1");
-            let _ = socket1.shutdown().await;
+            use tokio::io::AsyncWriteExt;
+            let (socket1, _) = listener.accept().await.expect("page 1 connection");
+            serve_streamed_excess_first_page(socket1, addr).await;
 
             let (mut socket2, _) = listener.accept().await.expect("page 2 connection");
-            let mut buf2 = [0u8; 1024];
-            let _read2 = socket2
-                .read(&mut buf2)
-                .await
-                .expect("page 2 request readable");
+            read_streamed_excess_request_headers(&mut socket2).await;
             let head2 = "HTTP/1.1 203 Non-Authoritative Information\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
             socket2
                 .write_all(head2.as_bytes())
