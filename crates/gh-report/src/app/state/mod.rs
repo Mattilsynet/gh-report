@@ -350,6 +350,101 @@ pub(crate) struct LastRecoveryStatus {
 }
 
 impl AppState {
+    fn lock_write_admission(&self) -> std::sync::MutexGuard<'_, Option<Arc<PersistenceError>>> {
+        match self.evidence.write_admission.lock() {
+            Ok(slot) => slot,
+            Err(poison) => {
+                let mut slot = poison.into_inner();
+                slot.get_or_insert_with(|| {
+                    Arc::new(PersistenceError::Indeterminate(Box::new(
+                        crate::store::StoreError::Poisoned,
+                    )))
+                });
+                self.evidence.reconciliation.notify_one();
+                if let Some(owner) = self.evidence.scheduled_run.load().as_ref() {
+                    owner.tracker.drain();
+                }
+                slot
+            }
+        }
+    }
+
+    pub(crate) fn ensure_write_admission(&self) -> Result<(), PersistenceError> {
+        let slot = self.lock_write_admission();
+        match slot.as_ref() {
+            None => Ok(()),
+            Some(error) => Err(PersistenceError::Indeterminate(Box::new(Arc::clone(error)))),
+        }
+    }
+
+    pub(crate) fn stop_for_reconciliation(&self, error: PersistenceError) {
+        let mut slot = self.lock_write_admission();
+        if slot.is_none() {
+            *slot = Some(Arc::new(error));
+        }
+        drop(slot);
+        self.evidence.reconciliation.notify_one();
+        if let Some(owner) = self.evidence.scheduled_run.load().as_ref() {
+            owner.tracker.drain();
+        }
+        if let Some(tracker) = self.evidence.batch_tracker.load().as_ref() {
+            tracker.drain();
+        }
+    }
+
+    pub(crate) async fn wait_for_reconciliation(&self) {
+        loop {
+            let notified = self.evidence.reconciliation.notified();
+            if self.ensure_write_admission().is_err() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub(crate) fn admitted_write<T>(
+        &self,
+        operation: impl FnOnce(&mut bool) -> Result<T, PersistenceError>,
+    ) -> Result<T, PersistenceError> {
+        let mut slot = self.lock_write_admission();
+        if let Some(error) = slot.as_ref() {
+            return Err(PersistenceError::Indeterminate(Box::new(Arc::clone(error))));
+        }
+        let mut primary_landed = false;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            operation(&mut primary_landed)
+        }));
+        let outcome = match outcome {
+            Ok(result) => result,
+            Err(panic) => {
+                *slot = Some(Arc::new(PersistenceError::Indeterminate(Box::new(
+                    crate::store::StoreError::Poisoned,
+                ))));
+                drop(slot);
+                self.stop_for_reconciliation(PersistenceError::Indeterminate(Box::new(
+                    crate::store::StoreError::Poisoned,
+                )));
+                std::panic::resume_unwind(panic);
+            }
+        };
+        match outcome {
+            Err(error) if primary_landed || matches!(error, PersistenceError::Indeterminate(_)) => {
+                let error = Arc::new(if primary_landed {
+                    PersistenceError::Indeterminate(Box::new(PrimaryEffect(error)))
+                } else {
+                    error
+                });
+                *slot = Some(Arc::clone(&error));
+                drop(slot);
+                self.evidence.reconciliation.notify_one();
+                if let Some(owner) = self.evidence.scheduled_run.load().as_ref() {
+                    owner.tracker.drain();
+                }
+                Err(PersistenceError::Indeterminate(Box::new(error)))
+            }
+            result => result,
+        }
+    }
     pub(crate) async fn observe_live<T>(
         &self,
         fetch: impl Future<Output = T>,
@@ -982,12 +1077,7 @@ fn connect_nats_sync(
 }
 
 fn nats_subjects_for_stem(stem: &str) -> (String, String) {
-    let base = if let Some(rest) = stem.strip_prefix("gh-report-") {
-        format!("gh-report.{}", rest.replace('-', "."))
-    } else {
-        stem.replace('-', ".")
-    };
-    (format!("{base}.meta"), format!("{base}.data"))
+    crate::config::runtime::NatsStoreConfig::native_subjects_for_stem(stem)
 }
 
 fn open_event_store(
@@ -1023,8 +1113,7 @@ fn open_event_store(
                 client,
                 stem,
                 Arc::clone(rt),
-            )
-            .with_subjects(meta_subj.clone(), data_subj.clone());
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -1118,8 +1207,7 @@ fn open_org_event_store(
                 client,
                 stem,
                 Arc::clone(rt),
-            )
-            .with_subjects(meta_subj.clone(), data_subj.clone());
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -1193,8 +1281,7 @@ fn open_team_event_store(
                 client,
                 stem,
                 Arc::clone(rt),
-            )
-            .with_subjects(meta_subj.clone(), data_subj.clone());
+            );
             tracing::info!(
                 target: "gh_report",
                 stream_stem = %stem,
@@ -1435,8 +1522,30 @@ fn fold_team_event(
     apply_projection_event(projection, team_projection_event(false, event));
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("primary effect landed; dedicated operation failed: {0}")]
+struct PrimaryEffect(#[source] PersistenceError);
+
 fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError {
     match error {
+        crate::store::StoreError::Operation(ref failure)
+            if failure.condition() == &FailureCondition::TransportUnavailable =>
+        {
+            PersistenceError::BackendUnavailable {
+                source: Box::new(error),
+            }
+        }
+        crate::store::StoreError::Indeterminate { .. }
+        | crate::store::StoreError::CreationUnknown(_)
+        | crate::store::StoreError::LandedNeedsReconciliation
+        | crate::store::StoreError::AfterLanded(_) => {
+            PersistenceError::Indeterminate(Box::new(error))
+        }
+        crate::store::StoreError::Encode(_)
+        | crate::store::StoreError::Decode(_)
+        | crate::store::StoreError::Operation(_) => {
+            PersistenceError::Io(std::io::Error::other(error))
+        }
         crate::store::StoreError::ConcurrencyConflict {
             expected_seq,
             actual_seq,
@@ -1453,7 +1562,7 @@ fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError
         | crate::store::StoreError::AlreadyExists(_) => {
             log_error_chain("gh_report_persistence_load_failed", &error);
             PersistenceError::BackendUnavailable {
-                reason: error.to_string(),
+                source: Box::new(error),
             }
         }
         crate::store::StoreError::DivergedFiber { .. } => {
@@ -1888,6 +1997,8 @@ impl AppState {
         _backend: crate::config::runtime::PardosaBackend,
         _nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<(), std::io::Error> {
+        self.ensure_write_admission()
+            .map_err(std::io::Error::other)?;
         let event_store = Arc::clone(&self.event_store);
         let org_event_store = Arc::clone(&self.org_event_store);
         let team_event_store = Arc::clone(&self.team_event_store);
@@ -1978,20 +2089,23 @@ impl AppState {
         fetched_at: &str,
         org_membership_fetch_status: OrgMembershipFetchStatus,
     ) -> Result<(), PersistenceError> {
-        let event = team_state_event(org, roster, fetched_at, org_membership_fetch_status)?;
-        let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
-            .expect("team_state_event never produces empty org/team_slug");
-        self.event_store
-            .record(
-                &team_key,
-                NativeDomainEvent::TeamStateCaptured(event.clone()),
-            )
-            .map_err(native_store_persistence)?;
-        self.team_event_store
-            .record(&team_key, event.clone())
-            .map_err(native_store_persistence)?;
-        self.fold_team_event_into_projection(false, event);
-        Ok(())
+        self.admitted_write(|primary_landed| {
+            let event = team_state_event(org, roster, fetched_at, org_membership_fetch_status)?;
+            let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
+                .expect("team_state_event never produces empty org/team_slug");
+            self.event_store
+                .record(
+                    &team_key,
+                    NativeDomainEvent::TeamStateCaptured(event.clone()),
+                )
+                .map_err(native_store_persistence)?;
+            *primary_landed = true;
+            self.team_event_store
+                .record(&team_key, event.clone())
+                .map_err(native_store_persistence)?;
+            self.fold_team_event_into_projection(false, event);
+            Ok(())
+        })
     }
 
     /// Soft-delete a team's fiber (detach) for a team that no longer
@@ -2025,21 +2139,24 @@ impl AppState {
         fetched_at: &str,
         org_membership_fetch_status: OrgMembershipFetchStatus,
     ) -> Result<(), PersistenceError> {
-        let tombstone = detach_tombstone_roster(roster);
-        let event = team_state_event(org, &tombstone, fetched_at, org_membership_fetch_status)?;
-        let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
-            .expect("team_state_event never produces empty org/team_slug");
-        self.event_store
-            .detach(
-                &team_key,
-                NativeDomainEvent::TeamStateCaptured(event.clone()),
-            )
-            .map_err(native_store_persistence)?;
-        self.team_event_store
-            .detach(&team_key, event.clone())
-            .map_err(native_store_persistence)?;
-        self.fold_team_event_into_projection(true, event);
-        Ok(())
+        self.admitted_write(|primary_landed| {
+            let tombstone = detach_tombstone_roster(roster);
+            let event = team_state_event(org, &tombstone, fetched_at, org_membership_fetch_status)?;
+            let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
+                .expect("team_state_event never produces empty org/team_slug");
+            *primary_landed = self
+                .event_store
+                .detach_effect(
+                    &team_key,
+                    NativeDomainEvent::TeamStateCaptured(event.clone()),
+                )
+                .map_err(native_store_persistence)?;
+            self.team_event_store
+                .detach(&team_key, event.clone())
+                .map_err(native_store_persistence)?;
+            self.fold_team_event_into_projection(true, event);
+            Ok(())
+        })
     }
 
     /// Record a live repository snapshot in the native store.
@@ -2055,14 +2172,16 @@ impl AppState {
         repo_name: &str,
         timestamp: &str,
     ) -> Result<(), PersistenceError> {
-        let native_evidence = crate::event::RepositoryEvidence::try_from(evidence)
-            .map_err(|e| conversion_persistence(&e))?;
-        let event = repo_event(domain_key, repo_name, timestamp, Some(native_evidence))?;
-        self.event_store
-            .record(domain_key, event.clone())
-            .map_err(native_store_persistence)?;
-        self.fold_repository_event_into_projection(false, &event);
-        Ok(())
+        self.admitted_write(|_| {
+            let native_evidence = crate::event::RepositoryEvidence::try_from(evidence)
+                .map_err(|e| conversion_persistence(&e))?;
+            let event = repo_event(domain_key, repo_name, timestamp, Some(native_evidence))?;
+            self.event_store
+                .record(domain_key, event.clone())
+                .map_err(native_store_persistence)?;
+            self.fold_repository_event_into_projection(false, &event);
+            Ok(())
+        })
     }
 
     /// Soft-delete a repository fiber in the native store.
@@ -2077,12 +2196,14 @@ impl AppState {
         repo_name: &str,
         timestamp: &str,
     ) -> Result<(), PersistenceError> {
-        let event = repo_event(domain_key, repo_name, timestamp, None)?;
-        self.event_store
-            .detach(domain_key, event.clone())
-            .map_err(native_store_persistence)?;
-        self.fold_repository_event_into_projection(true, &event);
-        Ok(())
+        self.admitted_write(|_| {
+            let event = repo_event(domain_key, repo_name, timestamp, None)?;
+            self.event_store
+                .detach(domain_key, event.clone())
+                .map_err(native_store_persistence)?;
+            self.fold_repository_event_into_projection(true, &event);
+            Ok(())
+        })
     }
 
     /// Record a repository deleted by successful inventory reconciliation.
@@ -2096,12 +2217,14 @@ impl AppState {
         repo_name: &str,
         detected_at: &str,
     ) -> Result<(), PersistenceError> {
-        let event = deleted_repo_event(domain_key, repo_name, detected_at)?;
-        self.event_store
-            .record(domain_key, event.clone())
-            .map_err(native_store_persistence)?;
-        self.fold_repository_event_into_projection(false, &event);
-        Ok(())
+        self.admitted_write(|_| {
+            let event = deleted_repo_event(domain_key, repo_name, detected_at)?;
+            self.event_store
+                .record(domain_key, event.clone())
+                .map_err(native_store_persistence)?;
+            self.fold_repository_event_into_projection(false, &event);
+            Ok(())
+        })
     }
 
     /// Record a live org snapshot in the native org store.
@@ -2121,16 +2244,20 @@ impl AppState {
         &self,
         snapshot: crate::domain::evidence::OrgStateSnapshot,
     ) -> Result<(), PersistenceError> {
-        let event = OrgStateCaptured::try_from(snapshot).map_err(|e| conversion_persistence(&e))?;
-        let org_key = event.assessment_metadata.organization.as_str().to_string();
-        self.event_store
-            .record(&org_key, NativeDomainEvent::OrgStateCaptured(event.clone()))
-            .map_err(native_store_persistence)?;
-        self.org_event_store
-            .record(&org_key, event.clone())
-            .map_err(native_store_persistence)?;
-        self.fold_org_event_into_projection(event);
-        Ok(())
+        self.admitted_write(|primary_landed| {
+            let event =
+                OrgStateCaptured::try_from(snapshot).map_err(|e| conversion_persistence(&e))?;
+            let org_key = event.assessment_metadata.organization.as_str().to_string();
+            self.event_store
+                .record(&org_key, NativeDomainEvent::OrgStateCaptured(event.clone()))
+                .map_err(native_store_persistence)?;
+            *primary_landed = true;
+            self.org_event_store
+                .record(&org_key, event.clone())
+                .map_err(native_store_persistence)?;
+            self.fold_org_event_into_projection(event);
+            Ok(())
+        })
     }
 }
 
@@ -2463,6 +2590,7 @@ mod tests {
         crate::domain::metrics::OrgAlertSummary {
             collection_status: crate::domain::status::CollectionStatus::Success,
             collection_reason: None,
+            http_status: Some(200),
             per_repo: HashMap::new(),
             open_secret_alert_age_buckets: crate::config::empty_age_buckets(),
             total_open_secret_alerts: 0,
@@ -2716,7 +2844,7 @@ mod tests {
                 org_stream_name,
                 Arc::clone(&nats_runtime),
             )
-            .with_subjects(meta_subj, data_subj);
+            .with_subjects_for_test(meta_subj, data_subj);
             let claim = OwnershipClaimRecord {
                 epoch: 1,
                 machine_id: [0u8; 16],
@@ -2726,11 +2854,11 @@ mod tests {
                 claim_time_ns: 0,
                 operator_label: "mismatched-partial-org".to_string(),
             };
-            let mut session = org_adapter.create(&claim).expect("create org store");
             let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
-            session
-                .set_schema_descriptor(&mismatched_desc)
-                .expect("set mismatched descriptor");
+            let admitted = AdmittedDescriptor::try_from_descriptor(mismatched_desc).unwrap();
+            let mut session = org_adapter
+                .create(&claim, &admitted)
+                .expect("create org store");
             session.sync().expect("sync");
         }
 
@@ -2800,7 +2928,7 @@ mod tests {
                 team_stream_name,
                 Arc::clone(&nats_runtime),
             )
-            .with_subjects(meta_subj, data_subj);
+            .with_subjects_for_test(meta_subj, data_subj);
             let claim = OwnershipClaimRecord {
                 epoch: 1,
                 machine_id: [0u8; 16],
@@ -2810,11 +2938,11 @@ mod tests {
                 claim_time_ns: 0,
                 operator_label: "mismatched-partial-team".to_string(),
             };
-            let mut session = team_adapter.create(&claim).expect("create team store");
             let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
-            session
-                .set_schema_descriptor(&mismatched_desc)
-                .expect("set mismatched descriptor");
+            let admitted = AdmittedDescriptor::try_from_descriptor(mismatched_desc).unwrap();
+            let mut session = team_adapter
+                .create(&claim, &admitted)
+                .expect("create team store");
             session.sync().expect("sync");
         }
 
@@ -3073,16 +3201,14 @@ mod tests {
             claim_time_ns: 0,
             operator_label: "v22-descriptor-seed".to_string(),
         };
-        let mut session = adapter.create(&claim).expect("create bare org store");
         let v22_desc = crate::event::v22_org_state_descriptor();
         assert_eq!(
             v22_desc.identity().to_hex(),
             "2ec6b5d4f386afbe6a73fe4e0c962897e477316af3137591927bb18a31b4c38f",
             "must prove historical v22 descriptor identity before seeding store"
         );
-        session
-            .set_schema_descriptor(&v22_desc)
-            .expect("set v22 descriptor");
+        let admitted = AdmittedDescriptor::try_from_descriptor(v22_desc).expect("admit v22");
+        let mut session = adapter.create(&claim, &admitted).expect("create org store");
         session.sync().expect("sync v22 descriptor");
         drop(session);
 
@@ -3101,31 +3227,31 @@ mod tests {
     }
 
     #[test]
-    fn nats_subjects_for_stem_derives_dotted_subjects() {
-        let (meta, data) = nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v22");
-        assert_eq!(meta, "gh-report.org_4d617474696c73796e6574.v22.meta");
-        assert_eq!(data, "gh-report.org_4d617474696c73796e6574.v22.data");
+    fn nats_subjects_for_stem_derives_native_subjects() {
+        let (meta, data) = nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v24");
+        assert_eq!(meta, "gh-report-org_4d617474696c73796e6574-v24_meta");
+        assert_eq!(data, "gh-report-org_4d617474696c73796e6574-v24_data");
 
         let (org_meta, org_data) =
-            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v22-org");
+            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v24-org");
         assert_eq!(
             org_meta,
-            "gh-report.org_4d617474696c73796e6574.v22.org.meta"
+            "gh-report-org_4d617474696c73796e6574-v24-org_meta"
         );
         assert_eq!(
             org_data,
-            "gh-report.org_4d617474696c73796e6574.v22.org.data"
+            "gh-report-org_4d617474696c73796e6574-v24-org_data"
         );
 
         let (team_meta, team_data) =
-            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v22-team");
+            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v24-team");
         assert_eq!(
             team_meta,
-            "gh-report.org_4d617474696c73796e6574.v22.team.meta"
+            "gh-report-org_4d617474696c73796e6574-v24-team_meta"
         );
         assert_eq!(
             team_data,
-            "gh-report.org_4d617474696c73796e6574.v22.team.data"
+            "gh-report-org_4d617474696c73796e6574-v24-team_data"
         );
     }
 
@@ -3238,6 +3364,7 @@ mod tests {
             alert_summary: OrgAlertSummary {
                 collection_status: CollectionStatus::Success,
                 collection_reason: None,
+                http_status: Some(200),
                 per_repo: EventVec::new(Vec::new()).unwrap(),
                 open_secret_alert_age_buckets: EventVec::new(Vec::new()).unwrap(),
                 total_open_secret_alerts: 0,
@@ -3252,9 +3379,21 @@ mod tests {
         clippy::too_many_lines,
         reason = "comprehensive auth-aware ACL verification across three production stores and negative rejection"
     )]
-    fn nats_auth_aware_acl_permits_dotted_and_denies_nondotted_subjects() {
+    fn nats_auth_aware_acl_permits_native_and_denies_unlisted_subjects() {
         use pardosa::prelude::*;
 
+        let allowed =
+            NatsStoreConfig::for_org("test-acl-org", crate::config::runtime::DEFAULT_NATS_URL)
+                .unwrap();
+        let allowed_subjects = [
+            allowed.stream_name.clone(),
+            allowed.org_events().stream_name,
+            allowed.team_events().stream_name,
+        ]
+        .into_iter()
+        .flat_map(|stem| [format!("\"{stem}_meta\""), format!("\"{stem}_data\"")])
+        .collect::<Vec<_>>()
+        .join(", ");
         let conf = r#"
 accounts: {
     APP: {
@@ -3265,7 +3404,7 @@ accounts: {
                 password: "p@ss:word"
                 permissions: {
                     publish: {
-                        allow: ["gh-report.>", "$JS.API.>"]
+                        allow: [ALLOWED_SUBJECTS, "$JS.API.>", "allowed-baddata-meta"]
                     }
                     subscribe: {
                         allow: [">"]
@@ -3276,7 +3415,9 @@ accounts: {
     }
 }
 "#;
-        let Some(server) = crate::store::tests::TestNatsServer::spawn_with_auth_config(conf) else {
+        let conf = conf.replace("ALLOWED_SUBJECTS", &allowed_subjects);
+        let Some(server) = crate::store::tests::TestNatsServer::spawn_with_auth_config(&conf)
+        else {
             return;
         };
 
@@ -3415,7 +3556,7 @@ accounts: {
             claim_time_ns: 0,
             operator_label: "test-auth-denial".to_string(),
         };
-        let bad_result = bad_adapter.create(&bad_claim);
+        let bad_result = bad_adapter.create(&bad_claim, &AdmittedDescriptor::default_for_test());
         let Err(bad_err) = bad_result else {
             panic!("creation with non-dotted subject must fail on permission violation");
         };
@@ -3451,19 +3592,15 @@ accounts: {
             bad_data_stem,
             Arc::clone(&rt),
         )
-        .with_subjects(
-            "gh-report.org_4d617474696c73796e6574.v22.baddata.meta".to_string(),
+        .with_subjects_for_test(
+            "allowed-baddata-meta".to_string(),
             format!("{bad_data_stem}_data"),
         );
-        let bad_data_claim = OwnershipClaimRecord {
-            operator_label: "test-auth-data-denial".to_string(),
-            ..bad_claim
-        };
-        let bad_data_result = bad_data_adapter.create(&bad_data_claim);
-        assert!(
-            bad_data_result.is_err(),
-            "creation with forbidden data subject must fail on header publish"
-        );
+        let bad_data_result = crate::store::NativeStore::create_nats(bad_data_adapter);
+        assert!(matches!(
+            bad_data_result,
+            Err(crate::store::StoreError::CreationUnknown(_))
+        ));
 
         let expected_data_pattern =
             format!("Permissions Violation for Publish to \"{bad_data_stem}_data\"");
@@ -3487,6 +3624,25 @@ accounts: {
         );
 
         let js = rt.block_on(async { async_nats::jetstream::new(client) });
+        for config in [&allowed, &allowed.org_events(), &allowed.team_events()] {
+            let (meta_subject, data_subject) = config.native_subjects();
+            for (suffix, subject) in [("meta", meta_subject), ("data", data_subject)] {
+                let mut stream = rt
+                    .block_on(js.get_stream(format!("{}_{suffix}", config.stream_name)))
+                    .unwrap();
+                assert_eq!(
+                    rt.block_on(stream.info()).unwrap().config.subjects,
+                    vec![subject]
+                );
+            }
+        }
+        let mut meta = rt
+            .block_on(js.get_stream(format!("{bad_data_stem}_meta")))
+            .unwrap();
+        assert!(
+            rt.block_on(meta.info()).unwrap().state.messages > 0,
+            "creation has durable metadata despite denied data"
+        );
         let mut stream = rt
             .block_on(async { js.get_stream(format!("{bad_stem}_meta")).await })
             .expect("stream was created on broker");
@@ -3864,12 +4020,12 @@ accounts: {
         let output = capture_events(|| {
             let persistence = native_store_persistence(err);
 
-            let PersistenceError::BackendUnavailable { reason } = persistence else {
+            let PersistenceError::BackendUnavailable { source } = persistence else {
                 panic!("backend infrastructure failure should map to BackendUnavailable");
             };
             assert!(
-                reason.contains("authorization violation"),
-                "flattened reason remains operator-visible: {reason}"
+                source.to_string().contains("authorization violation"),
+                "diagnostic remains operator-visible: {source}"
             );
         });
         assert!(
@@ -3880,6 +4036,37 @@ accounts: {
             output.contains("nats: authorization violation"),
             "full diagnostic chain must include innermost source"
         );
+    }
+
+    #[test]
+    fn native_transport_survives_exhausted_policy_as_typed_source() {
+        use std::error::Error;
+        let mut calls = 0;
+        let failure = crate::app::write_policy::write_with_policy_sync(|| {
+            calls += 1;
+            Err(native_store_persistence(
+                OperationFailure::new(
+                    FailureCondition::TransportUnavailable,
+                    "actual native diagnostic",
+                )
+                .into(),
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(
+            calls,
+            1 + u32::from(crate::app::write_policy::BOUNDED_RETRY_ATTEMPTS)
+        );
+        let native = failure
+            .error
+            .source()
+            .unwrap()
+            .source()
+            .unwrap()
+            .downcast_ref::<OperationFailure>()
+            .unwrap();
+        assert_eq!(native.condition(), &FailureCondition::TransportUnavailable);
+        assert!(native.to_string().contains("actual native diagnostic"));
     }
 
     #[tokio::test]
@@ -4283,7 +4470,7 @@ accounts: {
                  not be discarded while the dedicated write proceeds",
             );
         assert!(
-            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            matches!(error, PersistenceError::Io(_)),
             "primary append failure must carry a concrete persistence classification, got {error:?}"
         );
 
@@ -4324,7 +4511,7 @@ accounts: {
             )
             .expect_err("a failed dedicated team append must surface as a persistence error");
         assert!(
-            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            matches!(error, PersistenceError::Indeterminate(_)),
             "dedicated append failure must carry a concrete persistence classification, got {error:?}"
         );
 
@@ -4339,6 +4526,132 @@ accounts: {
             !state.lock_projection().team_rosters.contains_key(&team_key),
             "no projection fold may follow a failed dedicated append"
         );
+        assert!(
+            state
+                .record_team(
+                    "TestOrg",
+                    &roster,
+                    "2026-07-16T00:00:00Z",
+                    OrgMembershipFetchStatus::Fetched
+                )
+                .is_err()
+        );
+        assert_eq!(team_events_in_primary_store(&state, &team_key), 1);
+    }
+
+    #[tokio::test]
+    async fn composite_transport_failure_is_one_attempt_and_blocks_next_primary() {
+        for org_write in [false, true] {
+            let state = AppState::new().await;
+            let roster = team_roster_fixture("@TestOrg/platform", "platform");
+            if org_write {
+                state
+                    .org_event_store
+                    .fail_writes_for_test(FailureCondition::TransportUnavailable);
+            } else {
+                state
+                    .team_event_store
+                    .fail_writes_for_test(FailureCondition::TransportUnavailable);
+            }
+            let before = state.event_store.events().unwrap().len();
+            let mut calls = 0;
+            let mut submit = || {
+                calls += 1;
+                if org_write {
+                    state.record_org(org_snapshot_fixture())
+                } else {
+                    state.record_team(
+                        "TestOrg",
+                        &roster,
+                        "2026-07-16T00:00:00Z",
+                        OrgMembershipFetchStatus::Fetched,
+                    )
+                }
+            };
+            let failure =
+                crate::app::write_policy::write_with_policy_sync(&mut submit).unwrap_err();
+            assert_eq!(
+                failure.category,
+                crate::app::write_policy::WritePolicyCategory::ReconciliationRequired
+            );
+            assert!(matches!(submit(), Err(PersistenceError::Indeterminate(_))));
+            assert_eq!(
+                calls, 2,
+                "one policy attempt plus one explicitly rejected submission"
+            );
+            assert_eq!(state.event_store.events().unwrap().len(), before + 1);
+            assert!(state.projection_team_rosters_snapshot().is_empty());
+            assert!(state.projection_snapshot().is_empty());
+            assert!(!state.run_is_fenced());
+        }
+    }
+
+    #[tokio::test]
+    async fn projection_panic_retains_unknown_and_prevents_second_durable_write() {
+        let state = AppState::new().await;
+        let supervisor_state = Arc::clone(&state);
+        let supervisor =
+            tokio::spawn(async move { supervisor_state.wait_for_reconciliation().await });
+        tokio::task::yield_now().await;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _projection = state.lock_projection();
+            panic!("poison actual projection");
+        }));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.record_org(org_snapshot_fixture())
+        }));
+        assert!(result.is_err());
+        tokio::time::timeout(std::time::Duration::from_secs(1), supervisor)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.event_store.events().unwrap().len(), 1);
+        assert!(matches!(
+            state.ensure_write_admission(),
+            Err(PersistenceError::Indeterminate(_))
+        ));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            state.wait_for_reconciliation(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            state.record_org(org_snapshot_fixture()),
+            Err(PersistenceError::Indeterminate(_))
+        ));
+        assert_eq!(state.event_store.events().unwrap().len(), 1);
+        assert_eq!(
+            state
+                .org_event_store
+                .fold_events(0, |count, _| *count += 1)
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn poisoned_empty_admission_is_not_ready() {
+        let state = AppState::new().await;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _slot = state.evidence.write_admission.lock().unwrap();
+            panic!("poison empty admission before effects");
+        }));
+        assert!(matches!(
+            state.ensure_write_admission(),
+            Err(PersistenceError::Indeterminate(_))
+        ));
+        assert!(matches!(
+            state.record_org(org_snapshot_fixture()),
+            Err(PersistenceError::Indeterminate(_))
+        ));
+        assert!(state.event_store.events().unwrap().is_empty());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            state.wait_for_reconciliation(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -4499,7 +4812,7 @@ accounts: {
                  not be discarded while the dedicated detach proceeds",
             );
         assert!(
-            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            matches!(error, PersistenceError::Io(_)),
             "primary detach failure must carry a concrete persistence classification, got {error:?}"
         );
 
@@ -4551,7 +4864,7 @@ accounts: {
             )
             .expect_err("a failed dedicated team detach must surface as a persistence error");
         assert!(
-            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            matches!(error, PersistenceError::Indeterminate(_)),
             "dedicated detach failure must carry a concrete persistence classification, got {error:?}"
         );
 
@@ -4628,7 +4941,7 @@ accounts: {
              not be discarded while the dedicated write proceeds",
         );
         assert!(
-            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            matches!(error, PersistenceError::Io(_)),
             "primary org append failure must carry a concrete persistence classification, got {error:?}"
         );
 
@@ -4659,7 +4972,7 @@ accounts: {
             .record_org(org_snapshot_fixture())
             .expect_err("a failed dedicated org append must surface as a persistence error");
         assert!(
-            matches!(error, PersistenceError::BackendUnavailable { .. }),
+            matches!(error, PersistenceError::Indeterminate(_)),
             "dedicated org append failure must carry a concrete persistence classification, got {error:?}"
         );
 

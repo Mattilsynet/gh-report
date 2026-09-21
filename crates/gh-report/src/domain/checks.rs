@@ -48,23 +48,140 @@ impl RepositoryChecks {
     }
 }
 
-/// Security policy evaluation outcome.
-///
-/// # Wire format
-///
-/// Fields encode in declaration order via `Encode::encode`: `status`,
-/// `evidence`, `path`, `timestamp`. Field reorder is a wire-format break
-/// (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields must append.
+/// Nonempty path observed at the security-policy boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecurityPolicyResult {
-    /// Whether a security policy was detected.
-    pub status: SecurityPolicyStatus,
-    /// How the security policy check was determined.
-    pub evidence: SecurityPolicyEvidence,
-    /// Path to the security policy file, if found.
-    pub path: Option<String>,
-    /// ISO 8601 timestamp of when the check was performed.
-    pub timestamp: String,
+#[serde(try_from = "String", into = "String")]
+pub struct SecurityPolicyPath(String);
+
+impl SecurityPolicyPath {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Option<Self> {
+        let raw = raw.into();
+        (!raw.is_empty()).then_some(Self(raw))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SecurityPolicyPath {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value).ok_or("security policy path must not be empty")
+    }
+}
+
+impl From<SecurityPolicyPath> for String {
+    fn from(value: SecurityPolicyPath) -> Self {
+        value.0
+    }
+}
+
+/// Collection failures that cannot establish absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndeterminateReason {
+    PermissionDenied,
+    PermissionSuspected,
+    Transient,
+    RateLimited,
+    Invalid,
+    Pending,
+}
+
+/// Security policy evaluation outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityPolicyResult {
+    EnabledBySetting {
+        timestamp: String,
+    },
+    EnabledByFile {
+        path: SecurityPolicyPath,
+        timestamp: String,
+    },
+    Absent {
+        timestamp: String,
+    },
+    Unobservable {
+        reason: IndeterminateReason,
+        timestamp: String,
+    },
+    NotApplicable {
+        timestamp: String,
+    },
+}
+
+impl SecurityPolicyResult {
+    #[must_use]
+    pub fn status(&self) -> SecurityPolicyStatus {
+        match self {
+            Self::EnabledBySetting { .. } | Self::EnabledByFile { .. } => {
+                SecurityPolicyStatus::Pass
+            }
+            Self::Absent { .. } => SecurityPolicyStatus::Fail,
+            Self::Unobservable { .. } => SecurityPolicyStatus::Unknown,
+            Self::NotApplicable { .. } => SecurityPolicyStatus::NotApplicable,
+        }
+    }
+
+    #[must_use]
+    pub fn evidence(&self) -> SecurityPolicyEvidence {
+        match self {
+            Self::EnabledBySetting { .. } => SecurityPolicyEvidence::Setting,
+            Self::EnabledByFile { .. } => SecurityPolicyEvidence::File,
+            Self::Absent { .. } => SecurityPolicyEvidence::Absent,
+            Self::NotApplicable { .. } => SecurityPolicyEvidence::NotApplicable,
+            Self::Unobservable { reason, .. } => match reason {
+                IndeterminateReason::PermissionDenied
+                | IndeterminateReason::PermissionSuspected => {
+                    SecurityPolicyEvidence::PermissionDenied
+                }
+                IndeterminateReason::Transient => SecurityPolicyEvidence::TransientError,
+                IndeterminateReason::RateLimited
+                | IndeterminateReason::Invalid
+                | IndeterminateReason::Pending => SecurityPolicyEvidence::CollectionError,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::EnabledByFile { path, .. } => Some(path.as_str()),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn timestamp(&self) -> &str {
+        match self {
+            Self::EnabledBySetting { timestamp }
+            | Self::EnabledByFile { timestamp, .. }
+            | Self::Absent { timestamp }
+            | Self::Unobservable { timestamp, .. }
+            | Self::NotApplicable { timestamp } => timestamp,
+        }
+    }
+}
+
+impl From<&SecurityPolicyResult> for ScoreCategory {
+    fn from(result: &SecurityPolicyResult) -> Self {
+        match result {
+            SecurityPolicyResult::Unobservable { reason, .. } => Self::Excluded(match reason {
+                IndeterminateReason::PermissionDenied
+                | IndeterminateReason::PermissionSuspected => ExclusionReason::PermissionDenied,
+                IndeterminateReason::Transient
+                | IndeterminateReason::RateLimited
+                | IndeterminateReason::Invalid
+                | IndeterminateReason::Pending => ExclusionReason::Other,
+            }),
+            _ => Self::from(result.status()),
+        }
+    }
 }
 
 /// Security policy status.
@@ -124,26 +241,306 @@ pub enum SecurityPolicyEvidence {
     NotApplicable = 6,
 }
 
-/// Secret scanning evaluation outcome.
-///
-/// # Wire format
-///
-/// Fields encode in declaration order via `Encode::encode`: `status`,
-/// `has_open_alerts`, `alerts_observable`, `reason`, `timestamp`. Field
-/// reorder is a wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields
-/// must append.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretScanningFailureReason {
+    PermissionDenied,
+    PermissionSuspected,
+    RateLimited,
+    Transient,
+    Unavailable,
+    InsufficientEvidence,
+    Conflict,
+    Invalid,
+    Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeSource {
+    OrgSummary,
+    PerRepoEndpoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataUnavailable {
+    Missing {
+        http_status: Option<u16>,
+    },
+    Malformed {
+        http_status: Option<u16>,
+    },
+    Failure {
+        reason: SecretScanningFailureReason,
+        http_status: Option<u16>,
+    },
+}
+
+impl MetadataUnavailable {
+    #[must_use]
+    pub fn failure_reason(self) -> SecretScanningFailureReason {
+        match self {
+            Self::Missing { .. } => SecretScanningFailureReason::InsufficientEvidence,
+            Self::Malformed { .. } => SecretScanningFailureReason::Invalid,
+            Self::Failure { reason, .. } => reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretScanningAlerts {
+    Observable {
+        source: ProbeSource,
+        has_open_alerts: bool,
+        http_status: Option<u16>,
+    },
+    Unobservable {
+        source: ProbeSource,
+        reason: SecretScanningFailureReason,
+        http_status: Option<u16>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnabledProvenance {
+    Metadata {
+        http_status: Option<u16>,
+        alerts: SecretScanningAlerts,
+    },
+    Fallback {
+        metadata: MetadataUnavailable,
+        has_open_alerts: bool,
+        http_status: Option<u16>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisabledObservation {
+    NoMismatch {
+        source: ProbeSource,
+        http_status: Option<u16>,
+    },
+    StatusMismatch {
+        source: ProbeSource,
+        http_status: Option<u16>,
+    },
+    ProbeFailed {
+        source: ProbeSource,
+        reason: SecretScanningFailureReason,
+        http_status: Option<u16>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnobservableProbe {
+    Failed {
+        source: ProbeSource,
+        reason: SecretScanningFailureReason,
+        http_status: Option<u16>,
+    },
+    OrgSummaryObserved {
+        has_open_alerts: bool,
+        http_status: Option<u16>,
+    },
+}
+
+/// Secret scanning evaluation with contemporaneous metadata and probe facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecretScanningResult {
-    /// Whether secret scanning is enabled on the repository.
-    pub status: SecretScanningStatus,
-    /// Whether the repository has open secret scanning alerts, if observable.
-    pub has_open_alerts: Option<bool>,
-    /// Whether alert data is observable for this repository.
-    pub alerts_observable: bool,
-    /// Human-readable reason for the current status.
-    pub reason: Option<String>,
-    /// ISO 8601 timestamp of when the check was performed.
-    pub timestamp: String,
+#[serde(rename_all = "snake_case")]
+pub enum SecretScanningResult {
+    Enabled {
+        provenance: EnabledProvenance,
+        timestamp: String,
+    },
+    Disabled {
+        metadata_http_status: Option<u16>,
+        observation: DisabledObservation,
+        timestamp: String,
+    },
+    Unobservable {
+        metadata: MetadataUnavailable,
+        probe: UnobservableProbe,
+        timestamp: String,
+    },
+}
+
+impl SecretScanningResult {
+    #[must_use]
+    pub fn status(&self) -> SecretScanningStatus {
+        use SecretScanningFailureReason::{PermissionDenied, PermissionSuspected};
+        match self {
+            Self::Enabled { .. } => SecretScanningStatus::Enabled,
+            Self::Disabled { .. } => SecretScanningStatus::Disabled,
+            Self::Unobservable {
+                metadata:
+                    MetadataUnavailable::Failure {
+                        reason: PermissionDenied | PermissionSuspected,
+                        ..
+                    },
+                ..
+            }
+            | Self::Unobservable {
+                probe:
+                    UnobservableProbe::Failed {
+                        reason: PermissionDenied | PermissionSuspected,
+                        ..
+                    },
+                ..
+            } => SecretScanningStatus::PermissionDenied,
+            Self::Unobservable { .. } => SecretScanningStatus::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub fn timestamp(&self) -> &str {
+        match self {
+            Self::Enabled { timestamp, .. }
+            | Self::Disabled { timestamp, .. }
+            | Self::Unobservable { timestamp, .. } => timestamp,
+        }
+    }
+
+    #[must_use]
+    pub fn with_timestamp(mut self, value: impl Into<String>) -> Self {
+        let timestamp = match &mut self {
+            Self::Enabled { timestamp, .. }
+            | Self::Disabled { timestamp, .. }
+            | Self::Unobservable { timestamp, .. } => timestamp,
+        };
+        *timestamp = value.into();
+        self
+    }
+
+    #[must_use]
+    pub fn has_open_alerts(&self) -> Option<bool> {
+        match self {
+            Self::Enabled {
+                provenance:
+                    EnabledProvenance::Metadata {
+                        alerts:
+                            SecretScanningAlerts::Observable {
+                                has_open_alerts, ..
+                            },
+                        ..
+                    },
+                ..
+            }
+            | Self::Enabled {
+                provenance:
+                    EnabledProvenance::Fallback {
+                        has_open_alerts, ..
+                    },
+                ..
+            } => Some(*has_open_alerts),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn alerts_observable(&self) -> bool {
+        self.has_open_alerts().is_some()
+    }
+
+    #[must_use]
+    pub fn status_mismatch(&self) -> bool {
+        matches!(
+            self,
+            Self::Disabled {
+                observation: DisabledObservation::StatusMismatch { .. },
+                ..
+            }
+        )
+    }
+
+    #[must_use]
+    pub fn failure_reason(&self) -> Option<SecretScanningFailureReason> {
+        match self {
+            Self::Enabled {
+                provenance:
+                    EnabledProvenance::Metadata {
+                        alerts: SecretScanningAlerts::Unobservable { reason, .. },
+                        ..
+                    },
+                ..
+            }
+            | Self::Disabled {
+                observation: DisabledObservation::ProbeFailed { reason, .. },
+                ..
+            }
+            | Self::Unobservable {
+                probe: UnobservableProbe::Failed { reason, .. },
+                ..
+            } => Some(*reason),
+            Self::Unobservable { metadata, .. } => Some(metadata.failure_reason()),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn reason(&self) -> Option<&'static str> {
+        match (self.status_mismatch(), self.failure_reason()) {
+            (true, _) => Some("status_mismatch"),
+            (
+                _,
+                Some(
+                    SecretScanningFailureReason::PermissionDenied
+                    | SecretScanningFailureReason::PermissionSuspected,
+                ),
+            ) => Some("permission_denied"),
+            (_, Some(SecretScanningFailureReason::RateLimited)) => Some("rate_limited"),
+            (_, Some(SecretScanningFailureReason::Transient)) => Some("transient_error"),
+            (_, Some(SecretScanningFailureReason::Unavailable)) => Some("alerts_unavailable"),
+            (_, Some(SecretScanningFailureReason::InsufficientEvidence)) => {
+                Some("insufficient_evidence")
+            }
+            (_, Some(SecretScanningFailureReason::Conflict)) => Some("conflict"),
+            (_, Some(SecretScanningFailureReason::Invalid)) => Some("collection_error"),
+            (_, Some(SecretScanningFailureReason::Pending)) => Some("pending"),
+            (_, None) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn unobservable(reason: SecretScanningFailureReason, timestamp: impl Into<String>) -> Self {
+        Self::Unobservable {
+            metadata: MetadataUnavailable::Failure {
+                reason,
+                http_status: None,
+            },
+            probe: UnobservableProbe::Failed {
+                source: ProbeSource::PerRepoEndpoint,
+                reason,
+                http_status: None,
+            },
+            timestamp: timestamp.into(),
+        }
+    }
+}
+
+impl From<&SecretScanningResult> for ScoreCategory {
+    fn from(value: &SecretScanningResult) -> Self {
+        match value.status() {
+            SecretScanningStatus::Enabled => Self::Pass,
+            SecretScanningStatus::Disabled => Self::Fail,
+            SecretScanningStatus::PermissionDenied => {
+                Self::Excluded(ExclusionReason::PermissionDenied)
+            }
+            SecretScanningStatus::Unknown => Self::Excluded(match value.failure_reason() {
+                Some(
+                    SecretScanningFailureReason::RateLimited
+                    | SecretScanningFailureReason::Transient
+                    | SecretScanningFailureReason::Invalid
+                    | SecretScanningFailureReason::Pending,
+                ) => ExclusionReason::Other,
+                _ => ExclusionReason::Unknown,
+            }),
+        }
+    }
 }
 
 /// Secret scanning status.
@@ -761,28 +1158,139 @@ fn merge_optional_blocking_signal(
     if saw_unblocked { Some(false) } else { None }
 }
 
-/// CODEOWNERS evaluation outcome.
-///
-/// # Wire format
-///
-/// Fields encode in declaration order via `Encode::encode`: `status`, `path`,
-/// `timestamp`, `parsed`, `truncation`. Field reorder is a wire-format break
-/// (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields must append.
+/// Content observed at a CODEOWNERS location.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CodeownersResult {
-    /// Whether a CODEOWNERS file was found and in a conforming location.
-    pub status: CodeownersStatus,
-    /// Path to the CODEOWNERS file, if found.
-    pub path: Option<String>,
-    /// ISO 8601 timestamp of when the check was performed.
-    pub timestamp: String,
-    /// Parsed CODEOWNERS content (owners, patterns).
-    /// Only populated when content was successfully downloaded and parsed.
-    pub parsed: Option<ParsedCodeowners>,
-    /// Reason the CODEOWNERS file was found but not parsed.
-    /// `Some(_)` ⟺ status is `Conforming` or `NonConforming` AND `parsed` is `None`.
-    /// Always `None` for `Absent` / `Unknown` (no file to parse) or when parse succeeded.
-    pub truncation: Option<crate::domain::codeowners::CodeownersTruncationReason>,
+#[serde(rename_all = "snake_case")]
+pub enum CodeownersContent {
+    Parsed(ParsedCodeowners),
+    Truncated(crate::domain::codeowners::CodeownersTruncationReason),
+    Unparsed,
+}
+
+/// Recognized nonconforming CODEOWNERS locations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeownersNonConformingLocation {
+    Root,
+    Docs,
+}
+
+/// CODEOWNERS evaluation outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeownersResult {
+    Conforming {
+        content: CodeownersContent,
+        timestamp: String,
+    },
+    NonConforming {
+        location: CodeownersNonConformingLocation,
+        content: CodeownersContent,
+        timestamp: String,
+    },
+    Absent {
+        timestamp: String,
+    },
+    Unobservable {
+        reason: IndeterminateReason,
+        timestamp: String,
+    },
+}
+
+impl CodeownersResult {
+    #[must_use]
+    pub fn status(&self) -> CodeownersStatus {
+        match self {
+            Self::Conforming { .. } => CodeownersStatus::Conforming,
+            Self::NonConforming { .. } => CodeownersStatus::NonConforming,
+            Self::Absent { .. } => CodeownersStatus::Absent,
+            Self::Unobservable { .. } => CodeownersStatus::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Conforming { .. } => Some(".github/CODEOWNERS"),
+            Self::NonConforming {
+                location: CodeownersNonConformingLocation::Root,
+                ..
+            } => Some("CODEOWNERS"),
+            Self::NonConforming {
+                location: CodeownersNonConformingLocation::Docs,
+                ..
+            } => Some("docs/CODEOWNERS"),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn timestamp(&self) -> &str {
+        match self {
+            Self::Conforming { timestamp, .. }
+            | Self::NonConforming { timestamp, .. }
+            | Self::Absent { timestamp }
+            | Self::Unobservable { timestamp, .. } => timestamp,
+        }
+    }
+
+    #[must_use]
+    pub fn with_timestamp(mut self, value: impl Into<String>) -> Self {
+        let timestamp = match &mut self {
+            Self::Conforming { timestamp, .. }
+            | Self::NonConforming { timestamp, .. }
+            | Self::Absent { timestamp }
+            | Self::Unobservable { timestamp, .. } => timestamp,
+        };
+        *timestamp = value.into();
+        self
+    }
+
+    #[must_use]
+    pub fn parsed(&self) -> Option<&ParsedCodeowners> {
+        match self {
+            Self::Conforming {
+                content: CodeownersContent::Parsed(parsed),
+                ..
+            }
+            | Self::NonConforming {
+                content: CodeownersContent::Parsed(parsed),
+                ..
+            } => Some(parsed),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn truncation(&self) -> Option<crate::domain::codeowners::CodeownersTruncationReason> {
+        match self {
+            Self::Conforming {
+                content: CodeownersContent::Truncated(reason),
+                ..
+            }
+            | Self::NonConforming {
+                content: CodeownersContent::Truncated(reason),
+                ..
+            } => Some(*reason),
+            _ => None,
+        }
+    }
+}
+
+impl From<&CodeownersResult> for ScoreCategory {
+    fn from(result: &CodeownersResult) -> Self {
+        match result {
+            CodeownersResult::Unobservable { reason, .. } => Self::Excluded(match reason {
+                IndeterminateReason::PermissionDenied
+                | IndeterminateReason::PermissionSuspected => ExclusionReason::PermissionDenied,
+                IndeterminateReason::Transient
+                | IndeterminateReason::RateLimited
+                | IndeterminateReason::Invalid
+                | IndeterminateReason::Pending => ExclusionReason::Other,
+            }),
+            _ => Self::from(result.status()),
+        }
+    }
 }
 
 /// CODEOWNERS status.
@@ -981,6 +1489,56 @@ impl CheckType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_disabled_preserves_positive_probe_without_becoming_enabled() {
+        let result = SecretScanningResult::Disabled {
+            metadata_http_status: Some(200),
+            observation: DisabledObservation::StatusMismatch {
+                source: ProbeSource::PerRepoEndpoint,
+                http_status: Some(200),
+            },
+            timestamp: "2026-09-21T00:00:00Z".into(),
+        };
+        assert_eq!(result.status(), SecretScanningStatus::Disabled);
+        assert!(!result.alerts_observable());
+        assert!(result.status_mismatch());
+    }
+
+    #[test]
+    fn policy_path_rejects_empty_and_unobservable_preserves_reason() {
+        assert!(SecurityPolicyPath::new("").is_none());
+        assert!(serde_json::from_str::<SecurityPolicyPath>("\"\"").is_err());
+        let result = SecurityPolicyResult::Unobservable {
+            reason: IndeterminateReason::PermissionDenied,
+            timestamp: "2026-09-21T00:00:00Z".to_string(),
+        };
+        assert_eq!(result.status(), SecurityPolicyStatus::Unknown);
+        assert_eq!(
+            ScoreCategory::from(&result),
+            ScoreCategory::Excluded(ExclusionReason::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn codeowners_location_and_content_are_associated() {
+        let result = CodeownersResult::NonConforming {
+            location: CodeownersNonConformingLocation::Docs,
+            content: CodeownersContent::Unparsed,
+            timestamp: "2026-09-21T00:00:00Z".into(),
+        };
+        assert_eq!(result.path(), Some("docs/CODEOWNERS"));
+        assert!(result.parsed().is_none());
+        assert!(result.truncation().is_none());
+        let denied = CodeownersResult::Unobservable {
+            reason: IndeterminateReason::PermissionDenied,
+            timestamp: result.timestamp().to_string(),
+        };
+        assert_eq!(
+            ScoreCategory::from(&denied),
+            ScoreCategory::Excluded(ExclusionReason::PermissionDenied)
+        );
+    }
 
     #[test]
     fn branch_controls_pass_when_all_present() {

@@ -145,6 +145,8 @@ moka = { workspace = true }
 # Structured JSON logging is handled by infra::cloud_logging (custom layer)
 
 [dev-dependencies]
+pardosa = { workspace = true, features = ["unstable-test-support"] }
+pardosa-nats = { workspace = true, features = ["unstable-test-support"] }
 cherry-pit-merger = { workspace = true }
 pardosa-cherry-pit-test-support = { workspace = true }
 async-nats = { workspace = true }

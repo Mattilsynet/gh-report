@@ -1049,8 +1049,7 @@ fn render_dashboard_index_escapes_org_name() {
 
 use crate::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, CodeownersResult, CodeownersStatus,
-    DependabotResult, RepositoryChecks, SecretScanningResult, SecurityPolicyEvidence,
-    SecurityPolicyResult,
+    DependabotResult, RepositoryChecks, SecretScanningResult, SecurityPolicyResult,
 };
 
 fn make_checks_with_statuses(
@@ -1115,19 +1114,15 @@ fn make_checks_with_statuses(
     };
 
     RepositoryChecks {
-        security_policy: SecurityPolicyResult {
-            status: policy,
-            evidence: SecurityPolicyEvidence::Setting,
-            path: None,
-            timestamp: test_fixtures::make_timestamp(),
+        security_policy: match policy {
+            SecurityPolicyStatus::Pass => test_fixtures::policy_pass_setting(),
+            SecurityPolicyStatus::Fail => test_fixtures::policy_fail(),
+            SecurityPolicyStatus::Unknown => test_fixtures::policy_unknown(),
+            SecurityPolicyStatus::NotApplicable => SecurityPolicyResult::NotApplicable {
+                timestamp: test_fixtures::make_timestamp(),
+            },
         },
-        secret_scanning: SecretScanningResult {
-            status: secret,
-            has_open_alerts: None,
-            alerts_observable: false,
-            reason: None,
-            timestamp: test_fixtures::make_timestamp(),
-        },
+        secret_scanning: test_fixtures::secret_for_status(secret, None, None),
         dependabot_security_updates: DependabotResult {
             status: dependabot,
             reason: None,
@@ -1138,13 +1133,7 @@ fn make_checks_with_statuses(
             details: branch_details,
             timestamp: test_fixtures::make_timestamp(),
         },
-        codeowners: CodeownersResult {
-            status: CodeownersStatus::Conforming,
-            path: Some(".github/CODEOWNERS".to_string()),
-            timestamp: test_fixtures::make_timestamp(),
-            parsed: None,
-            truncation: None,
-        },
+        codeowners: test_fixtures::codeowners_conforming(),
     }
 }
 
@@ -1202,7 +1191,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             expected: [
                 ("status-fail", "fail"),
                 ("status-fail", "disabled"),
-                ("status-fail", "open alerts"),
+                ("status-na", "N/A"),
                 ("status-fail", "disabled"),
                 ("status-fail", "fail"),
                 ("status-fail", "absent"),
@@ -1356,17 +1345,25 @@ fn status_dots_match_expected_css_and_label_per_case() {
     for case in status_dots_cases() {
         let mut checks =
             make_checks_with_statuses(case.policy, case.secret, case.dependabot, case.branch);
-        checks.codeowners.status = case.codeowners;
-        checks.secret_scanning.alerts_observable = case.alerts_observable;
-        checks.secret_scanning.has_open_alerts = case.has_open_alerts;
+        checks.codeowners = test_fixtures::codeowners_for_status(case.codeowners);
+        checks.secret_scanning = test_fixtures::secret_for_status(
+            checks.secret_scanning.status(),
+            case.has_open_alerts.filter(|_| case.alerts_observable),
+            None,
+        );
         if case.pending {
-            checks.codeowners.status = crate::domain::checks::CodeownersStatus::Unknown;
-            checks.secret_scanning.reason = Some("pending".to_string());
+            checks.codeowners = test_fixtures::codeowners_unknown();
+            checks.secret_scanning = SecretScanningResult::unobservable(
+                crate::domain::checks::SecretScanningFailureReason::Pending,
+                test_fixtures::make_timestamp(),
+            );
             checks.dependabot_security_updates.reason = Some("pending".to_string());
             checks.branch_protection.details.reason = Some("pending".to_string());
         }
         if case.not_applicable_policy {
-            checks.security_policy.evidence = SecurityPolicyEvidence::NotApplicable;
+            checks.security_policy = SecurityPolicyResult::NotApplicable {
+                timestamp: test_fixtures::make_timestamp(),
+            };
         }
 
         let dots = build_status_dots(&checks);
@@ -2388,9 +2385,9 @@ fn owners_page_surfaces_by_reason_exclusion_in_tooltip() {
     let owners_html = &pages["owners.html"];
 
     assert!(
-        owners_html.contains("1 unmeasured (1 unknown)"),
+        owners_html.contains("1 unmeasured (1 permission_denied)"),
         "expected the security_policy status-dot tooltip to surface the \
-             1-unknown exclusion for @org/team-a; owners.html:\n{owners_html}"
+             1-permission-denied exclusion for @org/team-a; owners.html:\n{owners_html}"
     );
 }
 
@@ -2401,9 +2398,9 @@ fn owner_detail_page_surfaces_by_reason_exclusion_on_summary_card() {
     let detail_html = &pages["owners/org-team-a.html"];
 
     assert!(
-        detail_html.contains("1 unmeasured (1 unknown)"),
+        detail_html.contains("1 unmeasured (1 permission_denied)"),
         "expected the security_policy summary card to surface the \
-             1-unknown exclusion; owner detail html:\n{detail_html}"
+             1-permission-denied exclusion; owner detail html:\n{detail_html}"
     );
 }
 
@@ -3799,16 +3796,13 @@ fn is_orphaned_conforming_with_empty_owners() {
             test_fixtures::secret_enabled_observable(false),
             test_fixtures::dependabot_enabled(),
             test_fixtures::branch_pass(),
-            CodeownersResult {
-                status: CodeownersStatus::Conforming,
-                path: Some(".github/CODEOWNERS".to_string()),
+            CodeownersResult::Conforming {
                 timestamp: test_fixtures::make_timestamp(),
-                parsed: Some(ParsedCodeowners {
+                content: crate::domain::checks::CodeownersContent::Parsed(ParsedCodeowners {
                     entries: vec![],
                     unique_owners: vec![],
                     skipped_lines: 0,
                 }),
-                truncation: None,
             },
         ),
     );
@@ -3843,16 +3837,14 @@ fn is_orphaned_non_conforming_with_empty_owners() {
             test_fixtures::secret_enabled_observable(false),
             test_fixtures::dependabot_enabled(),
             test_fixtures::branch_pass(),
-            CodeownersResult {
-                status: CodeownersStatus::NonConforming,
-                path: Some("CODEOWNERS".to_string()),
+            CodeownersResult::NonConforming {
+                location: crate::domain::checks::CodeownersNonConformingLocation::Root,
                 timestamp: test_fixtures::make_timestamp(),
-                parsed: Some(ParsedCodeowners {
+                content: crate::domain::checks::CodeownersContent::Parsed(ParsedCodeowners {
                     entries: vec![],
                     unique_owners: vec![],
                     skipped_lines: 0,
                 }),
-                truncation: None,
             },
         ),
     );
@@ -5015,13 +5007,18 @@ fn repo_score_matches_expected_value_per_case() {
     for case in repo_score_cases() {
         let mut checks =
             make_checks_with_statuses(case.policy, case.secret, case.dependabot, case.branch);
-        checks.secret_scanning.alerts_observable = case.alerts_observable;
-        checks.secret_scanning.has_open_alerts = case.has_open_alerts;
+        checks.secret_scanning = test_fixtures::secret_for_status(
+            checks.secret_scanning.status(),
+            case.has_open_alerts.filter(|_| case.alerts_observable),
+            None,
+        );
         if let Some(codeowners) = case.codeowners {
-            checks.codeowners.status = codeowners;
+            checks.codeowners = test_fixtures::codeowners_for_status(codeowners);
         }
         if case.not_applicable_policy {
-            checks.security_policy.evidence = SecurityPolicyEvidence::NotApplicable;
+            checks.security_policy = SecurityPolicyResult::NotApplicable {
+                timestamp: test_fixtures::make_timestamp(),
+            };
         }
 
         let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
@@ -5682,10 +5679,13 @@ fn is_pending_repo_positive() {
         DependabotStatus::Unknown,
         BranchProtectionStatus::Unknown,
     );
-    checks.secret_scanning.reason = Some("pending".to_string());
+    checks.secret_scanning = SecretScanningResult::unobservable(
+        crate::domain::checks::SecretScanningFailureReason::Pending,
+        test_fixtures::make_timestamp(),
+    );
     checks.dependabot_security_updates.reason = Some("pending".to_string());
     checks.branch_protection.details.reason = Some("pending".to_string());
-    checks.codeowners.status = crate::domain::checks::CodeownersStatus::Unknown;
+    checks.codeowners = test_fixtures::codeowners_unknown();
     assert!(super::is_pending_repo(&checks));
 }
 
@@ -5697,7 +5697,10 @@ fn is_pending_repo_negative_collection_error() {
         DependabotStatus::Unknown,
         BranchProtectionStatus::Unknown,
     );
-    checks.secret_scanning.reason = Some("collection_error".to_string());
+    checks.secret_scanning = SecretScanningResult::unobservable(
+        crate::domain::checks::SecretScanningFailureReason::Invalid,
+        test_fixtures::make_timestamp(),
+    );
     assert!(!super::is_pending_repo(&checks));
 }
 
@@ -7863,7 +7866,7 @@ fn alert_free_drill_down_mixed_population_agrees_with_card_metrics() {
         unmeasured_reasons
             .get("repo-unknown-alerts")
             .map(String::as_str),
-        Some("Unknown")
+        Some("Alerts unobservable")
     );
     assert_eq!(
         unmeasured_reasons.get("repo-disabled").map(String::as_str),

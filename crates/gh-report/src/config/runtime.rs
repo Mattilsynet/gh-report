@@ -95,15 +95,24 @@ pub struct NatsStoreConfig {
     pub nats_url: String,
     /// Per-org `JetStream` stream name.
     pub stream_name: String,
-    /// Per-org single subject bound to the stream.
+    /// Legacy logical event identifier; native storage does not subscribe to this address.
     pub subject: String,
-    /// Per-org durable consumer name used during replay.
+    /// Legacy logical consumer identifier; native replay does not create this consumer.
     pub durable_consumer: String,
     /// NATS `.creds` file path used for authenticated `JetStream` connects.
     pub credentials_path: Option<PathBuf>,
 }
 
 impl NatsStoreConfig {
+    /// Actual native metadata and data subjects derived from the stream stem.
+    #[must_use]
+    pub fn native_subjects(&self) -> (String, String) {
+        Self::native_subjects_for_stem(&self.stream_name)
+    }
+
+    pub(crate) fn native_subjects_for_stem(stem: &str) -> (String, String) {
+        (format!("{stem}_meta"), format!("{stem}_data"))
+    }
     /// Derive per-org `JetStream` names from the exact UTF-8 org bytes.
     ///
     /// # Errors
@@ -282,7 +291,7 @@ mod tests {
         assert!(cfg.durable_consumer.contains(major));
 
         let token = org_token(b"acme");
-        let next_major = "v24";
+        let next_major = "v25";
         assert_ne!(major, next_major, "counterfactual major must differ");
 
         let this_stream = cfg.stream_name.clone();
@@ -388,9 +397,9 @@ mod tests {
         let dotted = NatsStoreConfig::for_org("a.b", DEFAULT_NATS_URL).unwrap();
         let dashed = NatsStoreConfig::for_org("a-b", DEFAULT_NATS_URL).unwrap();
 
-        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267-v23");
-        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.v23.events");
-        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267-v23");
+        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267-v24");
+        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.v24.events");
+        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267-v24");
         assert_ne!(my_org.stream_name, my_dash_org.stream_name);
         assert_ne!(my_org.subject, my_dash_org.subject);
         assert_ne!(dotted.stream_name, dashed.stream_name);
@@ -405,9 +414,9 @@ mod tests {
         let repo = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL).unwrap();
         let org = repo.org_events();
 
-        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-v23-org");
-        assert_eq!(org.subject, "gh-report.org_6d79206f7267.v23.org.events");
-        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-v23-org");
+        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-v24-org");
+        assert_eq!(org.subject, "gh-report.org_6d79206f7267.v24.org.events");
+        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-v24-org");
         assert_ne!(repo.stream_name, org.stream_name);
         assert_ne!(repo.subject, org.subject);
     }
@@ -447,7 +456,7 @@ mod tests {
         assert_eq!(cfg.nats_url, DEFAULT_NATS_URL);
         assert_eq!(
             cfg.nats_store_config().unwrap().stream_name,
-            "gh-report-org_6f7267-v23"
+            "gh-report-org_6f7267-v24"
         );
         assert!(cfg.nats_store_config().unwrap().credentials_path.is_none());
     }

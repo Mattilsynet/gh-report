@@ -25,17 +25,26 @@ expression: evidence
   },
   "checks": {
     "security_policy": {
-      "status": "pass",
-      "evidence": "setting",
-      "path": null,
-      "timestamp": "2026-04-09T12:00:00+00:00"
+      "enabled_by_setting": {
+        "timestamp": "2026-04-09T12:00:00+00:00"
+      }
     },
     "secret_scanning": {
-      "status": "enabled",
-      "has_open_alerts": false,
-      "alerts_observable": true,
-      "reason": null,
-      "timestamp": "2026-04-09T12:00:00+00:00"
+      "enabled": {
+        "provenance": {
+          "metadata": {
+            "http_status": null,
+            "alerts": {
+              "observable": {
+                "source": "per_repo_endpoint",
+                "has_open_alerts": false,
+                "http_status": null
+              }
+            }
+          }
+        },
+        "timestamp": "2026-04-09T12:00:00+00:00"
+      }
     },
     "dependabot_security_updates": {
       "status": "enabled",
@@ -58,11 +67,10 @@ expression: evidence
       "timestamp": "2026-04-09T12:00:00+00:00"
     },
     "codeowners": {
-      "status": "conforming",
-      "path": ".github/CODEOWNERS",
-      "timestamp": "2026-04-09T12:00:00+00:00",
-      "parsed": null,
-      "truncation": null
+      "conforming": {
+        "content": "unparsed",
+        "timestamp": "2026-04-09T12:00:00+00:00"
+      }
     }
   },
   "last_commit": null,

@@ -476,9 +476,9 @@ fn count_policy_statuses(public_repos: &[&RepositoryEvidence]) -> PolicyCounts {
     let mut counts = PolicyCounts::default();
     for repo in public_repos {
         let policy = &repo.checks.security_policy;
-        match policy.status {
+        match policy.status() {
             SecurityPolicyStatus::Pass => {
-                if policy.evidence == SecurityPolicyEvidence::Setting {
+                if policy.evidence() == SecurityPolicyEvidence::Setting {
                     counts.via_setting = counts.via_setting.saturating_add(1);
                 } else {
                     counts.via_file = counts.via_file.saturating_add(1);
@@ -523,7 +523,7 @@ fn count_secret_scanning_statuses(active: &[&RepositoryEvidence]) -> SecretScann
     count_statuses(active, |repo, counts: &mut SecretScanningCounts| match repo
         .checks
         .secret_scanning
-        .status
+        .status()
     {
         SecretScanningStatus::Enabled => counts.enabled = counts.enabled.saturating_add(1),
         SecretScanningStatus::Disabled => counts.disabled = counts.disabled.saturating_add(1),
@@ -627,7 +627,7 @@ fn count_collection_health_reasons(
 ) -> CollectionHealthTaxonomyCounts {
     let mut counts = CollectionHealthTaxonomyCounts::default();
     for repo in active {
-        if repo.checks.secret_scanning.status == SecretScanningStatus::PermissionDenied {
+        if repo.checks.secret_scanning.status() == SecretScanningStatus::PermissionDenied {
             counts.secret_scanning_permission_denied =
                 counts.secret_scanning_permission_denied.saturating_add(1);
         }
@@ -692,7 +692,7 @@ fn count_branch_protection_statuses(active: &[&RepositoryEvidence]) -> BranchPro
 /// Count CODEOWNERS statuses across active repos.
 fn count_codeowners_statuses(active: &[&RepositoryEvidence]) -> CodeownersCounts {
     count_statuses(active, |repo, counts: &mut CodeownersCounts| {
-        match repo.checks.codeowners.status {
+        match repo.checks.codeowners.status() {
             CodeownersStatus::Conforming => {
                 counts.conforming = counts.conforming.saturating_add(1);
             }
@@ -702,7 +702,7 @@ fn count_codeowners_statuses(active: &[&RepositoryEvidence]) -> CodeownersCounts
             CodeownersStatus::Absent => counts.absent = counts.absent.saturating_add(1),
             CodeownersStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
         }
-        if repo.checks.codeowners.truncation.is_some() {
+        if repo.checks.codeowners.truncation().is_some() {
             counts.truncated = counts.truncated.saturating_add(1);
         }
     })
@@ -723,10 +723,10 @@ fn count_secret_alert_observability(active: &[&RepositoryEvidence]) -> SecretAle
     let mut counts = SecretAlertCounts::default();
     for repo in active {
         let ss = &repo.checks.secret_scanning;
-        if ss.alerts_observable && ss.status == SecretScanningStatus::Enabled {
-            if ss.has_open_alerts == Some(true) {
+        if ss.alerts_observable() && ss.status() == SecretScanningStatus::Enabled {
+            if ss.has_open_alerts() == Some(true) {
                 counts.repos_with_open_alerts = counts.repos_with_open_alerts.saturating_add(1);
-            } else if ss.has_open_alerts == Some(false) {
+            } else if ss.has_open_alerts() == Some(false) {
                 counts.repos_without_open_alerts =
                     counts.repos_without_open_alerts.saturating_add(1);
             } else {
@@ -753,9 +753,9 @@ fn count_alert_observable_enabled(active: &[&RepositoryEvidence]) -> u32 {
         active
             .iter()
             .filter(|r| {
-                r.checks.secret_scanning.status == SecretScanningStatus::Enabled
-                    && r.checks.secret_scanning.alerts_observable
-                    && r.checks.secret_scanning.has_open_alerts.is_some()
+                r.checks.secret_scanning.status() == SecretScanningStatus::Enabled
+                    && r.checks.secret_scanning.alerts_observable()
+                    && r.checks.secret_scanning.has_open_alerts().is_some()
             })
             .count(),
     )
@@ -821,7 +821,7 @@ impl CoverageControl {
 
     fn classify(self, repo: &RepositoryEvidence) -> DenominatorMembership {
         match self {
-            Self::SecurityPolicy => match repo.checks.security_policy.status {
+            Self::SecurityPolicy => match repo.checks.security_policy.status() {
                 SecurityPolicyStatus::Pass => DenominatorMembership::Eligible(ControlOutcome::Met),
                 SecurityPolicyStatus::Fail => {
                     DenominatorMembership::Eligible(ControlOutcome::Unmet)
@@ -833,7 +833,7 @@ impl CoverageControl {
                     DenominatorMembership::Excluded(UnmeasuredReason::NotApplicable)
                 }
             },
-            Self::SecretScanning => match repo.checks.secret_scanning.status {
+            Self::SecretScanning => match repo.checks.secret_scanning.status() {
                 SecretScanningStatus::Enabled => {
                     DenominatorMembership::Eligible(ControlOutcome::Met)
                 }
@@ -856,7 +856,7 @@ impl CoverageControl {
                     DenominatorMembership::Excluded(UnmeasuredReason::Unknown)
                 }
             },
-            Self::Codeowners => match repo.checks.codeowners.status {
+            Self::Codeowners => match repo.checks.codeowners.status() {
                 CodeownersStatus::Conforming | CodeownersStatus::NonConforming => {
                     DenominatorMembership::Eligible(ControlOutcome::Met)
                 }
@@ -1086,17 +1086,17 @@ pub(crate) fn enrich_owner_metrics_with_lifecycle(
         let observable: Vec<_> = repos
             .iter()
             .filter(|r| {
-                r.checks.secret_scanning.status
+                r.checks.secret_scanning.status()
                     == crate::domain::checks::SecretScanningStatus::Enabled
-                    && r.checks.secret_scanning.alerts_observable
-                    && r.checks.secret_scanning.has_open_alerts.is_some()
+                    && r.checks.secret_scanning.alerts_observable()
+                    && r.checks.secret_scanning.has_open_alerts().is_some()
             })
             .collect();
         let observable_count = count_as_u32(observable.len());
         let alert_free_count = count_as_u32(
             observable
                 .iter()
-                .filter(|r| r.checks.secret_scanning.has_open_alerts == Some(false))
+                .filter(|r| r.checks.secret_scanning.has_open_alerts() == Some(false))
                 .count(),
         );
         let unobservable_count = total.saturating_sub(observable_count);
@@ -1181,13 +1181,13 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> OwnerControlCove
     let mut co_tally = ExclusionTally::default();
 
     for repo in repos {
-        match ScoreCategory::from(repo.checks.security_policy.status) {
+        match ScoreCategory::from(&repo.checks.security_policy) {
             ScoreCategory::Pass => sp_pass = sp_pass.saturating_add(1),
             ScoreCategory::Fail => sp_fail = sp_fail.saturating_add(1),
             ScoreCategory::Excluded(reason) => sp_tally.record(reason),
         }
 
-        match ScoreCategory::from(repo.checks.secret_scanning.status) {
+        match ScoreCategory::from(&repo.checks.secret_scanning) {
             ScoreCategory::Pass => secret_pass = secret_pass.saturating_add(1),
             ScoreCategory::Fail => secret_fail = secret_fail.saturating_add(1),
             ScoreCategory::Excluded(reason) => secret_tally.record(reason),
@@ -1205,8 +1205,8 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> OwnerControlCove
             ScoreCategory::Excluded(reason) => bp_tally.record(reason),
         }
 
-        let codeowners_status = repo.checks.codeowners.status;
-        match ScoreCategory::from(codeowners_status) {
+        let codeowners_status = repo.checks.codeowners.status();
+        match ScoreCategory::from(&repo.checks.codeowners) {
             ScoreCategory::Excluded(reason) => co_tally.record(reason),
             ScoreCategory::Pass | ScoreCategory::Fail => {
                 if matches!(
@@ -1315,13 +1315,15 @@ pub fn build_secret_scanning_observability_summary(
         let repo_summary = per_repo.get(&repo.repository.inventory_key);
         let open_alert_count = repo_summary.map_or(0, |s| s.open_alert_count);
 
-        if ss.status == SecretScanningStatus::Disabled && open_alert_count > 0 {
+        if ss.status_mismatch()
+            || (ss.status() == SecretScanningStatus::Disabled && open_alert_count > 0)
+        {
             mismatch_count = mismatch_count.saturating_add(1);
         }
-        if ss.status == SecretScanningStatus::Enabled && ss.alerts_observable {
+        if ss.status() == SecretScanningStatus::Enabled && ss.alerts_observable() {
             observable_enabled = observable_enabled.saturating_add(1);
         }
-        if !ss.alerts_observable {
+        if !ss.alerts_observable() {
             unobservable = unobservable.saturating_add(1);
         }
     }
@@ -2256,6 +2258,7 @@ mod tests {
         let org_summary = OrgAlertSummary {
             collection_status: CollectionStatus::Success,
             collection_reason: None,
+            http_status: Some(200),
             per_repo,
             open_secret_alert_age_buckets: age_buckets,
             total_open_secret_alerts: 2,
@@ -2291,6 +2294,7 @@ mod tests {
         let org_summary = OrgAlertSummary {
             collection_status: CollectionStatus::PermissionDenied,
             collection_reason: Some("permission_denied".to_string()),
+            http_status: Some(403),
             per_repo: HashMap::new(),
             open_secret_alert_age_buckets: HashMap::new(),
             total_open_secret_alerts: 0,
@@ -2412,13 +2416,7 @@ mod tests {
             false,
             make_checks(
                 policy_fail(),
-                SecretScanningResult {
-                    status: SecretScanningStatus::Enabled,
-                    has_open_alerts: None,
-                    alerts_observable: true,
-                    reason: None,
-                    timestamp: make_timestamp(),
-                },
+                secret_for_status(SecretScanningStatus::Enabled, None, None),
                 dependabot_enabled(),
                 branch_pass(),
                 codeowners_conforming(),
@@ -2465,11 +2463,12 @@ mod tests {
                 false,
                 make_checks(
                     policy_fail(),
-                    SecretScanningResult {
-                        status: SecretScanningStatus::Disabled,
-                        has_open_alerts: Some(true),
-                        alerts_observable: true,
-                        reason: None,
+                    SecretScanningResult::Disabled {
+                        metadata_http_status: None,
+                        observation: crate::domain::checks::DisabledObservation::StatusMismatch {
+                            source: crate::domain::checks::ProbeSource::PerRepoEndpoint,
+                            http_status: None,
+                        },
                         timestamp: make_timestamp(),
                     },
                     dependabot_enabled(),
@@ -2561,12 +2560,9 @@ mod tests {
 
     /// Create a `CodeownersResult` by parsing raw CODEOWNERS content.
     fn codeowners_from_content(content: &str) -> CodeownersResult {
-        CodeownersResult {
-            status: CodeownersStatus::Conforming,
-            path: Some(".github/CODEOWNERS".to_string()),
+        CodeownersResult::Conforming {
             timestamp: make_timestamp(),
-            parsed: Some(parse_codeowners(content)),
-            truncation: None,
+            content: crate::domain::checks::CodeownersContent::Parsed(parse_codeowners(content)),
         }
     }
 
@@ -2914,10 +2910,7 @@ mod tests {
     /// `None`. Security policy is `NotApplicable` on non-public repos.
     #[test]
     fn owner_control_coverage_all_not_applicable_stays_none() {
-        let not_applicable_policy = || SecurityPolicyResult {
-            status: SecurityPolicyStatus::NotApplicable,
-            evidence: SecurityPolicyEvidence::NotApplicable,
-            path: None,
+        let not_applicable_policy = || SecurityPolicyResult::NotApplicable {
             timestamp: make_timestamp(),
         };
         let repos = vec![
@@ -3219,10 +3212,7 @@ mod tests {
                 Visibility::Private,
                 false,
                 make_checks(
-                    crate::domain::checks::SecurityPolicyResult {
-                        status: SecurityPolicyStatus::NotApplicable,
-                        evidence: SecurityPolicyEvidence::NotApplicable,
-                        path: None,
+                    crate::domain::checks::SecurityPolicyResult::NotApplicable {
                         timestamp: make_timestamp(),
                     },
                     secret_enabled_observable(false),
@@ -3330,10 +3320,10 @@ mod tests {
                 .score_exclusion_counts
                 .contains(&ScoreExclusionCount {
                     check_kind: CollectionHealthCheckKind::SecurityPolicy,
-                    reason: ExclusionReason::Unknown,
+                    reason: ExclusionReason::PermissionDenied,
                     count: 1,
                 }),
-            "expected a SecurityPolicy/Unknown/1 exclusion row, got {:?}",
+            "expected a SecurityPolicy/PermissionDenied/1 exclusion row, got {:?}",
             owners[0].score_exclusion_counts
         );
     }
@@ -3576,9 +3566,12 @@ mod tests {
                     secret_enabled_observable(false),
                     dependabot_enabled(),
                     branch_pass(),
-                    crate::domain::checks::CodeownersResult {
-                        status: CodeownersStatus::NonConforming,
-                        ..codeowners_with_owners(&["@org/team"])
+                    crate::domain::checks::CodeownersResult::NonConforming {
+                        location: crate::domain::checks::CodeownersNonConformingLocation::Root,
+                        content: crate::domain::checks::CodeownersContent::Parsed(
+                            parse_codeowners("* @org/team"),
+                        ),
+                        timestamp: make_timestamp(),
                     },
                 ),
             ),
@@ -3591,9 +3584,9 @@ mod tests {
                     secret_enabled_observable(false),
                     dependabot_enabled(),
                     branch_pass(),
-                    crate::domain::checks::CodeownersResult {
-                        status: CodeownersStatus::Unknown,
-                        ..codeowners_with_owners(&["@org/team"])
+                    crate::domain::checks::CodeownersResult::Unobservable {
+                        reason: crate::domain::checks::IndeterminateReason::Pending,
+                        timestamp: make_timestamp(),
                     },
                 ),
             ),
@@ -3614,11 +3607,8 @@ mod tests {
         assert!(
             owners[0]
                 .score_exclusion_counts
-                .contains(&ScoreExclusionCount {
-                    check_kind: CollectionHealthCheckKind::Codeowners,
-                    reason: ExclusionReason::Unknown,
-                    count: 1,
-                })
+                .iter()
+                .all(|row| row.check_kind != CollectionHealthCheckKind::Codeowners)
         );
     }
 

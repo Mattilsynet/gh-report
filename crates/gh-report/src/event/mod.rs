@@ -60,6 +60,7 @@ pub const TEAM_STATE_SCHEMA_VERSION: u32 = 2;
 macro_rules! impl_pardosa_enum {
     ($ty:ident { $($variant:ident = $val:expr),* $(,)? }) => {
         impl PardosaType for $ty {
+            const TYPE_DEPTH: usize = 0;
             fn descriptor_node() -> DescriptorNode {
                 DescriptorNode::Enum {
                     name: stringify!($ty).to_string(),
@@ -96,6 +97,13 @@ macro_rules! impl_pardosa_enum {
 macro_rules! impl_pardosa_struct {
     ($ty:ident { $($field:ident : $fty:ty),* $(,)? }) => {
         impl PardosaType for $ty {
+            const TYPE_DEPTH: usize = {
+                let mut depth = 0;
+                $(if <$fty as PardosaType>::TYPE_DEPTH > depth {
+                    depth = <$fty as PardosaType>::TYPE_DEPTH;
+                })*
+                1 + depth
+            };
             fn descriptor_node() -> DescriptorNode {
                 DescriptorNode::Struct {
                     name: stringify!($ty).to_string(),
@@ -139,6 +147,7 @@ pub(crate) enum SweepTimeoutEvent {
 }
 
 impl PardosaType for SweepTimeoutEvent {
+    const TYPE_DEPTH: usize = 2;
     fn descriptor_node() -> DescriptorNode {
         DescriptorNode::Enum {
             name: "SweepTimeoutEvent".to_string(),
@@ -252,9 +261,7 @@ impl PardosaType for SweepTimeoutEvent {
 }
 
 impl PardosaSchema for SweepTimeoutEvent {
-    fn schema_version() -> u32 {
-        1
-    }
+    const SCHEMA_VERSION: u32 = 1;
     fn schema_descriptor() -> DescriptorNode {
         Self::descriptor_node()
     }
@@ -467,18 +474,152 @@ impl_pardosa_struct!(RepositoryChecks {
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SecurityPolicyResult {
-    pub status: SecurityPolicyStatus,
-    pub evidence: SecurityPolicyEvidence,
-    pub path: Option<EventString<MAX_PATH>>,
-    pub timestamp: Timestamp,
+pub enum SecurityPolicyResult {
+    EnabledBySetting {
+        timestamp: Timestamp,
+    },
+    EnabledByFile {
+        path: NonEmptyEventString<MAX_PATH>,
+        timestamp: Timestamp,
+    },
+    Absent {
+        timestamp: Timestamp,
+    },
+    Unobservable {
+        reason: IndeterminateReason,
+        timestamp: Timestamp,
+    },
+    NotApplicable {
+        timestamp: Timestamp,
+    },
 }
-impl_pardosa_struct!(SecurityPolicyResult {
-    status: SecurityPolicyStatus,
-    evidence: SecurityPolicyEvidence,
-    path: Option<EventString<MAX_PATH>>,
-    timestamp: Timestamp,
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IndeterminateReason {
+    PermissionDenied = 0,
+    PermissionSuspected = 1,
+    Transient = 2,
+    RateLimited = 3,
+    Invalid = 4,
+    Pending = 5,
+}
+impl_pardosa_enum!(IndeterminateReason {
+    PermissionDenied = 0, PermissionSuspected = 1, Transient = 2,
+    RateLimited = 3, Invalid = 4, Pending = 5
 });
+
+impl PardosaType for SecurityPolicyResult {
+    const TYPE_DEPTH: usize = 2;
+
+    fn descriptor_node() -> DescriptorNode {
+        let variants = [
+            "EnabledBySetting",
+            "EnabledByFile",
+            "Absent",
+            "Unobservable",
+            "NotApplicable",
+        ]
+        .into_iter()
+        .zip(0u32..)
+        .map(|(name, discriminant)| {
+            let mut fields = Vec::new();
+            match discriminant {
+                1 => fields.push(FieldDescriptor {
+                    name: "path".to_string(),
+                    node: NonEmptyEventString::<MAX_PATH>::descriptor_node(),
+                }),
+                3 => fields.push(FieldDescriptor {
+                    name: "reason".to_string(),
+                    node: IndeterminateReason::descriptor_node(),
+                }),
+                _ => {}
+            }
+            fields.push(FieldDescriptor {
+                name: "timestamp".to_string(),
+                node: Timestamp::descriptor_node(),
+            });
+            VariantDescriptor {
+                discriminant,
+                name: name.to_string(),
+                payload: Some(DescriptorNode::Struct {
+                    name: format!("SecurityPolicyResult_{name}"),
+                    fields,
+                }),
+            }
+        })
+        .collect();
+        DescriptorNode::Enum {
+            name: "SecurityPolicyResult".to_string(),
+            discriminant_width: 1,
+            variants,
+        }
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let timestamp = match self {
+            Self::EnabledBySetting { timestamp } => {
+                buf.push(0);
+                timestamp
+            }
+            Self::EnabledByFile { path, timestamp } => {
+                buf.push(1);
+                path.encode_type(buf)?;
+                timestamp
+            }
+            Self::Absent { timestamp } => {
+                buf.push(2);
+                timestamp
+            }
+            Self::Unobservable { reason, timestamp } => {
+                buf.push(3);
+                reason.encode_type(buf)?;
+                timestamp
+            }
+            Self::NotApplicable { timestamp } => {
+                buf.push(4);
+                timestamp
+            }
+        };
+        timestamp.encode_type(buf)
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (tag, mut cursor) = u8::decode_type(buf)?;
+        let value = match tag {
+            0 | 2 | 4 => {
+                let (timestamp, consumed) = Timestamp::decode_type(&buf[cursor..])?;
+                cursor += consumed;
+                match tag {
+                    0 => Self::EnabledBySetting { timestamp },
+                    2 => Self::Absent { timestamp },
+                    _ => Self::NotApplicable { timestamp },
+                }
+            }
+            1 => {
+                let (path, consumed) =
+                    NonEmptyEventString::<MAX_PATH>::decode_type(&buf[cursor..])?;
+                cursor += consumed;
+                let (timestamp, consumed) = Timestamp::decode_type(&buf[cursor..])?;
+                cursor += consumed;
+                Self::EnabledByFile { path, timestamp }
+            }
+            3 => {
+                let (reason, consumed) = IndeterminateReason::decode_type(&buf[cursor..])?;
+                cursor += consumed;
+                let (timestamp, consumed) = Timestamp::decode_type(&buf[cursor..])?;
+                cursor += consumed;
+                Self::Unobservable { reason, timestamp }
+            }
+            other => {
+                return Err(DecodeError::UnknownVariantDiscriminant {
+                    discriminant: u32::from(other),
+                });
+            }
+        };
+        Ok((value, cursor))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -516,20 +657,90 @@ impl_pardosa_enum!(SecurityPolicyEvidence {
     NotApplicable = 6
 });
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SecretScanningResult {
-    pub status: SecretScanningStatus,
-    pub has_open_alerts: Option<bool>,
-    pub alerts_observable: bool,
-    pub reason: Option<EventString<MAX_REASON>>,
-    pub timestamp: Timestamp,
+macro_rules! native_secret_enum {
+    ($ty:ident { $($variant:ident = $tag:literal { $($field:ident: $ft:ty),* $(,)? }),* $(,)? }) => {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum $ty { $($variant { $($field: $ft),* }),* }
+        impl PardosaType for $ty {
+            const TYPE_DEPTH: usize = {
+                let mut max = 0;
+                $($(if <$ft as PardosaType>::TYPE_DEPTH > max { max = <$ft as PardosaType>::TYPE_DEPTH; })*)*
+                2 + max
+            };
+            fn descriptor_node() -> DescriptorNode {
+                DescriptorNode::Enum { name: stringify!($ty).into(), discriminant_width: 1, variants: vec![$(
+                    VariantDescriptor { discriminant: $tag, name: stringify!($variant).into(), payload: Some(DescriptorNode::Struct {
+                        name: concat!(stringify!($ty), "_", stringify!($variant)).into(),
+                        fields: vec![$(FieldDescriptor { name: stringify!($field).into(), node: <$ft as PardosaType>::descriptor_node() }),*],
+                    }) }
+                ),*] }
+            }
+            fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+                match self { $(Self::$variant { $($field),* } => { buf.push($tag); $($field.encode_type(buf)?;)* }),* }
+                Ok(())
+            }
+            fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+                let (tag, mut cursor) = u8::decode_type(buf)?;
+                let value = match tag {
+                    $($tag => { $(let ($field, n) = <$ft>::decode_type(&buf[cursor..])?; cursor += n;)* Self::$variant { $($field),* } }),*,
+                    other => return Err(DecodeError::UnknownVariantDiscriminant { discriminant: u32::from(other) }),
+                };
+                Ok((value, cursor))
+            }
+        }
+    };
 }
-impl_pardosa_struct!(SecretScanningResult {
-    status: SecretScanningStatus,
-    has_open_alerts: Option<bool>,
-    alerts_observable: bool,
-    reason: Option<EventString<MAX_REASON>>,
-    timestamp: Timestamp,
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SecretScanningFailureReason {
+    PermissionDenied = 0,
+    PermissionSuspected = 1,
+    RateLimited = 2,
+    Transient = 3,
+    Unavailable = 4,
+    InsufficientEvidence = 5,
+    Conflict = 6,
+    Invalid = 7,
+    Pending = 8,
+}
+impl_pardosa_enum!(SecretScanningFailureReason {
+    PermissionDenied = 0, PermissionSuspected = 1, RateLimited = 2, Transient = 3,
+    Unavailable = 4, InsufficientEvidence = 5, Conflict = 6, Invalid = 7, Pending = 8
+});
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ProbeSource {
+    OrgSummary = 0,
+    PerRepoEndpoint = 1,
+}
+impl_pardosa_enum!(ProbeSource { OrgSummary = 0, PerRepoEndpoint = 1 });
+native_secret_enum!(MetadataUnavailable {
+    Missing = 0 { http_status: Option<u16> },
+    Malformed = 1 { http_status: Option<u16> },
+    Failure = 2 { reason: SecretScanningFailureReason, http_status: Option<u16> }
+});
+native_secret_enum!(SecretScanningAlerts {
+    Observable = 0 { source: ProbeSource, has_open_alerts: bool, http_status: Option<u16> },
+    Unobservable = 1 { source: ProbeSource, reason: SecretScanningFailureReason, http_status: Option<u16> }
+});
+native_secret_enum!(EnabledProvenance {
+    Metadata = 0 { http_status: Option<u16>, alerts: SecretScanningAlerts },
+    Fallback = 1 { metadata: MetadataUnavailable, has_open_alerts: bool, http_status: Option<u16> }
+});
+native_secret_enum!(DisabledObservation {
+    NoMismatch = 0 { source: ProbeSource, http_status: Option<u16> },
+    StatusMismatch = 1 { source: ProbeSource, http_status: Option<u16> },
+    ProbeFailed = 2 { source: ProbeSource, reason: SecretScanningFailureReason, http_status: Option<u16> }
+});
+native_secret_enum!(UnobservableProbe {
+    Failed = 0 { source: ProbeSource, reason: SecretScanningFailureReason, http_status: Option<u16> },
+    OrgSummaryObserved = 1 { has_open_alerts: bool, http_status: Option<u16> }
+});
+native_secret_enum!(SecretScanningResult {
+    Enabled = 0 { provenance: EnabledProvenance, timestamp: Timestamp },
+    Disabled = 1 { metadata_http_status: Option<u16>, observation: DisabledObservation, timestamp: Timestamp },
+    Unobservable = 2 { metadata: MetadataUnavailable, probe: UnobservableProbe, timestamp: Timestamp }
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -649,20 +860,226 @@ impl_pardosa_enum!(CollectionFailureReason {
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeownersResult {
-    pub status: CodeownersStatus,
-    pub path: Option<EventString<MAX_PATH>>,
-    pub timestamp: Timestamp,
-    pub parsed: Option<ParsedCodeowners>,
-    pub truncation: Option<CodeownersTruncationReason>,
+pub enum CodeownersResult {
+    Conforming {
+        content: CodeownersContent,
+        timestamp: Timestamp,
+    },
+    NonConforming {
+        location: CodeownersNonConformingLocation,
+        content: CodeownersContent,
+        timestamp: Timestamp,
+    },
+    Absent {
+        timestamp: Timestamp,
+    },
+    Unobservable {
+        reason: IndeterminateReason,
+        timestamp: Timestamp,
+    },
 }
-impl_pardosa_struct!(CodeownersResult {
-    status: CodeownersStatus,
-    path: Option<EventString<MAX_PATH>>,
-    timestamp: Timestamp,
-    parsed: Option<ParsedCodeowners>,
-    truncation: Option<CodeownersTruncationReason>,
-});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CodeownersNonConformingLocation {
+    Root = 0,
+    Docs = 1,
+}
+impl_pardosa_enum!(CodeownersNonConformingLocation { Root = 0, Docs = 1 });
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeownersContent {
+    Parsed(ParsedCodeowners),
+    Truncated(CodeownersTruncationReason),
+    Unparsed,
+}
+
+impl PardosaType for CodeownersContent {
+    const TYPE_DEPTH: usize = 1 + ParsedCodeowners::TYPE_DEPTH;
+
+    fn descriptor_node() -> DescriptorNode {
+        DescriptorNode::Enum {
+            name: "CodeownersContent".into(),
+            discriminant_width: 1,
+            variants: vec![
+                VariantDescriptor {
+                    discriminant: 0,
+                    name: "Parsed".into(),
+                    payload: Some(ParsedCodeowners::descriptor_node()),
+                },
+                VariantDescriptor {
+                    discriminant: 1,
+                    name: "Truncated".into(),
+                    payload: Some(CodeownersTruncationReason::descriptor_node()),
+                },
+                VariantDescriptor {
+                    discriminant: 2,
+                    name: "Unparsed".into(),
+                    payload: None,
+                },
+            ],
+        }
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        match self {
+            Self::Parsed(value) => {
+                buf.push(0);
+                value.encode_type(buf)
+            }
+            Self::Truncated(value) => {
+                buf.push(1);
+                value.encode_type(buf)
+            }
+            Self::Unparsed => {
+                buf.push(2);
+                Ok(())
+            }
+        }
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (tag, _) = u8::decode_type(buf)?;
+        match tag {
+            0 => {
+                let (value, n) = ParsedCodeowners::decode_type(&buf[1..])?;
+                Ok((Self::Parsed(value), 1 + n))
+            }
+            1 => {
+                let (value, n) = CodeownersTruncationReason::decode_type(&buf[1..])?;
+                Ok((Self::Truncated(value), 1 + n))
+            }
+            2 => Ok((Self::Unparsed, 1)),
+            other => Err(DecodeError::UnknownVariantDiscriminant {
+                discriminant: u32::from(other),
+            }),
+        }
+    }
+}
+
+impl PardosaType for CodeownersResult {
+    const TYPE_DEPTH: usize = 2 + CodeownersContent::TYPE_DEPTH;
+
+    fn descriptor_node() -> DescriptorNode {
+        let variants = ["Conforming", "NonConforming", "Absent", "Unobservable"]
+            .into_iter()
+            .zip(0u32..)
+            .map(|(name, discriminant)| {
+                let mut fields = Vec::new();
+                if discriminant == 1 {
+                    fields.push(FieldDescriptor {
+                        name: "location".into(),
+                        node: CodeownersNonConformingLocation::descriptor_node(),
+                    });
+                }
+                if discriminant < 2 {
+                    fields.push(FieldDescriptor {
+                        name: "content".into(),
+                        node: CodeownersContent::descriptor_node(),
+                    });
+                }
+                if discriminant == 3 {
+                    fields.push(FieldDescriptor {
+                        name: "reason".into(),
+                        node: IndeterminateReason::descriptor_node(),
+                    });
+                }
+                fields.push(FieldDescriptor {
+                    name: "timestamp".into(),
+                    node: Timestamp::descriptor_node(),
+                });
+                VariantDescriptor {
+                    discriminant,
+                    name: name.into(),
+                    payload: Some(DescriptorNode::Struct {
+                        name: format!("CodeownersResult_{name}"),
+                        fields,
+                    }),
+                }
+            })
+            .collect();
+        DescriptorNode::Enum {
+            name: "CodeownersResult".into(),
+            discriminant_width: 1,
+            variants,
+        }
+    }
+
+    fn encode_type(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let timestamp = match self {
+            Self::Conforming { content, timestamp } => {
+                buf.push(0);
+                content.encode_type(buf)?;
+                timestamp
+            }
+            Self::NonConforming {
+                location,
+                content,
+                timestamp,
+            } => {
+                buf.push(1);
+                location.encode_type(buf)?;
+                content.encode_type(buf)?;
+                timestamp
+            }
+            Self::Absent { timestamp } => {
+                buf.push(2);
+                timestamp
+            }
+            Self::Unobservable { reason, timestamp } => {
+                buf.push(3);
+                reason.encode_type(buf)?;
+                timestamp
+            }
+        };
+        timestamp.encode_type(buf)
+    }
+
+    fn decode_type(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (tag, mut cursor) = u8::decode_type(buf)?;
+        let location = if tag == 1 {
+            let (value, n) = CodeownersNonConformingLocation::decode_type(&buf[cursor..])?;
+            cursor += n;
+            Some(value)
+        } else {
+            None
+        };
+        let value = match tag {
+            0 | 1 => {
+                let (content, n) = CodeownersContent::decode_type(&buf[cursor..])?;
+                cursor += n;
+                let (timestamp, n) = Timestamp::decode_type(&buf[cursor..])?;
+                cursor += n;
+                match location {
+                    Some(location) => Self::NonConforming {
+                        location,
+                        content,
+                        timestamp,
+                    },
+                    None => Self::Conforming { content, timestamp },
+                }
+            }
+            2 => {
+                let (timestamp, n) = Timestamp::decode_type(&buf[cursor..])?;
+                cursor += n;
+                Self::Absent { timestamp }
+            }
+            3 => {
+                let (reason, n) = IndeterminateReason::decode_type(&buf[cursor..])?;
+                cursor += n;
+                let (timestamp, n) = Timestamp::decode_type(&buf[cursor..])?;
+                cursor += n;
+                Self::Unobservable { reason, timestamp }
+            }
+            other => {
+                return Err(DecodeError::UnknownVariantDiscriminant {
+                    discriminant: u32::from(other),
+                });
+            }
+        };
+        Ok((value, cursor))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -731,9 +1148,7 @@ impl_pardosa_struct!(OrgStateCaptured {
 });
 
 impl PardosaSchema for OrgStateCaptured {
-    fn schema_version() -> u32 {
-        ORG_STATE_SCHEMA_VERSION
-    }
+    const SCHEMA_VERSION: u32 = ORG_STATE_SCHEMA_VERSION;
     fn schema_descriptor() -> DescriptorNode {
         Self::descriptor_node()
     }
@@ -764,6 +1179,7 @@ pub enum CollectionCoverage {
 }
 
 impl PardosaType for CollectionCoverage {
+    const TYPE_DEPTH: usize = 2;
     fn descriptor_node() -> DescriptorNode {
         DescriptorNode::Enum {
             name: "CollectionCoverage".to_string(),
@@ -912,6 +1328,7 @@ impl_pardosa_enum!(AuthMode {
 pub struct OrgAlertSummary {
     pub collection_status: CollectionStatus,
     pub collection_reason: Option<EventString<MAX_REASON>>,
+    pub http_status: Option<u16>,
     pub per_repo: EventVec<RepoAlertSummaryEntry, MAX_ORG_ALERT_REPOS>,
     pub open_secret_alert_age_buckets: EventVec<StringU64Entry, MAX_ALERT_BUCKETS>,
     pub total_open_secret_alerts: u64,
@@ -921,6 +1338,7 @@ pub struct OrgAlertSummary {
 impl_pardosa_struct!(OrgAlertSummary {
     collection_status: CollectionStatus,
     collection_reason: Option<EventString<MAX_REASON>>,
+    http_status: Option<u16>,
     per_repo: EventVec<RepoAlertSummaryEntry, MAX_ORG_ALERT_REPOS>,
     open_secret_alert_age_buckets: EventVec<StringU64Entry, MAX_ALERT_BUCKETS>,
     total_open_secret_alerts: u64,
@@ -1005,9 +1423,7 @@ impl_pardosa_struct!(TeamStateCaptured {
 });
 
 impl PardosaSchema for TeamStateCaptured {
-    fn schema_version() -> u32 {
-        TEAM_STATE_SCHEMA_VERSION
-    }
+    const SCHEMA_VERSION: u32 = TEAM_STATE_SCHEMA_VERSION;
     fn schema_descriptor() -> DescriptorNode {
         Self::descriptor_node()
     }
@@ -1148,6 +1564,13 @@ pub enum DomainEvent {
 }
 
 impl PardosaType for DomainEvent {
+    const TYPE_DEPTH: usize = {
+        let repository = 2 + <Option<RepositoryEvidence> as PardosaType>::TYPE_DEPTH;
+        let org = 1 + <OrgStateCaptured as PardosaType>::TYPE_DEPTH;
+        let team = 1 + <TeamStateCaptured as PardosaType>::TYPE_DEPTH;
+        let max = if repository > org { repository } else { org };
+        if max > team { max } else { team }
+    };
     fn descriptor_node() -> DescriptorNode {
         DescriptorNode::Enum {
             name: "DomainEvent".to_string(),
@@ -1312,10 +1735,21 @@ impl PardosaType for DomainEvent {
     }
 }
 
+const _: () = {
+    assert!(DomainEvent::TYPE_DEPTH <= 16);
+};
+const _: () = {
+    assert!(OrgStateCaptured::TYPE_DEPTH <= 16);
+};
+const _: () = {
+    assert!(TeamStateCaptured::TYPE_DEPTH <= 16);
+};
+const _: () = {
+    assert!(SweepTimeoutEvent::TYPE_DEPTH <= 16);
+};
+
 impl PardosaSchema for DomainEvent {
-    fn schema_version() -> u32 {
-        DOMAIN_EVENT_SCHEMA_VERSION
-    }
+    const SCHEMA_VERSION: u32 = DOMAIN_EVENT_SCHEMA_VERSION;
     fn schema_descriptor() -> DescriptorNode {
         Self::descriptor_node()
     }
@@ -1362,12 +1796,126 @@ pub(crate) fn v22_org_state_descriptor() -> pardosa::prelude::SchemaDescriptor {
     {
         fields.retain(|f| f.name != "coverage");
     }
+    if let DescriptorNode::Struct { ref mut fields, .. } = node
+        && let Some(alert_field) = fields.get_mut(2)
+        && let DescriptorNode::Struct { ref mut fields, .. } = alert_field.node
+    {
+        fields.retain(|field| field.name != "http_status");
+    }
     SchemaDescriptor::new(2, node)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ast_depth(node: &DescriptorNode) -> usize {
+        match node {
+            DescriptorNode::Option { inner } | DescriptorNode::EventVec { inner, .. } => {
+                1 + ast_depth(inner)
+            }
+            DescriptorNode::Struct { fields, .. } => fields
+                .iter()
+                .map(|field| 1 + ast_depth(&field.node))
+                .max()
+                .unwrap_or(0),
+            DescriptorNode::Enum { variants, .. } => variants
+                .iter()
+                .filter_map(|variant| variant.payload.as_ref())
+                .map(|payload| 1 + ast_depth(payload))
+                .max()
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn all_handwritten_depths_match_ast_and_admission_boundary() {
+        type D4<T> = Option<Option<Option<Option<T>>>>;
+        type D16 = D4<D4<D4<D4<Visibility>>>>;
+        fn check<T: PardosaType>() {
+            assert_eq!(
+                T::TYPE_DEPTH,
+                ast_depth(&T::descriptor_node()),
+                "{}",
+                std::any::type_name::<T>()
+            );
+        }
+        macro_rules! check { ($($ty:ty),* $(,)?) => { $(check::<$ty>();)* }; }
+        assert_eq!(D16::TYPE_DEPTH, 16);
+        assert_eq!(<Option<D16>>::TYPE_DEPTH, 17);
+        check!(
+            RepositoryEvidence,
+            LastCommitInfo,
+            Repository,
+            Visibility,
+            RepositoryChecks,
+            SecurityPolicyResult,
+            IndeterminateReason,
+            SecurityPolicyStatus,
+            SecurityPolicyEvidence,
+            SecretScanningResult,
+            SecretScanningFailureReason,
+            ProbeSource,
+            MetadataUnavailable,
+            SecretScanningAlerts,
+            EnabledProvenance,
+            DisabledObservation,
+            UnobservableProbe,
+            SecretScanningStatus,
+            DependabotResult,
+            DependabotStatus,
+            BranchProtectionResult,
+            BranchProtectionStatus,
+            BranchProtectionDetails,
+            CollectionFailureReason,
+            CodeownersResult,
+            CodeownersContent,
+            CodeownersNonConformingLocation,
+            CodeownersStatus,
+            CodeownersTruncationReason,
+            ParsedCodeowners,
+            CodeownersEntry,
+            OrgStateCaptured,
+            CollectionCoverage,
+            AssessmentMetadata,
+            TokenTier,
+            Capability,
+            AuthMode,
+            OrgAlertSummary,
+            CollectionStatus,
+            RepoAlertSummaryEntry,
+            RepoAlertSummary,
+            StringU64Entry,
+            TeamStateCaptured,
+            TeamMemberEvent,
+            TeamMemberRoleEvent,
+            TeamRosterStatusEvent,
+            OrphanAttributionInputs,
+            OrgMembershipFetchStatus,
+            SweepTimeoutEvent,
+            DomainEvent
+        );
+        let mut node = Visibility::descriptor_node();
+        for _ in 0..16 {
+            node = DescriptorNode::Option {
+                inner: Box::new(node),
+            };
+        }
+        assert_eq!(ast_depth(&node), 16);
+        assert!(
+            AdmittedDescriptor::try_from_descriptor(SchemaDescriptor::new(1, node.clone())).is_ok()
+        );
+        assert!(
+            AdmittedDescriptor::try_from_descriptor(SchemaDescriptor::new(
+                1,
+                DescriptorNode::Option {
+                    inner: Box::new(node)
+                }
+            ))
+            .is_err()
+        );
+    }
     use std::collections::HashMap;
 
     fn ts(nanos: u64) -> Timestamp {
@@ -1434,17 +1982,19 @@ mod tests {
 
     fn checks() -> RepositoryChecks {
         RepositoryChecks {
-            security_policy: SecurityPolicyResult {
-                status: SecurityPolicyStatus::Pass,
-                evidence: SecurityPolicyEvidence::Setting,
-                path: Some(es("SECURITY.md")),
+            security_policy: SecurityPolicyResult::EnabledByFile {
+                path: nes("SECURITY.md"),
                 timestamp: ts(20),
             },
-            secret_scanning: SecretScanningResult {
-                status: SecretScanningStatus::Enabled,
-                has_open_alerts: Some(false),
-                alerts_observable: true,
-                reason: Some(es("enabled")),
+            secret_scanning: SecretScanningResult::Enabled {
+                provenance: EnabledProvenance::Metadata {
+                    http_status: Some(200),
+                    alerts: SecretScanningAlerts::Observable {
+                        source: ProbeSource::OrgSummary,
+                        has_open_alerts: false,
+                        http_status: Some(200),
+                    },
+                },
                 timestamp: ts(21),
             },
             dependabot_security_updates: DependabotResult {
@@ -1469,12 +2019,9 @@ mod tests {
                 },
                 timestamp: ts(23),
             },
-            codeowners: CodeownersResult {
-                status: CodeownersStatus::Conforming,
-                path: Some(es(".github/CODEOWNERS")),
+            codeowners: CodeownersResult::Conforming {
                 timestamp: ts(24),
-                parsed: Some(parsed_codeowners()),
-                truncation: Some(CodeownersTruncationReason::OversizedBase64),
+                content: CodeownersContent::Parsed(parsed_codeowners()),
             },
         }
     }
@@ -1527,6 +2074,7 @@ mod tests {
             alert_summary: crate::domain::metrics::OrgAlertSummary {
                 collection_status: crate::domain::status::CollectionStatus::Success,
                 collection_reason: Some("collected".to_string()),
+                http_status: Some(200),
                 per_repo,
                 open_secret_alert_age_buckets,
                 total_open_secret_alerts: 7,
@@ -1606,6 +2154,150 @@ mod tests {
     }
 
     #[test]
+    fn policy_variants_preserve_native_consumption_and_reopen() {
+        use crate::domain::checks as domain;
+        let timestamp = "2026-09-21T00:00:00Z".to_string();
+        let mut cases = vec![
+            domain::SecurityPolicyResult::EnabledBySetting {
+                timestamp: timestamp.clone(),
+            },
+            domain::SecurityPolicyResult::EnabledByFile {
+                path: domain::SecurityPolicyPath::new("SECURITY.md").unwrap(),
+                timestamp: timestamp.clone(),
+            },
+            domain::SecurityPolicyResult::Absent {
+                timestamp: timestamp.clone(),
+            },
+            domain::SecurityPolicyResult::NotApplicable {
+                timestamp: timestamp.clone(),
+            },
+        ];
+        for reason in [
+            domain::IndeterminateReason::PermissionDenied,
+            domain::IndeterminateReason::PermissionSuspected,
+            domain::IndeterminateReason::Transient,
+            domain::IndeterminateReason::RateLimited,
+            domain::IndeterminateReason::Invalid,
+            domain::IndeterminateReason::Pending,
+        ] {
+            cases.push(domain::SecurityPolicyResult::Unobservable {
+                reason,
+                timestamp: timestamp.clone(),
+            });
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("policy.pgno");
+        let store = crate::store::NativeStore::create_pgno(&path).unwrap();
+        let mut expected = Vec::new();
+        for case in cases {
+            let native = SecurityPolicyResult::try_from(case).unwrap();
+            let mut bytes = Vec::new();
+            native.encode_type(&mut bytes).unwrap();
+            let (decoded, consumed) = SecurityPolicyResult::decode_type(&bytes).unwrap();
+            assert_eq!(consumed, bytes.len());
+            assert_eq!(decoded, native);
+            let domain: domain::SecurityPolicyResult = decoded.into();
+            assert_eq!(SecurityPolicyResult::try_from(domain).unwrap(), native);
+            let mut evidence = full_evidence();
+            evidence.checks.security_policy = native;
+            let event = DomainEvent::RepositoryStateCaptured {
+                domain_key: nes("policy"),
+                repo_name: nes("policy"),
+                timestamp: ts(40),
+                evidence: Some(evidence),
+            };
+            store.record("policy", event.clone()).unwrap();
+            expected.push((false, event));
+        }
+        drop(store);
+        assert_eq!(
+            crate::store::NativeStore::open_pgno(&path)
+                .unwrap()
+                .events()
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn codeowners_variants_preserve_native_consumption_and_reopen() {
+        let mut cases = vec![CodeownersResult::Absent { timestamp: ts(40) }];
+        for reason in [
+            IndeterminateReason::PermissionDenied,
+            IndeterminateReason::PermissionSuspected,
+            IndeterminateReason::Transient,
+            IndeterminateReason::RateLimited,
+            IndeterminateReason::Invalid,
+            IndeterminateReason::Pending,
+        ] {
+            cases.push(CodeownersResult::Unobservable {
+                reason,
+                timestamp: ts(40),
+            });
+        }
+        let mut contents = vec![
+            CodeownersContent::Parsed(parsed_codeowners()),
+            CodeownersContent::Unparsed,
+        ];
+        for reason in [
+            CodeownersTruncationReason::NotBase64Encoded,
+            CodeownersTruncationReason::OversizedBase64,
+            CodeownersTruncationReason::ContentMissing,
+            CodeownersTruncationReason::DecodeFailed,
+            CodeownersTruncationReason::InvalidUtf8,
+        ] {
+            contents.push(CodeownersContent::Truncated(reason));
+        }
+        for content in contents {
+            cases.push(CodeownersResult::Conforming {
+                content: content.clone(),
+                timestamp: ts(40),
+            });
+            for location in [
+                CodeownersNonConformingLocation::Root,
+                CodeownersNonConformingLocation::Docs,
+            ] {
+                cases.push(CodeownersResult::NonConforming {
+                    location,
+                    content: content.clone(),
+                    timestamp: ts(40),
+                });
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("codeowners.pgno");
+        let store = crate::store::NativeStore::create_pgno(&path).unwrap();
+        let mut expected = Vec::new();
+        for native in cases {
+            let mut bytes = Vec::new();
+            native.encode_type(&mut bytes).unwrap();
+            let (decoded, consumed) = CodeownersResult::decode_type(&bytes).unwrap();
+            assert_eq!(consumed, bytes.len());
+            assert_eq!(decoded, native);
+            let domain: crate::domain::checks::CodeownersResult = decoded.into();
+            assert_eq!(CodeownersResult::try_from(domain).unwrap(), native);
+            let mut evidence = full_evidence();
+            evidence.checks.codeowners = native;
+            let event = DomainEvent::RepositoryStateCaptured {
+                domain_key: nes("owners"),
+                repo_name: nes("owners"),
+                timestamp: ts(40),
+                evidence: Some(evidence),
+            };
+            store.record("owners", event.clone()).unwrap();
+            expected.push((false, event));
+        }
+        drop(store);
+        assert_eq!(
+            crate::store::NativeStore::open_pgno(&path)
+                .unwrap()
+                .events()
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
     fn native_repository_deleted_round_trips() {
         let event = DomainEvent::RepositoryDeleted {
             domain_key: nes("id-repo-1"),
@@ -1636,6 +2328,37 @@ mod tests {
         let decoded: OrgStateCaptured = from_bytes(&wire).expect("decode native org event");
         assert_eq!(decoded, event);
         assert_eq!(decoded.event_type(), "OrgStateCaptured");
+    }
+
+    #[test]
+    fn org_http_provenance_survives_native_reopen_and_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("org-provenance.pgno");
+        let store = crate::store::NativeStore::create_pgno(&path).unwrap();
+        let statuses = [Some(200), Some(401), Some(403), Some(429), None];
+        let mut expected = Vec::new();
+        for http_status in statuses {
+            let mut snapshot = domain_org_snapshot();
+            snapshot.alert_summary.http_status = http_status;
+            let org = OrgStateCaptured::try_from(snapshot).unwrap();
+            let mut bytes = Vec::new();
+            org.encode_type(&mut bytes).unwrap();
+            let (decoded, consumed) = OrgStateCaptured::decode_type(&bytes).unwrap();
+            assert_eq!(consumed, bytes.len());
+            assert_eq!(decoded, org);
+            let snapshot: crate::domain::evidence::OrgStateSnapshot = decoded.into();
+            assert_eq!(snapshot.alert_summary.http_status, http_status);
+            let event = DomainEvent::OrgStateCaptured(org);
+            store.record("org", event.clone()).unwrap();
+            expected.push((false, event));
+        }
+        drop(store);
+        let reopened = crate::store::NativeStore::open_pgno(&path).unwrap();
+        assert_eq!(reopened.events().unwrap(), expected);
+        assert_eq!(
+            OrgAlertSummary::TYPE_DEPTH,
+            ast_depth(&OrgAlertSummary::descriptor_node())
+        );
     }
 
     #[test]
@@ -1948,15 +2671,15 @@ mod tests {
         "2ec6b5d4f386afbe6a73fe4e0c962897e477316af3137591927bb18a31b4c38f";
 
     const TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
-        "87b0c97d9dfa2e9f610173df23491ec6cd4e335f25c3487afc3b999b36f3e0c2";
+        "40e25aa9f91091ccb5351ea89089564862d35969f008ff4954a33f7c7533bd95";
     const TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY: &str =
-        "5d1add16b630f8ec14c469db3566da4c78d34382fc11f9033576303411043022";
+        "f36b39c7cbd70f00996982547039aeb563a7f0e370220a6741794c06a21bcd59";
     const TRUTHFUL_TEAM_STATE_SCHEMA_IDENTITY: &str =
         "fa78ebd335983b4db1d2cf12f0fd21deed7744dc1d9d1668aa6cc9721fc42321";
     const TRUTHFUL_SWEEP_TIMEOUT_SCHEMA_IDENTITY: &str =
         "55b9b99b6408ad5696d2e0ce5cc85c0f28ffd93c1f7ab230d524ae4d329ff44e";
 
-    const CANONICAL_REPO_CAPTURED_BYTES: [u8; 464] = [
+    const CANONICAL_REPO_CAPTURED_BYTES: [u8; 432] = [
         0, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
         45, 49, 40, 0, 0, 0, 0, 0, 0, 0, 1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49,
         1, 6, 0, 0, 0, 110, 111, 100, 101, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111, 45, 49, 0, 1, 4,
@@ -1966,37 +2689,36 @@ mod tests {
         100, 101, 115, 99, 114, 105, 112, 116, 105, 111, 110, 0, 0, 1, 30, 0, 0, 0, 104, 116, 116,
         112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 97, 99, 109, 101,
         47, 114, 101, 112, 111, 45, 49, 2, 0, 0, 0, 8, 0, 0, 0, 115, 101, 99, 117, 114, 105, 116,
-        121, 4, 0, 0, 0, 114, 117, 115, 116, 1, 3, 0, 0, 0, 77, 73, 84, 0, 0, 1, 11, 0, 0, 0, 83,
-        69, 67, 85, 82, 73, 84, 89, 46, 109, 100, 20, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 7, 0, 0,
-        0, 101, 110, 97, 98, 108, 101, 100, 21, 0, 0, 0, 0, 0, 0, 0, 0, 1, 7, 0, 0, 0, 101, 110,
-        97, 98, 108, 101, 100, 22, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 109, 97, 105, 110, 1, 1, 1,
-        2, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 23, 0, 0, 0, 0, 0, 0, 0, 0, 1, 18, 0, 0,
-        0, 46, 103, 105, 116, 104, 117, 98, 47, 67, 79, 68, 69, 79, 87, 78, 69, 82, 83, 24, 0, 0,
-        0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 5, 0, 0, 0, 47, 115, 114, 99, 47, 1, 0, 0, 0, 14, 0, 0, 0,
-        64, 97, 99, 109, 101, 47, 115, 101, 99, 117, 114, 105, 116, 121, 1, 0, 0, 0, 14, 0, 0, 0,
-        64, 97, 99, 109, 101, 47, 115, 101, 99, 117, 114, 105, 116, 121, 0, 0, 0, 0, 1, 1, 1, 1, 7,
-        0, 0, 0, 111, 99, 116, 111, 99, 97, 116, 1, 12, 0, 0, 0, 77, 111, 110, 97, 32, 79, 99, 116,
-        111, 99, 97, 116, 1, 30, 0, 0, 0, 0, 0, 0, 0,
+        121, 4, 0, 0, 0, 114, 117, 115, 116, 1, 3, 0, 0, 0, 77, 73, 84, 1, 11, 0, 0, 0, 83, 69, 67,
+        85, 82, 73, 84, 89, 46, 109, 100, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 200, 0, 0, 0, 0, 1,
+        200, 0, 21, 0, 0, 0, 0, 0, 0, 0, 0, 1, 7, 0, 0, 0, 101, 110, 97, 98, 108, 101, 100, 22, 0,
+        0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 109, 97, 105, 110, 1, 1, 1, 2, 0, 0, 0, 1, 1, 1, 1, 1, 0,
+        0, 0, 0, 1, 1, 1, 1, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 47, 115, 114,
+        99, 47, 1, 0, 0, 0, 14, 0, 0, 0, 64, 97, 99, 109, 101, 47, 115, 101, 99, 117, 114, 105,
+        116, 121, 1, 0, 0, 0, 14, 0, 0, 0, 64, 97, 99, 109, 101, 47, 115, 101, 99, 117, 114, 105,
+        116, 121, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 1, 1, 7, 0, 0, 0, 111, 99, 116, 111, 99, 97,
+        116, 1, 12, 0, 0, 0, 77, 111, 110, 97, 32, 79, 99, 116, 111, 99, 97, 116, 1, 30, 0, 0, 0,
+        0, 0, 0, 0,
     ];
     const CANONICAL_REPO_DELETED_BYTES: [u8; 32] = [
         1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
         45, 49, 50, 0, 0, 0, 0, 0, 0, 0,
     ];
-    const CANONICAL_ORG_CAPTURED_BYTES: [u8; 329] = [
+    const CANONICAL_ORG_CAPTURED_BYTES: [u8; 332] = [
         2, 0, 0, 0, 10, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 4, 0, 0, 0, 97, 99, 109,
         101, 3, 0, 0, 0, 49, 46, 48, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 84, 49,
         50, 58, 48, 48, 58, 48, 48, 90, 7, 0, 0, 0, 114, 117, 110, 45, 49, 50, 51, 0, 29, 0, 0, 0,
         114, 101, 112, 111, 44, 114, 101, 97, 100, 58, 111, 114, 103, 44, 115, 101, 99, 117, 114,
         105, 116, 121, 95, 101, 118, 101, 110, 116, 115, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 20, 0, 0,
         0, 50, 48, 50, 54, 45, 48, 54, 45, 49, 52, 84, 49, 50, 58, 48, 49, 58, 48, 48, 90, 1, 0, 0,
-        1, 9, 0, 0, 0, 99, 111, 108, 108, 101, 99, 116, 101, 100, 1, 0, 0, 0, 6, 0, 0, 0, 114, 101,
-        112, 111, 45, 49, 7, 0, 0, 0, 0, 0, 0, 0, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54, 45,
-        49, 51, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45, 48, 54,
-        45, 49, 52, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 2, 0, 0, 0, 8, 0, 0, 0, 48, 95, 55, 95,
-        100, 97, 121, 115, 3, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 56, 95, 51, 48, 95, 100, 97, 121,
-        115, 4, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45,
+        1, 9, 0, 0, 0, 99, 111, 108, 108, 101, 99, 116, 101, 100, 1, 200, 0, 1, 0, 0, 0, 6, 0, 0,
+        0, 114, 101, 112, 111, 45, 49, 7, 0, 0, 0, 0, 0, 0, 0, 1, 20, 0, 0, 0, 50, 48, 50, 54, 45,
         48, 54, 45, 49, 51, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 1, 20, 0, 0, 0, 50, 48, 50, 54,
-        45, 48, 54, 45, 49, 52, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90,
+        45, 48, 54, 45, 49, 52, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 2, 0, 0, 0, 8, 0, 0, 0, 48,
+        95, 55, 95, 100, 97, 121, 115, 3, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 56, 95, 51, 48, 95, 100,
+        97, 121, 115, 4, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 1, 20, 0, 0, 0, 50, 48, 50,
+        54, 45, 48, 54, 45, 49, 51, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90, 1, 20, 0, 0, 0, 50, 48,
+        50, 54, 45, 48, 54, 45, 49, 52, 84, 48, 56, 58, 48, 48, 58, 48, 48, 90,
     ];
     const CANONICAL_TEAM_CAPTURED_BYTES: [u8; 71] = [
         4, 0, 0, 0, 97, 99, 109, 101, 8, 0, 0, 0, 112, 108, 97, 116, 102, 111, 114, 109, 2, 0, 0,
@@ -2018,7 +2740,7 @@ mod tests {
         assert_eq!(identity_hex, expected_truthful_hex);
         assert_ne!(identity_hex, expected_legacy_hex);
 
-        let desc = SchemaDescriptor::new(T::schema_version(), T::schema_descriptor());
+        let desc = SchemaDescriptor::new(T::SCHEMA_VERSION, T::schema_descriptor());
         desc.validate_structural_completeness()
             .expect("schema descriptor must be structurally complete");
         assert_eq!(desc.identity().to_hex(), expected_truthful_hex);

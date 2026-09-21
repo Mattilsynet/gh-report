@@ -11,7 +11,12 @@ use jiff::Timestamp;
 use tracing::{debug, instrument, trace, warn};
 
 use crate::config;
-use crate::domain::checks::{SecretScanningResult, SecretScanningStatus};
+#[cfg(test)]
+use crate::domain::checks::SecretScanningStatus;
+use crate::domain::checks::{
+    DisabledObservation, EnabledProvenance, MetadataUnavailable, ProbeSource, SecretScanningAlerts,
+    SecretScanningFailureReason, SecretScanningResult, UnobservableProbe,
+};
 use crate::domain::metrics::OrgAlertSummary;
 use crate::domain::repository::Repository;
 use crate::domain::status::CollectionStatus;
@@ -84,20 +89,17 @@ fn track_timestamp(current: &mut Option<String>, candidate: &str, keep_oldest: b
 /// safe to report as a complete [`OrgAlertSummary`] (ghr-3ede27c2, mirrors
 /// the H1 fix at [`crate::collector::team_membership::org_members_from_outcome`]).
 fn build_failure_summary(result: &ApiOutcome) -> OrgAlertSummary {
-    let collection_status = match result.status_code() {
-        Some(403) => CollectionStatus::PermissionDenied,
-        Some(404) => CollectionStatus::Unavailable,
-        _ if result.is_retryable() => CollectionStatus::TransientError,
-        _ => CollectionStatus::Unavailable,
-    };
-    let collection_reason = match collection_status {
-        CollectionStatus::PermissionDenied => Some("permission_denied".to_string()),
-        CollectionStatus::TransientError => Some("transient_error".to_string()),
-        _ => Some("alerts_unavailable".to_string()),
+    let (collection_status, reason) = match result.status_code() {
+        Some(401 | 403) => (CollectionStatus::PermissionDenied, "permission_denied"),
+        Some(429) => (CollectionStatus::Unavailable, "rate_limited"),
+        Some(404) => (CollectionStatus::Unavailable, "alerts_unavailable"),
+        _ if result.is_retryable() => (CollectionStatus::TransientError, "transient_error"),
+        _ => (CollectionStatus::Unavailable, "alerts_unavailable"),
     };
     OrgAlertSummary {
         collection_status,
-        collection_reason,
+        collection_reason: Some(reason.to_string()),
+        http_status: result.status_code(),
         per_repo: HashMap::new(),
         open_secret_alert_age_buckets: empty_age_buckets(),
         total_open_secret_alerts: 0,
@@ -111,6 +113,41 @@ enum AlertCorrelation<'a> {
     OutOfScope,
     Conflicting,
     Unidentifiable,
+}
+
+fn evaluate_org_alert_outcome(
+    result: &ApiOutcome,
+) -> Result<&[serde_json::Value], Box<OrgAlertSummary>> {
+    match result {
+        ApiOutcome::Success {
+            data: Some(serde_json::Value::Array(items)),
+            truncated: false,
+            ..
+        } => Ok(items),
+        ApiOutcome::Success {
+            truncated: false, ..
+        } => {
+            let mut summary = build_failure_summary(result);
+            summary.collection_reason = Some("malformed_response".to_string());
+            Err(Box::new(summary))
+        }
+        _ => Err(Box::new(build_failure_summary(result))),
+    }
+}
+
+fn classified_org_outcome(
+    run: crate::github::client::RequestRun,
+) -> Result<ApiOutcome, Box<OrgAlertSummary>> {
+    let classification = run.classification();
+    let result = run.outcome();
+    match classification {
+        crate::github::client::RequestClassification::MalformedPayload { .. } => {
+            let mut summary = build_failure_summary(&result);
+            summary.collection_reason = Some("malformed_response".to_string());
+            Err(Box::new(summary))
+        }
+        _ => Ok(result),
+    }
 }
 
 fn correlate_alert<'a>(
@@ -279,8 +316,8 @@ pub async fn collect_org_alerts(
         }
     }
 
-    let result = client
-        .request(
+    let run = client
+        .request_run(
             &format!(
                 "/orgs/{}/secret-scanning/alerts?state=open&per_page={}&hide_secret=true",
                 client.org_name,
@@ -292,22 +329,24 @@ pub async fn collect_org_alerts(
         )
         .await;
 
-    if !result.is_ok() || result.is_truncated() {
-        warn!(
-            status = ?result.status_code(),
-            retryable = result.is_retryable(),
-            truncated = result.is_truncated(),
-            "org-level secret scanning alert collection failed or truncated — degrading rather than reporting a partial list as complete"
-        );
-        return build_failure_summary(&result);
-    }
+    let result = match classified_org_outcome(run) {
+        Ok(result) => result,
+        Err(summary) => return *summary,
+    };
 
-    let alert_items = match result {
-        ApiOutcome::Success {
-            data: Some(serde_json::Value::Array(items)),
-            ..
-        } => items,
-        _ => Vec::new(),
+    let http_status = result.status_code();
+    let alert_items = match evaluate_org_alert_outcome(&result) {
+        Ok(items) => items,
+        Err(summary) => {
+            warn!(
+                status = ?result.status_code(),
+                retryable = result.is_retryable(),
+                truncated = result.is_truncated(),
+                reason = ?summary.collection_reason,
+                "org-level secret scanning alert collection unavailable"
+            );
+            return *summary;
+        }
     };
 
     debug!(
@@ -327,6 +366,7 @@ pub async fn collect_org_alerts(
     let mut summary = OrgAlertSummary {
         collection_status: init_status,
         collection_reason: init_reason,
+        http_status,
         per_repo: HashMap::new(),
         open_secret_alert_age_buckets: empty_age_buckets(),
         total_open_secret_alerts: 0,
@@ -334,7 +374,7 @@ pub async fn collect_org_alerts(
         newest_open_secret_alert_created_at: None,
     };
 
-    for alert in &alert_items {
+    for alert in alert_items {
         process_alert(alert, &known_scope, &mut summary, now);
     }
 
@@ -347,37 +387,206 @@ pub async fn collect_org_alerts(
 }
 
 /// Extract the `security_and_analysis.secret_scanning.status` field.
-fn extract_status(repo_details: &ApiOutcome) -> Option<SecretScanningStatus> {
-    let data = repo_details.data()?;
-    let status_str = data
-        .get("security_and_analysis")
-        .and_then(|sa| sa.get("secret_scanning"))
-        .and_then(|ss| ss.get("status"))
-        .and_then(serde_json::Value::as_str)?;
-    match status_str {
-        "enabled" => Some(SecretScanningStatus::Enabled),
-        "disabled" => Some(SecretScanningStatus::Disabled),
-        _ => None,
+#[derive(Clone, Copy)]
+enum RepoMetadata {
+    Enabled(Option<u16>),
+    Disabled(Option<u16>),
+    Unavailable(MetadataUnavailable),
+}
+
+fn failure_reason(outcome: &ApiOutcome) -> SecretScanningFailureReason {
+    match outcome.status_code() {
+        Some(401 | 403) => SecretScanningFailureReason::PermissionDenied,
+        Some(404) => SecretScanningFailureReason::Unavailable,
+        Some(429) => SecretScanningFailureReason::RateLimited,
+        _ if outcome.is_retryable() => SecretScanningFailureReason::Transient,
+        _ => SecretScanningFailureReason::Invalid,
     }
 }
 
-fn build_result(
-    status: SecretScanningStatus,
+fn extract_repo_metadata(outcome: &ApiOutcome) -> RepoMetadata {
+    let http_status = outcome.status_code();
+    if !outcome.is_ok() {
+        return RepoMetadata::Unavailable(MetadataUnavailable::Failure {
+            reason: failure_reason(outcome),
+            http_status,
+        });
+    }
+    let Some(mut node) = outcome.data().filter(|v| v.is_object()) else {
+        return RepoMetadata::Unavailable(MetadataUnavailable::Malformed { http_status });
+    };
+    for field in ["security_and_analysis", "secret_scanning", "status"] {
+        match node.get(field) {
+            None | Some(serde_json::Value::Null) => {
+                return RepoMetadata::Unavailable(MetadataUnavailable::Missing { http_status });
+            }
+            Some(value) => node = value,
+        }
+        if field != "status" && !node.is_object() {
+            return RepoMetadata::Unavailable(MetadataUnavailable::Malformed { http_status });
+        }
+    }
+    match node.as_str() {
+        Some("enabled") => RepoMetadata::Enabled(http_status),
+        Some("disabled") => RepoMetadata::Disabled(http_status),
+        _ => RepoMetadata::Unavailable(MetadataUnavailable::Malformed { http_status }),
+    }
+}
+
+fn endpoint_probe(outcome: &ApiOutcome) -> SecretScanningAlerts {
+    let source = ProbeSource::PerRepoEndpoint;
+    let http_status = outcome.status_code();
+    match (
+        outcome.is_ok(),
+        outcome.is_truncated(),
+        outcome.data().and_then(serde_json::Value::as_array),
+    ) {
+        (true, false, Some(items)) => SecretScanningAlerts::Observable {
+            source,
+            http_status,
+            has_open_alerts: !items.is_empty(),
+        },
+        (true, _, _) => SecretScanningAlerts::Unobservable {
+            source,
+            http_status,
+            reason: SecretScanningFailureReason::Invalid,
+        },
+        _ => SecretScanningAlerts::Unobservable {
+            source,
+            http_status,
+            reason: failure_reason(outcome),
+        },
+    }
+}
+
+fn org_probe(repo: &Repository, summary: &OrgAlertSummary) -> SecretScanningAlerts {
+    let source = ProbeSource::OrgSummary;
+    let http_status = summary.http_status;
+    let reason = match summary.collection_status {
+        CollectionStatus::Success => {
+            return SecretScanningAlerts::Observable {
+                source,
+                http_status,
+                has_open_alerts: summary
+                    .per_repo
+                    .get(&scope_key(repo))
+                    .is_some_and(|s| s.open_alert_count > 0),
+            };
+        }
+        CollectionStatus::PermissionDenied => SecretScanningFailureReason::PermissionDenied,
+        CollectionStatus::TransientError => SecretScanningFailureReason::Transient,
+        _ => match summary.collection_reason.as_deref() {
+            Some(
+                "malformed_response" | "malformed_alert_item" | "alert_correlation_unidentifiable",
+            ) => SecretScanningFailureReason::Invalid,
+            Some("alert_coordinate_conflict" | "repository_alias_collision") => {
+                SecretScanningFailureReason::Conflict
+            }
+            Some("rate_limited") => SecretScanningFailureReason::RateLimited,
+            _ => SecretScanningFailureReason::Unavailable,
+        },
+    };
+    SecretScanningAlerts::Unobservable {
+        source,
+        http_status,
+        reason,
+    }
+}
+
+fn from_observations(
+    metadata: RepoMetadata,
+    probe: SecretScanningAlerts,
     timestamp: &str,
-    has_open_alerts: Option<bool>,
-    alerts_observable: bool,
-    reason: Option<&str>,
 ) -> SecretScanningResult {
-    debug_assert!(
-        !alerts_observable || status == SecretScanningStatus::Enabled,
-        "secret scanning invariant violated: alerts_observable=true with status={status:?}"
-    );
-    SecretScanningResult {
-        status,
-        has_open_alerts,
-        alerts_observable,
-        reason: reason.map(String::from),
-        timestamp: timestamp.to_string(),
+    let timestamp = timestamp.to_string();
+    match (metadata, probe) {
+        (RepoMetadata::Enabled(http_status), alerts) => SecretScanningResult::Enabled {
+            provenance: EnabledProvenance::Metadata {
+                http_status,
+                alerts,
+            },
+            timestamp,
+        },
+        (RepoMetadata::Disabled(metadata_http_status), probe) => {
+            let observation = match probe {
+                SecretScanningAlerts::Observable {
+                    source,
+                    has_open_alerts: false,
+                    http_status,
+                } => DisabledObservation::NoMismatch {
+                    source,
+                    http_status,
+                },
+                SecretScanningAlerts::Observable {
+                    source,
+                    has_open_alerts: true,
+                    http_status,
+                } => DisabledObservation::StatusMismatch {
+                    source,
+                    http_status,
+                },
+                SecretScanningAlerts::Unobservable {
+                    source,
+                    reason,
+                    http_status,
+                } => DisabledObservation::ProbeFailed {
+                    source,
+                    reason,
+                    http_status,
+                },
+            };
+            SecretScanningResult::Disabled {
+                metadata_http_status,
+                observation,
+                timestamp,
+            }
+        }
+        (
+            RepoMetadata::Unavailable(metadata),
+            SecretScanningAlerts::Observable {
+                source: ProbeSource::PerRepoEndpoint,
+                has_open_alerts,
+                http_status,
+            },
+        ) => SecretScanningResult::Enabled {
+            provenance: EnabledProvenance::Fallback {
+                metadata,
+                has_open_alerts,
+                http_status,
+            },
+            timestamp,
+        },
+        (
+            RepoMetadata::Unavailable(metadata),
+            SecretScanningAlerts::Observable {
+                source: ProbeSource::OrgSummary,
+                has_open_alerts,
+                http_status,
+            },
+        ) => SecretScanningResult::Unobservable {
+            metadata,
+            probe: UnobservableProbe::OrgSummaryObserved {
+                has_open_alerts,
+                http_status,
+            },
+            timestamp,
+        },
+        (
+            RepoMetadata::Unavailable(metadata),
+            SecretScanningAlerts::Unobservable {
+                source,
+                reason,
+                http_status,
+            },
+        ) => SecretScanningResult::Unobservable {
+            metadata,
+            probe: UnobservableProbe::Failed {
+                source,
+                reason,
+                http_status,
+            },
+            timestamp,
+        },
     }
 }
 
@@ -403,38 +612,25 @@ pub async fn evaluate(
         Ok(n) => n,
         Err(e) => {
             debug!(repo = %repo.name, error = %e, "skipping secret scanning: invalid repo name");
-            return build_result(
-                SecretScanningStatus::Unknown,
+            return SecretScanningResult::unobservable(
+                SecretScanningFailureReason::Invalid,
                 run_timestamp,
-                None,
-                false,
-                Some("invalid_repo_name"),
             );
         }
     };
 
     let repo_details = client.repo_details(&safe_name).await;
-    let direct_status = if repo_details.is_ok() {
-        extract_status(&repo_details)
-    } else {
-        None
-    };
+    let metadata = extract_repo_metadata(&repo_details);
 
     if let Some(summary) = org_summary {
-        let result = evaluate_with_org_summary(repo, run_timestamp, summary, direct_status);
-        debug!(repo = %repo.name, status = %result.status, alerts_observable = result.alerts_observable, "secret scanning evaluation complete (org path)");
+        let result = from_observations(metadata, org_probe(repo, summary), run_timestamp);
+        debug!(repo = %repo.name, status = %result.status(), alerts_observable = result.alerts_observable(), "secret scanning evaluation complete (org path)");
         return result;
     }
 
-    let result = evaluate_fallback(
-        &repo_details,
-        client,
-        &safe_name,
-        run_timestamp,
-        direct_status,
-    )
-    .await;
-    debug!(repo = %repo.name, status = %result.status, alerts_observable = result.alerts_observable, "secret scanning evaluation complete (fallback path)");
+    let result =
+        evaluate_fallback(&repo_details, client, &safe_name, run_timestamp, metadata).await;
+    debug!(repo = %repo.name, status = %result.status(), alerts_observable = result.alerts_observable(), "secret scanning evaluation complete (fallback path)");
     result
 }
 
@@ -444,11 +640,11 @@ pub async fn evaluate(
 ///
 /// `safe_name` must be validated via [`sanitize_path_segment`] by the caller.
 async fn evaluate_fallback(
-    repo_details: &ApiOutcome,
+    _repo_details: &ApiOutcome,
     client: &GitHubClient,
     safe_name: &str,
     run_timestamp: &str,
-    direct_status: Option<SecretScanningStatus>,
+    metadata: RepoMetadata,
 ) -> SecretScanningResult {
     let alerts_path = format!(
         "/repos/{}/{}/secret-scanning/alerts?state=open&per_page=1",
@@ -463,216 +659,412 @@ async fn evaluate_fallback(
         )
         .await;
 
-    if alerts.is_ok() {
-        let has_items = alerts
-            .data()
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|arr| !arr.is_empty());
-        return build_result(
-            SecretScanningStatus::Enabled,
-            run_timestamp,
-            Some(has_items),
-            true,
-            None,
-        );
-    }
-
-    if alerts.status_code() == Some(404) {
-        return match direct_status {
-            Some(s) => build_result(s, run_timestamp, None, false, Some("alerts_unavailable")),
-            None => build_result(
-                SecretScanningStatus::Unknown,
-                run_timestamp,
-                None,
-                false,
-                Some("alerts_unavailable"),
-            ),
-        };
-    }
-
-    if alerts.status_code() == Some(403) || repo_details.status_code() == Some(403) {
-        return match direct_status {
-            Some(s) => build_result(
-                s,
-                run_timestamp,
-                None,
-                false,
-                Some("alerts_permission_denied"),
-            ),
-            None => build_result(
-                SecretScanningStatus::PermissionDenied,
-                run_timestamp,
-                None,
-                false,
-                Some("permission_denied"),
-            ),
-        };
-    }
-
-    if alerts.is_retryable() || repo_details.is_retryable() {
-        return match direct_status {
-            Some(s) => build_result(
-                s,
-                run_timestamp,
-                None,
-                false,
-                Some("alerts_transient_error"),
-            ),
-            None => build_result(
-                SecretScanningStatus::Unknown,
-                run_timestamp,
-                None,
-                false,
-                Some("transient_error"),
-            ),
-        };
-    }
-
-    match direct_status {
-        Some(s) => build_result(s, run_timestamp, None, false, Some("alerts_unavailable")),
-        None => build_result(
-            SecretScanningStatus::Unknown,
-            run_timestamp,
-            None,
-            false,
-            Some("insufficient_evidence"),
-        ),
-    }
+    from_observations(metadata, endpoint_probe(&alerts), run_timestamp)
 }
 
 /// Evaluate when an org-level alert summary is available.
+#[cfg(test)]
 fn evaluate_with_org_summary(
     repo: &Repository,
     run_timestamp: &str,
     summary: &OrgAlertSummary,
     direct_status: Option<SecretScanningStatus>,
 ) -> SecretScanningResult {
-    let repo_summary = summary.per_repo.get(&scope_key(repo));
-    let open_alert_count = repo_summary.map_or(0, |s| s.open_alert_count);
-    let status_mismatch =
-        open_alert_count > 0 && direct_status == Some(SecretScanningStatus::Disabled);
-
-    match summary.collection_status {
-        CollectionStatus::Success => evaluate_org_success(
-            run_timestamp,
-            direct_status,
-            open_alert_count,
-            status_mismatch,
-        ),
-        CollectionStatus::PermissionDenied => {
-            evaluate_org_permission_denied(run_timestamp, direct_status)
-        }
-        CollectionStatus::TransientError => {
-            evaluate_org_transient_error(run_timestamp, direct_status)
-        }
-        CollectionStatus::Unavailable | CollectionStatus::NotCollected => {
-            let reason = summary
-                .collection_reason
-                .as_deref()
-                .unwrap_or("alerts_unavailable");
-            match direct_status {
-                Some(s) => build_result(s, run_timestamp, None, false, Some(reason)),
-                None => build_result(
-                    SecretScanningStatus::Unknown,
-                    run_timestamp,
-                    None,
-                    false,
-                    Some(reason),
-                ),
-            }
-        }
-    }
-}
-
-fn evaluate_org_success(
-    run_timestamp: &str,
-    direct_status: Option<SecretScanningStatus>,
-    open_alert_count: u64,
-    status_mismatch: bool,
-) -> SecretScanningResult {
-    match direct_status {
-        Some(SecretScanningStatus::Enabled) => build_result(
-            SecretScanningStatus::Enabled,
-            run_timestamp,
-            Some(open_alert_count > 0),
-            true,
-            None,
-        ),
-        Some(SecretScanningStatus::Disabled) => build_result(
-            SecretScanningStatus::Disabled,
-            run_timestamp,
-            None,
-            false,
-            if status_mismatch {
-                Some("status_mismatch")
-            } else {
-                None
-            },
-        ),
-        Some(other) => build_result(
-            other,
-            run_timestamp,
-            None,
-            false,
-            Some("alerts_unavailable"),
-        ),
-        None => build_result(
-            SecretScanningStatus::Unknown,
-            run_timestamp,
-            None,
-            false,
-            Some("insufficient_evidence"),
-        ),
-    }
-}
-
-fn evaluate_org_permission_denied(
-    run_timestamp: &str,
-    direct_status: Option<SecretScanningStatus>,
-) -> SecretScanningResult {
-    match direct_status {
-        Some(s) => build_result(
-            s,
-            run_timestamp,
-            None,
-            false,
-            Some("alerts_permission_denied"),
-        ),
-        None => build_result(
-            SecretScanningStatus::PermissionDenied,
-            run_timestamp,
-            None,
-            false,
-            Some("permission_denied"),
-        ),
-    }
-}
-
-fn evaluate_org_transient_error(
-    run_timestamp: &str,
-    direct_status: Option<SecretScanningStatus>,
-) -> SecretScanningResult {
-    match direct_status {
-        Some(s) => build_result(
-            s,
-            run_timestamp,
-            None,
-            false,
-            Some("alerts_transient_error"),
-        ),
-        None => build_result(
-            SecretScanningStatus::Unknown,
-            run_timestamp,
-            None,
-            false,
-            Some("transient_error"),
-        ),
-    }
+    let metadata = match direct_status {
+        Some(SecretScanningStatus::Enabled) => RepoMetadata::Enabled(None),
+        Some(SecretScanningStatus::Disabled) => RepoMetadata::Disabled(None),
+        _ => RepoMetadata::Unavailable(MetadataUnavailable::Missing { http_status: None }),
+    };
+    from_observations(metadata, org_probe(repo, summary), run_timestamp)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_failure_and_payload_boundaries_preserve_facts() {
+        for (code, reason) in [
+            (401, SecretScanningFailureReason::PermissionDenied),
+            (403, SecretScanningFailureReason::PermissionDenied),
+            (404, SecretScanningFailureReason::Unavailable),
+            (429, SecretScanningFailureReason::RateLimited),
+            (503, SecretScanningFailureReason::Transient),
+        ] {
+            for retryable in [false, true] {
+                let outcome = ApiOutcome::failure(Some(code), "fixture".into(), retryable);
+                let expected = if code == 503 && !retryable {
+                    SecretScanningFailureReason::Invalid
+                } else {
+                    reason
+                };
+                assert!(
+                    matches!(extract_repo_metadata(&outcome), RepoMetadata::Unavailable(MetadataUnavailable::Failure { reason, http_status }) if reason == expected && http_status == Some(code))
+                );
+                assert_eq!(
+                    endpoint_probe(&outcome),
+                    SecretScanningAlerts::Unobservable {
+                        source: ProbeSource::PerRepoEndpoint,
+                        reason: expected,
+                        http_status: Some(code)
+                    }
+                );
+                if code == 429 {
+                    assert_eq!(
+                        build_failure_summary(&outcome).collection_reason.as_deref(),
+                        Some("rate_limited")
+                    );
+                }
+            }
+        }
+        let unknown = ApiOutcome::failure(None, "transport".into(), true);
+        assert_eq!(build_failure_summary(&unknown).http_status, None);
+        assert_eq!(
+            endpoint_probe(&unknown),
+            SecretScanningAlerts::Unobservable {
+                source: ProbeSource::PerRepoEndpoint,
+                reason: SecretScanningFailureReason::Transient,
+                http_status: None
+            }
+        );
+        for data in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!({})),
+            Some(serde_json::json!(7)),
+        ] {
+            let outcome = ApiOutcome::Success {
+                status_code: 200,
+                data,
+                headers: None,
+                truncated: false,
+            };
+            assert_eq!(
+                endpoint_probe(&outcome),
+                SecretScanningAlerts::Unobservable {
+                    source: ProbeSource::PerRepoEndpoint,
+                    reason: SecretScanningFailureReason::Invalid,
+                    http_status: Some(200)
+                }
+            );
+        }
+        for (payload, open) in [
+            (serde_json::json!([]), false),
+            (serde_json::json!([{}]), true),
+        ] {
+            let outcome = ApiOutcome::Success {
+                status_code: 200,
+                data: Some(payload),
+                headers: None,
+                truncated: false,
+            };
+            assert_eq!(
+                endpoint_probe(&outcome),
+                SecretScanningAlerts::Observable {
+                    source: ProbeSource::PerRepoEndpoint,
+                    has_open_alerts: open,
+                    http_status: Some(200)
+                }
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "independent semantic table and expected payload assertions stay together"
+    )]
+    fn production_semantic_matrix_has_independent_expected_outcomes() {
+        #[derive(Clone, Copy)]
+        enum Expected {
+            MetadataEnabled,
+            Disabled,
+            OrgUnknown,
+            Fallback,
+            Failed,
+        }
+        let outcome_table = [
+            [Expected::MetadataEnabled; 6],
+            [Expected::Disabled; 6],
+            [
+                Expected::OrgUnknown,
+                Expected::OrgUnknown,
+                Expected::Failed,
+                Expected::Fallback,
+                Expected::Fallback,
+                Expected::Failed,
+            ],
+        ];
+        let reasons = [
+            SecretScanningFailureReason::PermissionDenied,
+            SecretScanningFailureReason::PermissionSuspected,
+            SecretScanningFailureReason::RateLimited,
+            SecretScanningFailureReason::Transient,
+            SecretScanningFailureReason::Unavailable,
+            SecretScanningFailureReason::InsufficientEvidence,
+            SecretScanningFailureReason::Conflict,
+            SecretScanningFailureReason::Invalid,
+            SecretScanningFailureReason::Pending,
+        ];
+        let mut unavailable = vec![
+            MetadataUnavailable::Missing { http_status: None },
+            MetadataUnavailable::Malformed {
+                http_status: Some(200),
+            },
+        ];
+        for reason in reasons {
+            unavailable.push(MetadataUnavailable::Failure {
+                reason,
+                http_status: Some(403),
+            });
+        }
+        let timestamp = "2026-09-21T00:00:00Z";
+        for metadata in unavailable {
+            for failure in reasons {
+                for (meta_index, meta) in [
+                    RepoMetadata::Enabled(Some(200)),
+                    RepoMetadata::Disabled(None),
+                    RepoMetadata::Unavailable(metadata),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    for (source_index, source) in
+                        [ProbeSource::OrgSummary, ProbeSource::PerRepoEndpoint]
+                            .into_iter()
+                            .enumerate()
+                    {
+                        for probe_index in 0..3 {
+                            let http_status = if probe_index == 0 { None } else { Some(429) };
+                            let has_open_alerts = probe_index == 1;
+                            let probe = if probe_index == 2 {
+                                SecretScanningAlerts::Unobservable {
+                                    source,
+                                    reason: failure,
+                                    http_status,
+                                }
+                            } else {
+                                SecretScanningAlerts::Observable {
+                                    source,
+                                    has_open_alerts,
+                                    http_status,
+                                }
+                            };
+                            let expected =
+                                match outcome_table[meta_index][source_index * 3 + probe_index] {
+                                    Expected::MetadataEnabled => SecretScanningResult::Enabled {
+                                        provenance: EnabledProvenance::Metadata {
+                                            http_status: Some(200),
+                                            alerts: probe,
+                                        },
+                                        timestamp: timestamp.into(),
+                                    },
+                                    Expected::Disabled => SecretScanningResult::Disabled {
+                                        metadata_http_status: None,
+                                        observation: match probe_index {
+                                            0 => DisabledObservation::NoMismatch {
+                                                source,
+                                                http_status,
+                                            },
+                                            1 => DisabledObservation::StatusMismatch {
+                                                source,
+                                                http_status,
+                                            },
+                                            _ => DisabledObservation::ProbeFailed {
+                                                source,
+                                                reason: failure,
+                                                http_status,
+                                            },
+                                        },
+                                        timestamp: timestamp.into(),
+                                    },
+                                    Expected::OrgUnknown => SecretScanningResult::Unobservable {
+                                        metadata,
+                                        probe: UnobservableProbe::OrgSummaryObserved {
+                                            has_open_alerts,
+                                            http_status,
+                                        },
+                                        timestamp: timestamp.into(),
+                                    },
+                                    Expected::Fallback => SecretScanningResult::Enabled {
+                                        provenance: EnabledProvenance::Fallback {
+                                            metadata,
+                                            has_open_alerts,
+                                            http_status,
+                                        },
+                                        timestamp: timestamp.into(),
+                                    },
+                                    Expected::Failed => SecretScanningResult::Unobservable {
+                                        metadata,
+                                        probe: UnobservableProbe::Failed {
+                                            source,
+                                            reason: failure,
+                                            http_status,
+                                        },
+                                        timestamp: timestamp.into(),
+                                    },
+                                };
+                            let actual = from_observations(meta, probe, timestamp);
+                            assert_eq!(
+                                actual, expected,
+                                "metadata row {meta_index}, source {source_index}, probe {probe_index}"
+                            );
+                            if meta_index == 1 {
+                                assert_eq!(actual.status(), SecretScanningStatus::Disabled);
+                                assert_eq!(actual.status_mismatch(), probe_index == 1);
+                                assert_eq!(actual.has_open_alerts(), None);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_probe_matrix_roundtrips_native_and_reopens() {
+        use pardosa::prelude::PardosaType;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("secret.pgno");
+        let store = crate::store::NativeStore::create_pgno(&path).unwrap();
+        let mut metadata = vec![
+            RepoMetadata::Enabled(Some(200)),
+            RepoMetadata::Disabled(Some(200)),
+            RepoMetadata::Unavailable(MetadataUnavailable::Missing {
+                http_status: Some(200),
+            }),
+            RepoMetadata::Unavailable(MetadataUnavailable::Malformed { http_status: None }),
+        ];
+        let reasons = [
+            SecretScanningFailureReason::PermissionDenied,
+            SecretScanningFailureReason::PermissionSuspected,
+            SecretScanningFailureReason::RateLimited,
+            SecretScanningFailureReason::Transient,
+            SecretScanningFailureReason::Unavailable,
+            SecretScanningFailureReason::InsufficientEvidence,
+            SecretScanningFailureReason::Conflict,
+            SecretScanningFailureReason::Invalid,
+            SecretScanningFailureReason::Pending,
+        ];
+        for reason in reasons {
+            metadata.push(RepoMetadata::Unavailable(MetadataUnavailable::Failure {
+                reason,
+                http_status: Some(403),
+            }));
+        }
+        let mut expected = Vec::new();
+        for meta in metadata {
+            for source in [ProbeSource::OrgSummary, ProbeSource::PerRepoEndpoint] {
+                let mut probes = vec![
+                    SecretScanningAlerts::Observable {
+                        source,
+                        has_open_alerts: false,
+                        http_status: None,
+                    },
+                    SecretScanningAlerts::Observable {
+                        source,
+                        has_open_alerts: true,
+                        http_status: Some(200),
+                    },
+                ];
+                for reason in reasons {
+                    probes.push(SecretScanningAlerts::Unobservable {
+                        source,
+                        reason,
+                        http_status: Some(429),
+                    });
+                }
+                for probe in probes {
+                    let result = from_observations(meta, probe, "2026-09-21T00:00:00Z");
+                    let native =
+                        crate::event::SecretScanningResult::try_from(result.clone()).unwrap();
+                    let mut bytes = Vec::new();
+                    native.encode_type(&mut bytes).unwrap();
+                    let (decoded, consumed) =
+                        crate::event::SecretScanningResult::decode_type(&bytes).unwrap();
+                    assert_eq!(consumed, bytes.len());
+                    assert_eq!(decoded, native);
+                    let domain: SecretScanningResult = decoded.into();
+                    assert_eq!(domain.status(), result.status());
+                    assert_eq!(
+                        crate::event::SecretScanningResult::try_from(domain).unwrap(),
+                        native
+                    );
+                    let mut evidence = crate::test_fixtures::all_passing_evidence("secret");
+                    evidence.checks.secret_scanning = result;
+                    let event = crate::event::DomainEvent::RepositoryStateCaptured {
+                        domain_key: pardosa::prelude::NonEmptyEventString::new("secret").unwrap(),
+                        repo_name: pardosa::prelude::NonEmptyEventString::new("secret").unwrap(),
+                        timestamp: pardosa::prelude::Timestamp::new(40).unwrap(),
+                        evidence: Some(evidence.try_into().unwrap()),
+                    };
+                    store.record("secret", event.clone()).unwrap();
+                    expected.push((false, event));
+                }
+            }
+        }
+        drop(store);
+        assert_eq!(
+            crate::store::NativeStore::open_pgno(&path)
+                .unwrap()
+                .events()
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn metadata_missing_malformed_and_probe_authority_are_distinct() {
+        for (data, missing) in [
+            (serde_json::json!({}), true),
+            (serde_json::json!(null), false),
+            (serde_json::json!({"security_and_analysis": 7}), false),
+        ] {
+            let outcome = ApiOutcome::Success {
+                status_code: 200,
+                data: Some(data),
+                headers: None,
+                truncated: false,
+            };
+            let meta = extract_repo_metadata(&outcome);
+            assert_eq!(
+                matches!(
+                    meta,
+                    RepoMetadata::Unavailable(MetadataUnavailable::Missing { .. })
+                ),
+                missing
+            );
+            let result = from_observations(
+                meta,
+                SecretScanningAlerts::Observable {
+                    source: ProbeSource::OrgSummary,
+                    has_open_alerts: true,
+                    http_status: Some(200),
+                },
+                "2026-09-21T00:00:00Z",
+            );
+            assert!(matches!(
+                result,
+                SecretScanningResult::Unobservable {
+                    probe: UnobservableProbe::OrgSummaryObserved { .. },
+                    ..
+                }
+            ));
+        }
+        let malformed = ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::json!({})),
+            headers: None,
+            truncated: false,
+        };
+        assert!(matches!(
+            endpoint_probe(&malformed),
+            SecretScanningAlerts::Unobservable {
+                reason: SecretScanningFailureReason::Invalid,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn empty_age_buckets_has_all_labels() {
@@ -791,53 +1183,68 @@ mod tests {
 
     #[test]
     fn build_result_fields() {
-        let result = build_result(
-            SecretScanningStatus::Enabled,
+        let result = from_observations(
+            RepoMetadata::Enabled(None),
+            SecretScanningAlerts::Observable {
+                source: ProbeSource::PerRepoEndpoint,
+                has_open_alerts: true,
+                http_status: None,
+            },
             "2026-01-01T00:00:00+00:00",
-            Some(true),
-            true,
-            None,
         );
-        assert_eq!(result.status, SecretScanningStatus::Enabled);
-        assert_eq!(result.has_open_alerts, Some(true));
-        assert!(result.alerts_observable);
-        assert!(result.reason.is_none());
+        assert_eq!(result.status(), SecretScanningStatus::Enabled);
+        assert_eq!(result.has_open_alerts(), Some(true));
+        assert!(result.alerts_observable());
+        assert!(result.reason().is_none());
     }
 
     #[test]
     fn build_result_with_reason() {
-        let result = build_result(
-            SecretScanningStatus::Unknown,
+        let result = from_observations(
+            RepoMetadata::Unavailable(MetadataUnavailable::Missing { http_status: None }),
+            SecretScanningAlerts::Unobservable {
+                source: ProbeSource::PerRepoEndpoint,
+                reason: SecretScanningFailureReason::Unavailable,
+                http_status: None,
+            },
             "2026-01-01T00:00:00+00:00",
-            None,
-            false,
-            Some("alerts_unavailable"),
         );
-        assert_eq!(result.status, SecretScanningStatus::Unknown);
-        assert_eq!(result.reason.as_deref(), Some("alerts_unavailable"));
+        assert_eq!(result.status(), SecretScanningStatus::Unknown);
+        assert_eq!(result.reason(), Some("alerts_unavailable"));
     }
 
     #[test]
     fn evaluate_org_permission_denied_with_direct_status() {
-        let result = evaluate_org_permission_denied(
+        let mut summary = success_summary();
+        summary.collection_status = CollectionStatus::PermissionDenied;
+        let result = evaluate_with_org_summary(
+            &sample_repo("1", None, "repo"),
             "2026-04-09T12:00:00+00:00",
+            &summary,
             Some(SecretScanningStatus::Enabled),
         );
-        assert_eq!(result.status, SecretScanningStatus::Enabled);
+        assert_eq!(result.status(), SecretScanningStatus::Enabled);
         assert_eq!(
-            result.reason.as_deref(),
-            Some("alerts_permission_denied"),
+            result.reason(),
+            Some("permission_denied"),
             "Some(s) arm should use 'alerts_permission_denied' reason"
         );
-        assert!(!result.alerts_observable);
+        assert!(!result.alerts_observable());
     }
 
     #[test]
     fn evaluate_org_permission_denied_without_direct_status() {
-        let result = evaluate_org_permission_denied("2026-04-09T12:00:00+00:00", None);
-        assert_eq!(result.status, SecretScanningStatus::PermissionDenied);
+        let mut summary = success_summary();
+        summary.collection_status = CollectionStatus::PermissionDenied;
+        let result = evaluate_with_org_summary(
+            &sample_repo("1", None, "repo"),
+            "2026-04-09T12:00:00+00:00",
+            &summary,
+            None,
+        );
+        assert_eq!(result.status(), SecretScanningStatus::PermissionDenied);
         assert_eq!(
-            result.reason.as_deref(),
+            result.reason(),
             Some("permission_denied"),
             "None arm should use 'permission_denied' reason"
         );
@@ -845,25 +1252,36 @@ mod tests {
 
     #[test]
     fn evaluate_org_transient_error_with_direct_status() {
-        let result = evaluate_org_transient_error(
+        let mut summary = success_summary();
+        summary.collection_status = CollectionStatus::TransientError;
+        let result = evaluate_with_org_summary(
+            &sample_repo("1", None, "repo"),
             "2026-04-09T12:00:00+00:00",
+            &summary,
             Some(SecretScanningStatus::Disabled),
         );
-        assert_eq!(result.status, SecretScanningStatus::Disabled);
+        assert_eq!(result.status(), SecretScanningStatus::Disabled);
         assert_eq!(
-            result.reason.as_deref(),
-            Some("alerts_transient_error"),
+            result.reason(),
+            Some("transient_error"),
             "Some(s) arm should use 'alerts_transient_error' reason"
         );
-        assert!(!result.alerts_observable);
+        assert!(!result.alerts_observable());
     }
 
     #[test]
     fn evaluate_org_transient_error_without_direct_status() {
-        let result = evaluate_org_transient_error("2026-04-09T12:00:00+00:00", None);
-        assert_eq!(result.status, SecretScanningStatus::Unknown);
+        let mut summary = success_summary();
+        summary.collection_status = CollectionStatus::TransientError;
+        let result = evaluate_with_org_summary(
+            &sample_repo("1", None, "repo"),
+            "2026-04-09T12:00:00+00:00",
+            &summary,
+            None,
+        );
+        assert_eq!(result.status(), SecretScanningStatus::Unknown);
         assert_eq!(
-            result.reason.as_deref(),
+            result.reason(),
             Some("transient_error"),
             "None arm should use 'transient_error' reason"
         );
@@ -907,6 +1325,36 @@ mod tests {
             summary.total_open_secret_alerts, 0,
             "a degraded summary must not report partial alert counts"
         );
+    }
+
+    #[test]
+    fn org_payload_shape_preserves_http_without_claiming_absence() {
+        for data in [
+            None,
+            Some(serde_json::json!({})),
+            Some(serde_json::json!(null)),
+        ] {
+            let outcome = ApiOutcome::Success {
+                status_code: 200,
+                data,
+                headers: None,
+                truncated: false,
+            };
+            let summary = evaluate_org_alert_outcome(&outcome).unwrap_err();
+            assert_eq!(summary.http_status, Some(200));
+            assert_eq!(summary.collection_status, CollectionStatus::Unavailable);
+            assert_eq!(
+                summary.collection_reason.as_deref(),
+                Some("malformed_response")
+            );
+        }
+        let empty = ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::json!([])),
+            headers: None,
+            truncated: false,
+        };
+        assert!(evaluate_org_alert_outcome(&empty).unwrap().is_empty());
     }
 
     fn sample_repo(id: &str, node_id: Option<&str>, name: &str) -> Arc<Repository> {
@@ -953,6 +1401,7 @@ mod tests {
         let mut summary = OrgAlertSummary {
             collection_status: CollectionStatus::Success,
             collection_reason: None,
+            http_status: Some(200),
             per_repo: HashMap::new(),
             open_secret_alert_age_buckets: empty_age_buckets(),
             total_open_secret_alerts: 0,
@@ -973,6 +1422,7 @@ mod tests {
         OrgAlertSummary {
             collection_status: CollectionStatus::Success,
             collection_reason: None,
+            http_status: Some(200),
             per_repo: HashMap::new(),
             open_secret_alert_age_buckets: empty_age_buckets(),
             total_open_secret_alerts: 0,
@@ -1041,10 +1491,11 @@ mod tests {
                 Some(SecretScanningStatus::Enabled),
             );
             assert_eq!(
-                eval.has_open_alerts, None,
+                eval.has_open_alerts(),
+                None,
                 "{label}: degraded summary must not claim alert-free"
             );
-            assert!(!eval.alerts_observable, "{label}");
+            assert!(!eval.alerts_observable(), "{label}");
         }
     }
 
@@ -1165,6 +1616,7 @@ mod tests {
         let mut summary = OrgAlertSummary {
             collection_status: CollectionStatus::Success,
             collection_reason: None,
+            http_status: Some(200),
             per_repo: HashMap::new(),
             open_secret_alert_age_buckets: empty_age_buckets(),
             total_open_secret_alerts: 0,
@@ -1189,9 +1641,9 @@ mod tests {
             &summary,
             Some(SecretScanningStatus::Enabled),
         );
-        assert_eq!(eval_a.has_open_alerts, None);
-        assert!(!eval_a.alerts_observable);
-        assert_eq!(eval_a.reason.as_deref(), Some("alert_coordinate_conflict"));
+        assert_eq!(eval_a.has_open_alerts(), None);
+        assert!(!eval_a.alerts_observable());
+        assert_eq!(eval_a.reason(), Some("conflict"));
 
         let eval_b = evaluate_with_org_summary(
             &repo_b,
@@ -1199,9 +1651,9 @@ mod tests {
             &summary,
             Some(SecretScanningStatus::Enabled),
         );
-        assert_eq!(eval_b.has_open_alerts, None);
-        assert!(!eval_b.alerts_observable);
-        assert_eq!(eval_b.reason.as_deref(), Some("alert_coordinate_conflict"));
+        assert_eq!(eval_b.has_open_alerts(), None);
+        assert!(!eval_b.alerts_observable());
+        assert_eq!(eval_b.reason(), Some("conflict"));
     }
 
     fn test_client(base_url: &str) -> GitHubClient {
@@ -1217,6 +1669,85 @@ mod tests {
         let rate_limit = Arc::new(crate::github::rate_limit::new_default());
         GitHubClient::new(credential, base_url, "test-org", None, budget, rate_limit)
             .expect("test client construction should succeed")
+    }
+
+    #[tokio::test]
+    async fn org_http_boundary_preserves_typed_failure() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        for (code, body, status, reason, coarse) in [
+            (
+                401,
+                serde_json::json!({"message":"unauthorized"}),
+                CollectionStatus::PermissionDenied,
+                SecretScanningFailureReason::PermissionDenied,
+                SecretScanningStatus::PermissionDenied,
+            ),
+            (
+                403,
+                serde_json::json!({"message":"forbidden"}),
+                CollectionStatus::PermissionDenied,
+                SecretScanningFailureReason::PermissionDenied,
+                SecretScanningStatus::PermissionDenied,
+            ),
+            (
+                429,
+                serde_json::json!({"message":"rate limited"}),
+                CollectionStatus::Unavailable,
+                SecretScanningFailureReason::RateLimited,
+                SecretScanningStatus::Unknown,
+            ),
+            (
+                503,
+                serde_json::json!({"message":"unavailable"}),
+                CollectionStatus::TransientError,
+                SecretScanningFailureReason::Transient,
+                SecretScanningStatus::Unknown,
+            ),
+            (
+                200,
+                serde_json::json!({}),
+                CollectionStatus::Unavailable,
+                SecretScanningFailureReason::Invalid,
+                SecretScanningStatus::Unknown,
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(path("/orgs/test-org/secret-scanning/alerts"))
+                .respond_with(
+                    ResponseTemplate::new(code)
+                        .insert_header("Retry-After", "0")
+                        .set_body_json(body),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(path("/repos/test-org/repo"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+                .mount(&server)
+                .await;
+            let client = test_client(&server.uri());
+            let repo = sample_repo("1", None, "repo");
+            let summary =
+                collect_org_alerts(&client, &[Arc::clone(&repo)], "2026-09-21T00:00:00Z").await;
+            assert_eq!(summary.collection_status, status, "HTTP {code}");
+            assert_eq!(summary.http_status, Some(code));
+            let result = evaluate(&client, &repo, "2026-09-21T00:00:00Z", Some(&summary)).await;
+            assert_eq!(result.status(), coarse, "HTTP {code}");
+            assert_eq!(
+                result,
+                SecretScanningResult::Unobservable {
+                    metadata: MetadataUnavailable::Missing {
+                        http_status: Some(200)
+                    },
+                    probe: UnobservableProbe::Failed {
+                        source: ProbeSource::OrgSummary,
+                        reason,
+                        http_status: Some(code)
+                    },
+                    timestamp: "2026-09-21T00:00:00Z".into(),
+                }
+            );
+        }
     }
 
     #[tokio::test]

@@ -15,9 +15,23 @@ use crate::event::{DomainEvent, OrgStateCaptured, TeamStateCaptured};
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("store already exists: {0}")]
-    AlreadyExists(String),
+    AlreadyExists(#[source] OperationFailure),
     #[error("pardosa infrastructure error: {0}")]
     Infrastructure(String),
+    #[error("pardosa operation failed: {0}")]
+    Operation(#[source] OperationFailure),
+    #[error("native creation requires reconciliation: {0}")]
+    CreationUnknown(#[source] OperationFailure),
+    #[error("payload encoding failed: {0}")]
+    Encode(#[source] EncodeError),
+    #[error("payload decoding failed: {0}")]
+    Decode(#[source] DecodeError),
+    #[error("write landing requires reconciliation at epoch {carried_epoch}")]
+    Indeterminate { carried_epoch: u64 },
+    #[error("write landed, but subsequent operation failed: {0}")]
+    AfterLanded(#[source] Box<StoreError>),
+    #[error("write landed; cache reconciliation required")]
+    LandedNeedsReconciliation,
     #[error("concurrency conflict")]
     ConcurrencyConflict {
         expected_seq: Option<u64>,
@@ -43,29 +57,29 @@ impl StoreError {
 
 impl From<OperationFailure> for StoreError {
     fn from(err: OperationFailure) -> Self {
-        if err.is_already_exists() {
-            StoreError::AlreadyExists(err.to_string())
-        } else if err.is_concurrency_conflict() {
-            StoreError::ConcurrencyConflict {
-                expected_seq: None,
-                actual_seq: None,
-                source: Box::new(err),
+        match err.condition() {
+            FailureCondition::StoreAlreadyExists => StoreError::AlreadyExists(err),
+            FailureCondition::ConcurrencyConflict | FailureCondition::StaleEpoch => {
+                StoreError::ConcurrencyConflict {
+                    expected_seq: None,
+                    actual_seq: None,
+                    source: Box::new(err),
+                }
             }
-        } else {
-            StoreError::Infrastructure(err.to_string())
+            _ => StoreError::Operation(err),
         }
     }
 }
 
 impl From<EncodeError> for StoreError {
     fn from(err: EncodeError) -> Self {
-        StoreError::Infrastructure(err.to_string())
+        StoreError::Encode(err)
     }
 }
 
 impl From<DecodeError> for StoreError {
     fn from(err: DecodeError) -> Self {
-        StoreError::Infrastructure(err.to_string())
+        StoreError::Decode(err)
     }
 }
 
@@ -81,15 +95,87 @@ fn default_claim(epoch: u64, label: &str) -> OwnershipClaimRecord {
     }
 }
 
+enum WriteKnowledge {
+    Ready,
+    Unknown(u64),
+    Landed,
+}
+
+impl WriteKnowledge {
+    fn check(&self) -> Result<(), StoreError> {
+        match self {
+            Self::Ready => Ok(()),
+            Self::Unknown(carried_epoch) => Err(StoreError::Indeterminate {
+                carried_epoch: *carried_epoch,
+            }),
+            Self::Landed => Err(StoreError::LandedNeedsReconciliation),
+        }
+    }
+
+    fn accept<T>(&mut self, verdict: WriteLandingVerdict<T>) -> Result<T, StoreError> {
+        match verdict {
+            WriteLandingVerdict::Landed(value) => {
+                *self = Self::Landed;
+                Ok(value)
+            }
+            WriteLandingVerdict::Undetermined { carried_epoch } => {
+                *self = Self::Unknown(carried_epoch);
+                Err(StoreError::Indeterminate { carried_epoch })
+            }
+        }
+    }
+}
+
+fn after_landed(error: impl Into<StoreError>) -> StoreError {
+    StoreError::AfterLanded(Box::new(error.into()))
+}
+
+fn creation_failure(error: OperationFailure) -> StoreError {
+    StoreError::CreationUnknown(error)
+}
+
+fn require_absent(presence: ArtefactPresence) -> Result<(), StoreError> {
+    match presence {
+        ArtefactPresence::None => Ok(()),
+        _ => Err(StoreError::AlreadyExists(OperationFailure::new(
+            FailureCondition::StoreAlreadyExists,
+            "store artefacts precede create",
+        ))),
+    }
+}
+
 #[derive(Clone)]
 enum StorageBackend {
     File(PathBuf),
     Nats(Box<NatsStorageAdapter>),
 }
 
+#[cfg(test)]
+type FileSessionFault = fn(pardosa::file::FileWriterSession) -> pardosa::file::FileWriterSession;
+
+#[cfg(test)]
+type BeforeFileSync = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_FILE_SYNC: std::cell::RefCell<Option<BeforeFileSync>> = std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn before_file_sync(path: &Path) {
+    if let Some(hook) = BEFORE_FILE_SYNC.take() {
+        hook(path);
+    }
+}
+
 struct StoreInner<E> {
+    #[cfg(test)]
+    session_fault: Mutex<Option<FileSessionFault>>,
+    #[cfg(test)]
+    write_failure: Mutex<Option<FailureCondition>>,
     backend: StorageBackend,
     cached: Mutex<CachedEvents<E>>,
+    knowledge: Mutex<WriteKnowledge>,
 }
 
 type CachedEvents<E> = Vec<(bool, [u8; 16], E)>;
@@ -97,7 +183,7 @@ type CachedEvents<E> = Vec<(bool, [u8; 16], E)>;
 fn verify_schema_descriptor<E: PardosaSchema>(
     actual: Option<&SchemaDescriptor>,
 ) -> Result<(), StoreError> {
-    let expected = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
+    let expected = SchemaDescriptor::new(E::SCHEMA_VERSION, E::schema_descriptor());
     match actual {
         Some(actual) if actual.identity() == expected.identity() => Ok(()),
         Some(actual) => Err(StoreError::Infrastructure(format!(
@@ -113,20 +199,37 @@ fn verify_schema_descriptor<E: PardosaSchema>(
 }
 
 impl<E: PardosaSchema> StoreInner<E> {
+    fn lock_knowledge(&self) -> Result<std::sync::MutexGuard<'_, WriteKnowledge>, StoreError> {
+        let state = self.knowledge.lock().map_err(|_| StoreError::Poisoned)?;
+        state.check()?;
+        Ok(state)
+    }
+
     fn lock_cached(&self) -> Result<std::sync::MutexGuard<'_, CachedEvents<E>>, StoreError> {
+        let _state = self.lock_knowledge()?;
         self.cached.lock().map_err(|_| StoreError::Poisoned)
     }
 
     fn create_pgno(path: &Path, label: &'static str) -> Result<Self, StoreError> {
         let adapter = FileStorageAdapter::new(path);
         let claim = default_claim(1, label);
-        let mut session = adapter.create(&claim)?;
-        let desc = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
-        session.set_schema_descriptor(&desc)?;
-        session.sync()?;
+        let desc = AdmittedDescriptor::try_from_descriptor(SchemaDescriptor::new(
+            E::SCHEMA_VERSION,
+            E::schema_descriptor(),
+        ))?;
+        require_absent(adapter.try_presence()?)?;
+        let mut session = adapter.create(&claim, &desc).map_err(creation_failure)?;
+        #[cfg(test)]
+        before_file_sync(path);
+        session.sync().map_err(after_landed)?;
         Ok(Self {
             backend: StorageBackend::File(path.to_path_buf()),
+            #[cfg(test)]
+            write_failure: Mutex::new(None),
+            #[cfg(test)]
+            session_fault: Mutex::new(None),
             cached: Mutex::new(Vec::new()),
+            knowledge: Mutex::new(WriteKnowledge::Ready),
         })
     }
 
@@ -142,19 +245,32 @@ impl<E: PardosaSchema> StoreInner<E> {
         }
         Ok(Self {
             backend: StorageBackend::File(path.to_path_buf()),
+            #[cfg(test)]
+            write_failure: Mutex::new(None),
+            #[cfg(test)]
+            session_fault: Mutex::new(None),
             cached: Mutex::new(cached),
+            knowledge: Mutex::new(WriteKnowledge::Ready),
         })
     }
 
     fn create_nats(adapter: NatsStorageAdapter, label: &'static str) -> Result<Self, StoreError> {
         let claim = default_claim(1, label);
-        let mut session = adapter.create(&claim)?;
-        let desc = SchemaDescriptor::new(E::schema_version(), E::schema_descriptor());
-        session.set_schema_descriptor(&desc)?;
-        session.sync()?;
+        let desc = AdmittedDescriptor::try_from_descriptor(SchemaDescriptor::new(
+            E::SCHEMA_VERSION,
+            E::schema_descriptor(),
+        ))?;
+        require_absent(adapter.try_presence()?)?;
+        let mut session = adapter.create(&claim, &desc).map_err(creation_failure)?;
+        session.sync().map_err(after_landed)?;
         Ok(Self {
             backend: StorageBackend::Nats(Box::new(adapter)),
+            #[cfg(test)]
+            write_failure: Mutex::new(None),
+            #[cfg(test)]
+            session_fault: Mutex::new(None),
             cached: Mutex::new(Vec::new()),
+            knowledge: Mutex::new(WriteKnowledge::Ready),
         })
     }
 
@@ -169,11 +285,17 @@ impl<E: PardosaSchema> StoreInner<E> {
         }
         Ok(Self {
             backend: StorageBackend::Nats(Box::new(adapter)),
+            #[cfg(test)]
+            write_failure: Mutex::new(None),
+            #[cfg(test)]
+            session_fault: Mutex::new(None),
             cached: Mutex::new(cached),
+            knowledge: Mutex::new(WriteKnowledge::Ready),
         })
     }
 
     fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
+        let _state = self.lock_knowledge()?;
         let adapter = FileStorageAdapter::new(path);
         let mut reader = adapter.open_read()?;
         verify_schema_descriptor::<E>(reader.meta_records().schema_descriptor.as_ref())?;
@@ -183,11 +305,12 @@ impl<E: PardosaSchema> StoreInner<E> {
             let event = E::decode_payload(&env.payload)?;
             cached.push((env.header.detached, env.header.fiber_id, event));
         }
-        *self.lock_cached()? = cached;
+        *self.cached.lock().map_err(|_| StoreError::Poisoned)? = cached;
         Ok(())
     }
 
     fn resync_from_authoritative(&self) -> Result<(), StoreError> {
+        let _state = self.lock_knowledge()?;
         let envelopes = match &self.backend {
             StorageBackend::File(path) => {
                 let adapter = FileStorageAdapter::new(path);
@@ -206,11 +329,16 @@ impl<E: PardosaSchema> StoreInner<E> {
             let event = E::decode_payload(&env.payload)?;
             cached.push((env.header.detached, env.header.fiber_id, event));
         }
-        *self.lock_cached()? = cached;
+        *self.cached.lock().map_err(|_| StoreError::Poisoned)? = cached;
         Ok(())
     }
 
     fn record(&self, domain_key: &str, event: E) -> Result<(), StoreError> {
+        #[cfg(test)]
+        if let Some(condition) = self.write_failure.lock().unwrap().clone() {
+            return Err(OperationFailure::new(condition, "injected pre-write failure").into());
+        }
+        let mut state = self.lock_knowledge()?;
         let fiber_id = derive_fiber_id(domain_key);
         let mut payload = Vec::new();
         event.encode_payload(&mut payload)?;
@@ -221,32 +349,43 @@ impl<E: PardosaSchema> StoreInner<E> {
                 let adapter = FileStorageAdapter::new(path);
                 let epoch = adapter.current_epoch()?;
                 let mut session = adapter.open_write(epoch)?;
+                #[cfg(test)]
+                if let Some(inject) = *self.session_fault.lock().unwrap() {
+                    session = inject(session);
+                }
                 let handle = session.fiber(fiber_id)?;
                 if handle.is_detached() {
-                    session.rescue_fiber(fiber_id, event_id, payload)?;
+                    state.accept(session.rescue_fiber(fiber_id, event_id, payload)?)?;
                 } else {
-                    session.append_to_fiber(fiber_id, event_id, payload)?;
+                    state.accept(session.append_to_fiber(fiber_id, event_id, payload)?)?;
                 }
-                session.sync()?;
+                #[cfg(test)]
+                before_file_sync(path);
+                session.sync().map_err(after_landed)?;
             }
             StorageBackend::Nats(adapter) => {
                 let epoch = adapter.current_epoch()?;
                 let mut session = adapter.open_write(epoch)?;
                 let handle = session.fiber(fiber_id)?;
                 if handle.is_detached() {
-                    session.rescue_fiber(fiber_id, event_id, payload)?;
+                    state.accept(session.rescue_fiber(fiber_id, event_id, payload)?)?;
                 } else {
-                    session.append_to_fiber(fiber_id, event_id, payload)?;
+                    state.accept(session.append_to_fiber(fiber_id, event_id, payload)?)?;
                 }
-                session.sync()?;
+                session.sync().map_err(after_landed)?;
             }
         }
 
-        self.lock_cached()?.push((false, fiber_id, event));
+        self.cached
+            .lock()
+            .map_err(|_| after_landed(StoreError::Poisoned))?
+            .push((false, fiber_id, event));
+        *state = WriteKnowledge::Ready;
         Ok(())
     }
 
-    fn detach(&self, domain_key: &str, event: E) -> Result<(), StoreError> {
+    fn detach(&self, domain_key: &str, event: E) -> Result<bool, StoreError> {
+        let mut state = self.lock_knowledge()?;
         let fiber_id = derive_fiber_id(domain_key);
         let mut payload = Vec::new();
         event.encode_payload(&mut payload)?;
@@ -257,10 +396,16 @@ impl<E: PardosaSchema> StoreInner<E> {
                 let adapter = FileStorageAdapter::new(path);
                 let epoch = adapter.current_epoch()?;
                 let mut session = adapter.open_write(epoch)?;
+                #[cfg(test)]
+                if let Some(inject) = *self.session_fault.lock().unwrap() {
+                    session = inject(session);
+                }
                 let handle = session.fiber(fiber_id)?;
                 if handle.is_active() {
-                    session.detach_fiber(fiber_id, event_id, payload)?;
-                    session.sync()?;
+                    state.accept(session.detach_fiber(fiber_id, event_id, payload)?)?;
+                    #[cfg(test)]
+                    before_file_sync(path);
+                    session.sync().map_err(after_landed)?;
                 }
             }
             StorageBackend::Nats(adapter) => {
@@ -268,14 +413,21 @@ impl<E: PardosaSchema> StoreInner<E> {
                 let mut session = adapter.open_write(epoch)?;
                 let handle = session.fiber(fiber_id)?;
                 if handle.is_active() {
-                    session.detach_fiber(fiber_id, event_id, payload)?;
-                    session.sync()?;
+                    state.accept(session.detach_fiber(fiber_id, event_id, payload)?)?;
+                    session.sync().map_err(after_landed)?;
                 }
             }
         }
 
-        self.lock_cached()?.push((true, fiber_id, event));
-        Ok(())
+        let landed = matches!(*state, WriteKnowledge::Landed);
+        if landed {
+            self.cached
+                .lock()
+                .map_err(|_| after_landed(StoreError::Poisoned))?
+                .push((true, fiber_id, event));
+            *state = WriteKnowledge::Ready;
+        }
+        Ok(landed)
     }
 
     fn events(&self) -> Result<Vec<(bool, E)>, StoreError>
@@ -438,6 +590,14 @@ impl NativeStore {
     /// # Errors
     /// Returns [`StoreError`] if encoding, detaching, or syncing the fiber fails.
     pub fn detach(&self, domain_key: &str, event: DomainEvent) -> Result<(), StoreError> {
+        self.inner.detach(domain_key, event).map(|_| ())
+    }
+
+    pub(crate) fn detach_effect(
+        &self,
+        domain_key: &str,
+        event: DomainEvent,
+    ) -> Result<bool, StoreError> {
         self.inner.detach(domain_key, event)
     }
 
@@ -490,6 +650,10 @@ impl NativeStore {
 }
 
 impl NativeOrgStore {
+    #[cfg(test)]
+    pub(crate) fn fail_writes_for_test(&self, condition: FailureCondition) {
+        *self.inner.write_failure.lock().unwrap() = Some(condition);
+    }
     /// Create a fresh `.pgno`-backed org store, truncating any existing file.
     ///
     /// # Errors
@@ -574,6 +738,10 @@ impl NativeOrgStore {
 }
 
 impl NativeTeamStore {
+    #[cfg(test)]
+    pub(crate) fn fail_writes_for_test(&self, condition: FailureCondition) {
+        *self.inner.write_failure.lock().unwrap() = Some(condition);
+    }
     /// Create a fresh `.pgno`-backed team store, truncating any existing file.
     ///
     /// # Errors
@@ -649,7 +817,7 @@ impl NativeTeamStore {
     /// # Errors
     /// Returns [`StoreError`] if encoding, detaching, or syncing the fiber fails.
     pub fn detach(&self, team_key: &str, event: TeamStateCaptured) -> Result<(), StoreError> {
-        self.inner.detach(team_key, event)
+        self.inner.detach(team_key, event).map(|_| ())
     }
 
     /// Fold every team event in committed line order without materialising an owned vector.
@@ -669,6 +837,303 @@ impl NativeTeamStore {
 pub(crate) mod tests {
     use super::*;
     use crate::event::team_domain_key;
+
+    fn mismatched_descriptor() -> AdmittedDescriptor {
+        AdmittedDescriptor::try_from_descriptor(SchemaDescriptor::new(999, DescriptorNode::U64))
+            .unwrap()
+    }
+
+    #[test]
+    fn unknown_latch_blocks_later_reads_writes_and_resync() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unknown.pgno");
+        let store = NativeStore::create_pgno(&path).unwrap();
+        let mut state = store.inner.lock_knowledge().unwrap();
+        assert!(
+            state
+                .accept::<()>(WriteLandingVerdict::Undetermined { carried_epoch: 7 })
+                .is_err()
+        );
+        drop(state);
+        assert!(matches!(
+            store.events(),
+            Err(StoreError::Indeterminate { carried_epoch: 7 })
+        ));
+        assert!(store.record("repo", synthetic_domain_event(1)).is_err());
+        assert!(store.detach("repo", synthetic_domain_event(2)).is_err());
+        assert!(store.resync_pgno_from_authoritative(&path).is_err());
+        assert!(
+            NativeStore::open_pgno(&path)
+                .unwrap()
+                .events()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn detaching_absent_fiber_does_not_publish_a_phantom_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("noop.pgno");
+        let store = NativeStore::create_pgno(&path).unwrap();
+        store.detach("absent", synthetic_domain_event(1)).unwrap();
+        assert!(store.events().unwrap().is_empty());
+        assert!(
+            NativeStore::open_pgno(&path)
+                .unwrap()
+                .events()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_fault_append_rescue_detach_retains_unknown_without_second_write() {
+        for action in ["append", "rescue", "detach"] {
+            for fault in [0, 1, 2] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("fault.pgno");
+                let store = NativeStore::create_pgno(&path).unwrap();
+                store.record("repo", synthetic_domain_event(1)).unwrap();
+                if action == "rescue" {
+                    store.detach("repo", synthetic_domain_event(2)).unwrap();
+                }
+                let before = store.inner.cached.lock().unwrap().len();
+                *store.inner.session_fault.lock().unwrap() = Some(match fault {
+                    0 => |session| session.with_simulate_indeterminate(true),
+                    1 => |session| session.with_simulate_write_error(true),
+                    _ => |session| session.with_simulate_sync_error(true),
+                });
+                let result = if action == "detach" {
+                    store.detach("repo", synthetic_domain_event(3))
+                } else {
+                    store.record("repo", synthetic_domain_event(3))
+                };
+                assert!(
+                    matches!(result, Err(StoreError::Indeterminate { .. })),
+                    "{action}/{fault}: {result:?}"
+                );
+                assert_eq!(store.inner.cached.lock().unwrap().len(), before);
+                let persisted = std::fs::read(&path).unwrap();
+                assert!(matches!(
+                    store.record("repo", synthetic_domain_event(4)),
+                    Err(StoreError::Indeterminate { .. })
+                ));
+                assert_eq!(std::fs::read(&path).unwrap(), persisted);
+                let reopened = NativeStore::open_pgno(&path).unwrap();
+                assert_eq!(
+                    reopened.events().unwrap().len(),
+                    before + usize::from(fault == 2)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn already_detached_noop_preserves_cache_and_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("noop.pgno");
+        let store = NativeStore::create_pgno(&path).unwrap();
+        store.record("repo", synthetic_domain_event(1)).unwrap();
+        store.detach("repo", synthetic_domain_event(2)).unwrap();
+        let before = store.events().unwrap();
+        store.detach("repo", synthetic_domain_event(3)).unwrap();
+        assert_eq!(store.events().unwrap(), before);
+        assert_eq!(
+            NativeStore::open_pgno(&path).unwrap().events().unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn creation_failure_after_admission_is_unknown_not_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blocked.pgno");
+        let path = path.join("missing-parent.pgno");
+        let Err(error) = NativeStore::create_pgno(&path) else {
+            panic!("data path is a directory");
+        };
+        assert!(matches!(error, StoreError::CreationUnknown(_)));
+        assert!(!FileStorageAdapter::new(&path).meta_path().exists());
+    }
+
+    fn invalidate_authority_before_sync(path: &Path) {
+        let meta = FileStorageAdapter::new(path).meta_path().to_path_buf();
+        std::fs::write(meta, b"invalid authority after landing").unwrap();
+    }
+
+    #[test]
+    fn postland_sync_failure_preserves_landing_and_blocks_replay() {
+        for detach in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("postland.pgno");
+            let store = NativeStore::create_pgno(&path).unwrap();
+            store.record("repo", synthetic_domain_event(1)).unwrap();
+            let meta = FileStorageAdapter::new(&path).meta_path().to_path_buf();
+            let metadata = std::fs::read(&meta).unwrap();
+            BEFORE_FILE_SYNC.set(Some(Box::new(invalidate_authority_before_sync)));
+            let result = if detach {
+                store.detach("repo", synthetic_domain_event(2))
+            } else {
+                store.record("repo", synthetic_domain_event(2))
+            };
+            assert!(matches!(result, Err(StoreError::AfterLanded(_))));
+            assert_eq!(store.inner.cached.lock().unwrap().len(), 1);
+            let persisted = std::fs::read(&path).unwrap();
+            assert!(matches!(
+                store.record("repo", synthetic_domain_event(3)),
+                Err(StoreError::LandedNeedsReconciliation)
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), persisted);
+            std::fs::write(meta, metadata).unwrap();
+            assert_eq!(
+                NativeStore::open_pgno(&path)
+                    .unwrap()
+                    .events()
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn successful_create_followed_by_sync_failure_is_after_landed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("created.pgno");
+        BEFORE_FILE_SYNC.set(Some(Box::new(invalidate_authority_before_sync)));
+        assert!(matches!(
+            NativeStore::create_pgno(&path),
+            Err(StoreError::AfterLanded(_))
+        ));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            ContainerHeader::new().to_bytes()
+        );
+        assert!(FileStorageAdapter::new(&path).meta_path().exists());
+    }
+
+    struct InvalidDescriptor;
+
+    impl PardosaSchema for InvalidDescriptor {
+        const SCHEMA_VERSION: u32 = 1;
+        fn schema_descriptor() -> DescriptorNode {
+            (0..17).fold(DescriptorNode::U64, |inner, _| DescriptorNode::Option {
+                inner: Box::new(inner),
+            })
+        }
+        fn encode_payload(&self, _: &mut Vec<u8>) -> Result<(), EncodeError> {
+            unreachable!()
+        }
+        fn decode_payload(_: &[u8]) -> Result<Self, DecodeError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn invalid_descriptor_rejection_creates_no_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid.pgno");
+        assert!(StoreInner::<InvalidDescriptor>::create_pgno(&path, "invalid").is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn create_preflight_preserves_existing_artifacts_without_uncertainty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.pgno");
+        let store = NativeStore::create_pgno(&path).unwrap();
+        store.record("repo", synthetic_domain_event(1)).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            NativeStore::create_pgno(&path),
+            Err(StoreError::AlreadyExists(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), data);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelled_caller_does_not_cancel_owned_blocking_write_or_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cancel.pgno");
+        let store = std::sync::Arc::new(NativeStore::create_pgno(&path).unwrap());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let writer = std::sync::Arc::clone(&store);
+        let caller = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                BEFORE_FILE_SYNC.set(Some(Box::new(move |path| {
+                    entered_tx.send(()).unwrap();
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    invalidate_authority_before_sync(path);
+                })));
+                result_tx
+                    .send(writer.record("repo", synthetic_domain_event(1)))
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        release_tx.send(()).unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), result_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(StoreError::AfterLanded(_))));
+        assert!(store.inner.cached.lock().unwrap().is_empty());
+        let persisted = std::fs::read(&path).unwrap();
+        assert!(persisted.len() > ContainerHeader::new().to_bytes().len());
+        assert!(matches!(
+            store.record("repo", synthetic_domain_event(2)),
+            Err(StoreError::LandedNeedsReconciliation)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), persisted);
+    }
+
+    #[test]
+    fn cache_poison_after_landing_retains_committed_event_and_stops_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache-poison.pgno");
+        let store = NativeStore::create_pgno(&path).unwrap();
+        let _ = std::panic::catch_unwind(|| {
+            let _cache = store.inner.cached.lock().unwrap();
+            panic!("inject cache poison");
+        });
+        assert!(matches!(
+            store.record("repo", synthetic_domain_event(1)),
+            Err(StoreError::AfterLanded(_))
+        ));
+        assert!(matches!(
+            store.record("repo", synthetic_domain_event(2)),
+            Err(StoreError::LandedNeedsReconciliation)
+        ));
+        assert!(matches!(
+            store.events(),
+            Err(StoreError::LandedNeedsReconciliation)
+        ));
+        assert_eq!(
+            NativeStore::open_pgno(&path)
+                .unwrap()
+                .events()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    fn create_unadmitted(adapter: &FileStorageAdapter, claim: &OwnershipClaimRecord) {
+        adapter.create_incomplete_meta_only(claim).unwrap();
+        std::fs::write(adapter.pgno_path(), ContainerHeader::new().to_bytes()).unwrap();
+    }
 
     pub(crate) fn synthetic_domain_event(i: u64) -> DomainEvent {
         let domain_key = format!("domain-{i}");
@@ -723,8 +1188,8 @@ pub(crate) mod tests {
             OperationFailure::new(FailureCondition::TransportUnavailable, "connection refused");
 
         assert!(
-            matches!(StoreError::from(failure), StoreError::Infrastructure(_)),
-            "genuine transport outages keep their bounded-retry classification"
+            matches!(StoreError::from(failure), StoreError::Operation(_)),
+            "transport failures preserve their typed condition"
         );
     }
 
@@ -833,8 +1298,7 @@ pub(crate) mod tests {
         let path = dir.path().join("unadmitted.pgno");
         let adapter = FileStorageAdapter::new(&path);
         let claim = default_claim(1, "unadmitted");
-        let session = adapter.create(&claim).expect("create bare store");
-        drop(session);
+        create_unadmitted(&adapter, &claim);
 
         let Err(err) = NativeStore::open_pgno(&path) else {
             panic!("opening unadmitted store must fail closed");
@@ -852,11 +1316,9 @@ pub(crate) mod tests {
         let path = dir.path().join("mismatched.pgno");
         let adapter = FileStorageAdapter::new(&path);
         let claim = default_claim(1, "mismatched");
-        let mut session = adapter.create(&claim).expect("create bare store");
-        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
-        session
-            .set_schema_descriptor(&mismatched_desc)
-            .expect("set mismatched descriptor");
+        let mut session = adapter
+            .create(&claim, &mismatched_descriptor())
+            .expect("create mismatched store");
         session.sync().expect("sync mismatched descriptor");
         drop(session);
 
@@ -892,10 +1354,7 @@ pub(crate) mod tests {
 
         let adapter_unadmitted = FileStorageAdapter::new(&unadmitted_path);
         let claim = default_claim(1, "unadmitted");
-        let session = adapter_unadmitted
-            .create(&claim)
-            .expect("create bare store");
-        drop(session);
+        create_unadmitted(&adapter_unadmitted, &claim);
 
         let err_unadmitted = store
             .resync_pgno_from_authoritative(&unadmitted_path)
@@ -914,12 +1373,8 @@ pub(crate) mod tests {
         let adapter_mismatched = FileStorageAdapter::new(&mismatched_path);
         let claim_mismatched = default_claim(1, "mismatched");
         let mut session_mismatched = adapter_mismatched
-            .create(&claim_mismatched)
+            .create(&claim_mismatched, &mismatched_descriptor())
             .expect("create mismatched store");
-        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
-        session_mismatched
-            .set_schema_descriptor(&mismatched_desc)
-            .expect("set mismatched descriptor");
         session_mismatched
             .sync()
             .expect("sync mismatched descriptor");
@@ -961,11 +1416,9 @@ pub(crate) mod tests {
         remove_artefact_at(target);
         let adapter = FileStorageAdapter::new(target);
         let claim = default_claim(1, "mismatched");
-        let mut session = adapter.create(&claim).expect("create mismatched store");
-        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
-        session
-            .set_schema_descriptor(&mismatched_desc)
-            .expect("set mismatched descriptor");
+        let mut session = adapter
+            .create(&claim, &mismatched_descriptor())
+            .expect("create mismatched store");
         session.sync().expect("sync mismatched descriptor");
     }
 
@@ -973,8 +1426,7 @@ pub(crate) mod tests {
         remove_artefact_at(target);
         let adapter = FileStorageAdapter::new(target);
         let claim = default_claim(1, "unadmitted");
-        let session = adapter.create(&claim).expect("create unadmitted store");
-        drop(session);
+        create_unadmitted(&adapter, &claim);
     }
 
     #[test]
@@ -1077,14 +1529,12 @@ pub(crate) mod tests {
         remove_artefact_at(target);
         let adapter = FileStorageAdapter::new(target);
         let claim = default_claim(1, "decode-failure");
-        let mut session = adapter.create(&claim).expect("create store");
         let desc = SchemaDescriptor::new(
-            DomainEvent::schema_version(),
+            DomainEvent::SCHEMA_VERSION,
             DomainEvent::schema_descriptor(),
         );
-        session
-            .set_schema_descriptor(&desc)
-            .expect("set the CORRECT descriptor so verification passes");
+        let desc = AdmittedDescriptor::try_from_descriptor(desc).unwrap();
+        let mut session = adapter.create(&claim, &desc).expect("create store");
         session.sync().expect("sync descriptor");
         drop(session);
 
@@ -1611,12 +2061,8 @@ pub(crate) mod tests {
         );
         let claim = default_claim(1, "mismatched-nats");
         let mut session = adapter_mismatched_raw
-            .create(&claim)
+            .create(&claim, &mismatched_descriptor())
             .expect("create bare nats store");
-        let mismatched_desc = SchemaDescriptor::new(999, DescriptorNode::U64);
-        session
-            .set_schema_descriptor(&mismatched_desc)
-            .expect("set mismatched nats descriptor");
         session.sync().expect("sync mismatched nats descriptor");
         drop(session);
 
@@ -1641,10 +2087,9 @@ pub(crate) mod tests {
             rt.clone(),
         );
         let claim_unadmitted = default_claim(1, "unadmitted-nats");
-        let session_unadmitted = adapter_unadmitted_raw
-            .create(&claim_unadmitted)
+        adapter_unadmitted_raw
+            .create_incomplete_meta_only(&claim_unadmitted)
             .expect("create unadmitted nats store");
-        drop(session_unadmitted);
 
         let adapter_unadmitted =
             NatsStorageAdapter::from_client_with_runtime(client, stem_unadmitted, rt);

@@ -4,11 +4,88 @@
 //! metrics.rs, repository.rs, and others into a single reusable module.
 
 use crate::config;
+use crate::domain::checks::{
+    DisabledObservation, EnabledProvenance, ProbeSource, SecretScanningAlerts,
+    SecretScanningFailureReason,
+};
+
+#[must_use]
+pub fn secret_for_status(
+    status: SecretScanningStatus,
+    open: Option<bool>,
+    reason: Option<&str>,
+) -> SecretScanningResult {
+    let supplied_reason = reason;
+    let reason = match reason {
+        Some("permission_denied" | "alerts_permission_denied") => {
+            SecretScanningFailureReason::PermissionDenied
+        }
+        Some("transient_error" | "alerts_transient_error") => {
+            SecretScanningFailureReason::Transient
+        }
+        Some("pending") => SecretScanningFailureReason::Pending,
+        Some("collection_error") => SecretScanningFailureReason::Invalid,
+        Some("alerts_unavailable") => SecretScanningFailureReason::Unavailable,
+        Some("alert_coordinate_conflict") => SecretScanningFailureReason::Conflict,
+        _ => SecretScanningFailureReason::InsufficientEvidence,
+    };
+    let source = ProbeSource::PerRepoEndpoint;
+    let http_status = None;
+    match status {
+        SecretScanningStatus::Enabled => SecretScanningResult::Enabled {
+            provenance: EnabledProvenance::Metadata {
+                http_status,
+                alerts: match open {
+                    Some(has_open_alerts) => SecretScanningAlerts::Observable {
+                        source,
+                        has_open_alerts,
+                        http_status,
+                    },
+                    None => SecretScanningAlerts::Unobservable {
+                        source,
+                        reason,
+                        http_status,
+                    },
+                },
+            },
+            timestamp: make_timestamp(),
+        },
+        SecretScanningStatus::Disabled => SecretScanningResult::Disabled {
+            metadata_http_status: None,
+            observation: match (open, supplied_reason) {
+                (Some(true), _) | (_, Some("status_mismatch")) => {
+                    DisabledObservation::StatusMismatch {
+                        source,
+                        http_status,
+                    }
+                }
+                (_, Some(_)) => DisabledObservation::ProbeFailed {
+                    source,
+                    reason,
+                    http_status,
+                },
+                _ => DisabledObservation::NoMismatch {
+                    source,
+                    http_status,
+                },
+            },
+            timestamp: make_timestamp(),
+        },
+        SecretScanningStatus::PermissionDenied => SecretScanningResult::unobservable(
+            SecretScanningFailureReason::PermissionDenied,
+            make_timestamp(),
+        ),
+        SecretScanningStatus::Unknown => {
+            SecretScanningResult::unobservable(reason, make_timestamp())
+        }
+    }
+}
 use crate::domain::auth::{AuthMode, TokenTier};
 use crate::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
-    CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
-    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
+    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersContent,
+    CodeownersNonConformingLocation, CodeownersResult, CodeownersStatus, DependabotResult,
+    DependabotStatus, IndeterminateReason, RepositoryChecks, SecretScanningResult,
+    SecretScanningStatus, SecurityPolicyPath, SecurityPolicyResult,
 };
 use crate::domain::codeowners::{CodeownersEntry, ParsedCodeowners};
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
@@ -91,19 +168,10 @@ pub fn evidence_from_repository(repo: &Repository, timestamp: &str) -> Repositor
     RepositoryEvidence {
         repository: repo.clone(),
         checks: RepositoryChecks {
-            security_policy: SecurityPolicyResult {
-                status: SecurityPolicyStatus::Pass,
-                evidence: SecurityPolicyEvidence::Setting,
-                path: None,
+            security_policy: SecurityPolicyResult::EnabledBySetting {
                 timestamp: timestamp.to_string(),
             },
-            secret_scanning: SecretScanningResult {
-                status: SecretScanningStatus::Enabled,
-                has_open_alerts: Some(false),
-                alerts_observable: true,
-                reason: None,
-                timestamp: timestamp.to_string(),
-            },
+            secret_scanning: secret_enabled_observable(false).with_timestamp(timestamp),
             dependabot_security_updates: DependabotResult {
                 status: DependabotStatus::Enabled,
                 reason: None,
@@ -126,12 +194,9 @@ pub fn evidence_from_repository(repo: &Repository, timestamp: &str) -> Repositor
                 },
                 timestamp: timestamp.to_string(),
             },
-            codeowners: CodeownersResult {
-                status: CodeownersStatus::Conforming,
-                path: Some(".github/CODEOWNERS".to_string()),
+            codeowners: CodeownersResult::Conforming {
+                content: CodeownersContent::Unparsed,
                 timestamp: timestamp.to_string(),
-                parsed: None,
-                truncation: None,
             },
         },
         last_commit: None,
@@ -160,21 +225,19 @@ pub fn make_checks(
 /// Security policy result: pass via GitHub API setting.
 #[must_use]
 pub fn policy_pass_setting() -> SecurityPolicyResult {
-    SecurityPolicyResult {
-        status: SecurityPolicyStatus::Pass,
-        evidence: SecurityPolicyEvidence::Setting,
-        path: None,
+    SecurityPolicyResult::EnabledBySetting {
         timestamp: make_timestamp(),
     }
 }
 
 /// Security policy result: pass via file presence (`SECURITY.md`).
+///
+/// # Panics
+/// Panics if the fixed nonempty fixture path is invalid.
 #[must_use]
 pub fn policy_pass_file() -> SecurityPolicyResult {
-    SecurityPolicyResult {
-        status: SecurityPolicyStatus::Pass,
-        evidence: SecurityPolicyEvidence::File,
-        path: Some("SECURITY.md".to_string()),
+    SecurityPolicyResult::EnabledByFile {
+        path: SecurityPolicyPath::new("SECURITY.md").unwrap(),
         timestamp: make_timestamp(),
     }
 }
@@ -182,10 +245,7 @@ pub fn policy_pass_file() -> SecurityPolicyResult {
 /// Security policy result: fail (no policy detected).
 #[must_use]
 pub fn policy_fail() -> SecurityPolicyResult {
-    SecurityPolicyResult {
-        status: SecurityPolicyStatus::Fail,
-        evidence: SecurityPolicyEvidence::Absent,
-        path: None,
+    SecurityPolicyResult::Absent {
         timestamp: make_timestamp(),
     }
 }
@@ -193,10 +253,8 @@ pub fn policy_fail() -> SecurityPolicyResult {
 /// Security policy result: unknown (permission denied).
 #[must_use]
 pub fn policy_unknown() -> SecurityPolicyResult {
-    SecurityPolicyResult {
-        status: SecurityPolicyStatus::Unknown,
-        evidence: SecurityPolicyEvidence::PermissionDenied,
-        path: None,
+    SecurityPolicyResult::Unobservable {
+        reason: IndeterminateReason::PermissionDenied,
         timestamp: make_timestamp(),
     }
 }
@@ -204,49 +262,29 @@ pub fn policy_unknown() -> SecurityPolicyResult {
 /// Secret scanning result: enabled with observable alerts.
 #[must_use]
 pub fn secret_enabled_observable(has_open: bool) -> SecretScanningResult {
-    SecretScanningResult {
-        status: SecretScanningStatus::Enabled,
-        has_open_alerts: Some(has_open),
-        alerts_observable: true,
-        reason: None,
-        timestamp: make_timestamp(),
-    }
+    secret_for_status(SecretScanningStatus::Enabled, Some(has_open), None)
 }
 
 /// Secret scanning result: disabled.
 #[must_use]
 pub fn secret_disabled() -> SecretScanningResult {
-    SecretScanningResult {
-        status: SecretScanningStatus::Disabled,
-        has_open_alerts: None,
-        alerts_observable: false,
-        reason: None,
-        timestamp: make_timestamp(),
-    }
+    secret_for_status(SecretScanningStatus::Disabled, None, None)
 }
 
 /// Secret scanning result: unknown (insufficient evidence).
 #[must_use]
 pub fn secret_unknown() -> SecretScanningResult {
-    SecretScanningResult {
-        status: SecretScanningStatus::Unknown,
-        has_open_alerts: None,
-        alerts_observable: false,
-        reason: Some("insufficient_evidence".to_string()),
-        timestamp: make_timestamp(),
-    }
+    secret_for_status(SecretScanningStatus::Unknown, None, None)
 }
 
 /// Secret scanning result: permission denied.
 #[must_use]
 pub fn secret_permission_denied() -> SecretScanningResult {
-    SecretScanningResult {
-        status: SecretScanningStatus::PermissionDenied,
-        has_open_alerts: None,
-        alerts_observable: false,
-        reason: Some("permission_denied".to_string()),
-        timestamp: make_timestamp(),
-    }
+    secret_for_status(
+        SecretScanningStatus::PermissionDenied,
+        None,
+        Some("permission_denied"),
+    )
 }
 
 /// Dependabot security updates result: enabled.
@@ -370,48 +408,36 @@ pub fn branch_unknown() -> BranchProtectionResult {
 /// CODEOWNERS result: file found in conforming location (`.github/CODEOWNERS`).
 #[must_use]
 pub fn codeowners_conforming() -> CodeownersResult {
-    CodeownersResult {
-        status: CodeownersStatus::Conforming,
-        path: Some(".github/CODEOWNERS".to_string()),
+    CodeownersResult::Conforming {
+        content: CodeownersContent::Unparsed,
         timestamp: make_timestamp(),
-        parsed: None,
-        truncation: None,
     }
 }
 
 /// CODEOWNERS result: file found in non-conforming location (repo root).
 #[must_use]
 pub fn codeowners_non_conforming() -> CodeownersResult {
-    CodeownersResult {
-        status: CodeownersStatus::NonConforming,
-        path: Some("CODEOWNERS".to_string()),
+    CodeownersResult::NonConforming {
+        location: CodeownersNonConformingLocation::Root,
+        content: CodeownersContent::Unparsed,
         timestamp: make_timestamp(),
-        parsed: None,
-        truncation: None,
     }
 }
 
 /// CODEOWNERS result: no file detected.
 #[must_use]
 pub fn codeowners_absent() -> CodeownersResult {
-    CodeownersResult {
-        status: CodeownersStatus::Absent,
-        path: None,
+    CodeownersResult::Absent {
         timestamp: make_timestamp(),
-        parsed: None,
-        truncation: None,
     }
 }
 
 /// CODEOWNERS result: status could not be determined.
 #[must_use]
 pub fn codeowners_unknown() -> CodeownersResult {
-    CodeownersResult {
-        status: CodeownersStatus::Unknown,
-        path: None,
+    CodeownersResult::Unobservable {
+        reason: IndeterminateReason::Pending,
         timestamp: make_timestamp(),
-        parsed: None,
-        truncation: None,
     }
 }
 
@@ -420,11 +446,9 @@ pub fn codeowners_unknown() -> CodeownersResult {
 /// Builds a single entry with pattern `/src/` and the supplied `@`-prefixed owners.
 #[must_use]
 pub fn codeowners_with_owners(owners: &[&str]) -> CodeownersResult {
-    CodeownersResult {
-        status: CodeownersStatus::Conforming,
-        path: Some(".github/CODEOWNERS".to_string()),
+    CodeownersResult::Conforming {
         timestamp: make_timestamp(),
-        parsed: Some(ParsedCodeowners {
+        content: CodeownersContent::Parsed(ParsedCodeowners {
             entries: vec![CodeownersEntry {
                 pattern: "/src/".to_string(),
                 owners: owners.iter().map(ToString::to_string).collect(),
@@ -432,7 +456,16 @@ pub fn codeowners_with_owners(owners: &[&str]) -> CodeownersResult {
             unique_owners: owners.iter().map(ToString::to_string).collect(),
             skipped_lines: 0,
         }),
-        truncation: None,
+    }
+}
+
+#[must_use]
+pub fn codeowners_for_status(status: CodeownersStatus) -> CodeownersResult {
+    match status {
+        CodeownersStatus::Conforming => codeowners_conforming(),
+        CodeownersStatus::NonConforming => codeowners_non_conforming(),
+        CodeownersStatus::Absent => codeowners_absent(),
+        CodeownersStatus::Unknown => codeowners_unknown(),
     }
 }
 
@@ -456,13 +489,11 @@ pub fn make_repo_with_updated_at(
         make_checks(
             policy_pass_setting(),
             if secret_scanning_enabled {
-                SecretScanningResult {
-                    status: SecretScanningStatus::Enabled,
-                    has_open_alerts,
-                    alerts_observable,
-                    reason: None,
-                    timestamp: make_timestamp(),
-                }
+                secret_for_status(
+                    SecretScanningStatus::Enabled,
+                    has_open_alerts.filter(|_| alerts_observable),
+                    None,
+                )
             } else {
                 secret_disabled()
             },

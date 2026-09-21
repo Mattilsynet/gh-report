@@ -26,7 +26,7 @@ impl RepositoryReadState {
             .into_iter()
             .any(|at| at.is_some());
         let pending = [
-            checks.secret_scanning.reason.as_deref(),
+            checks.secret_scanning.reason(),
             checks.dependabot_security_updates.reason.as_deref(),
             checks.branch_protection.details.reason.as_deref(),
         ]
@@ -46,21 +46,21 @@ impl RepositoryReadState {
         };
         [
             matches!(
-                checks.security_policy.status,
+                checks.security_policy.status(),
                 SecurityPolicyStatus::Pass | SecurityPolicyStatus::Fail
             )
-            .then_some(checks.security_policy.timestamp.as_str()),
+            .then_some(checks.security_policy.timestamp()),
             matches!(
-                checks.secret_scanning.status,
+                checks.secret_scanning.status(),
                 SecretScanningStatus::Enabled | SecretScanningStatus::Disabled
             )
-            .then_some(checks.secret_scanning.timestamp.as_str()),
+            .then_some(checks.secret_scanning.timestamp()),
             (checks.dependabot_security_updates.status != DependabotStatus::Unknown)
                 .then_some(checks.dependabot_security_updates.timestamp.as_str()),
             (checks.branch_protection.status != BranchProtectionStatus::Unknown)
                 .then_some(checks.branch_protection.timestamp.as_str()),
-            (checks.codeowners.status != CodeownersStatus::Unknown)
-                .then_some(checks.codeowners.timestamp.as_str()),
+            (checks.codeowners.status() != CodeownersStatus::Unknown)
+                .then_some(checks.codeowners.timestamp()),
         ]
     }
 }
@@ -112,11 +112,11 @@ impl RepositoryEvidence {
             BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
             SecurityPolicyStatus,
         };
-        self.checks.security_policy.status != SecurityPolicyStatus::Unknown
-            && self.checks.secret_scanning.status != SecretScanningStatus::Unknown
+        self.checks.security_policy.status() != SecurityPolicyStatus::Unknown
+            && self.checks.secret_scanning.status() != SecretScanningStatus::Unknown
             && self.checks.dependabot_security_updates.status != DependabotStatus::Unknown
             && self.checks.branch_protection.status != BranchProtectionStatus::Unknown
-            && self.checks.codeowners.status != CodeownersStatus::Unknown
+            && self.checks.codeowners.status() != CodeownersStatus::Unknown
     }
 }
 

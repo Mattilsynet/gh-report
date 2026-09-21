@@ -43,6 +43,8 @@ pub const BOUNDED_RETRY_DELAY: Duration = Duration::from_millis(20);
 /// response, checked at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WritePolicyCategory {
+    /// Stop this run; storage knowledge must be reconciled before resubmission.
+    ReconciliationRequired,
     /// Single-writer fence conflict (PGN-0016:R2).
     Conflict,
     /// Backend infrastructure unavailable; a retry may succeed once the
@@ -83,6 +85,7 @@ impl WritePolicyCategory {
     #[must_use]
     pub fn classify(error: &PersistenceError) -> Self {
         match error {
+            PersistenceError::Indeterminate(_) => Self::ReconciliationRequired,
             PersistenceError::FencedConflict { .. } => Self::Conflict,
             PersistenceError::BackendUnavailable { .. } => Self::Transient,
             PersistenceError::InvariantViolation { .. } => Self::Structural,
@@ -102,7 +105,10 @@ impl WritePolicyCategory {
     #[must_use]
     pub fn response(self) -> WriteResponse {
         match self {
-            Self::Conflict | Self::Structural | Self::Unrecoverable => WriteResponse::Fatal,
+            Self::Conflict
+            | Self::Structural
+            | Self::Unrecoverable
+            | Self::ReconciliationRequired => WriteResponse::Fatal,
             Self::Transient => WriteResponse::BoundedRetry,
         }
     }
@@ -122,6 +128,7 @@ pub fn severity_for(category: WritePolicyCategory) -> tracing::Level {
     match category {
         WritePolicyCategory::Conflict => tracing::Level::WARN,
         WritePolicyCategory::Transient
+        | WritePolicyCategory::ReconciliationRequired
         | WritePolicyCategory::Structural
         | WritePolicyCategory::Unrecoverable => tracing::Level::ERROR,
     }
@@ -272,7 +279,8 @@ fn conflict_seq_fields(error: &PersistenceError) -> (Option<u64>, Option<u64>) {
             actual_seq,
             ..
         } => (*expected_seq, *actual_seq),
-        PersistenceError::LockFailed { .. }
+        PersistenceError::Indeterminate(_)
+        | PersistenceError::LockFailed { .. }
         | PersistenceError::AtomicWriteFailed { .. }
         | PersistenceError::LoadFailed { .. }
         | PersistenceError::TornWriteRecovery { .. }
@@ -472,9 +480,7 @@ mod tests {
 
     #[test]
     fn transient_maps_to_bounded_retry() {
-        let error = PersistenceError::BackendUnavailable {
-            reason: "x".to_string(),
-        };
+        let error = PersistenceError::BackendUnavailable { source: "x".into() };
         assert_eq!(
             WritePolicyCategory::classify(&error),
             WritePolicyCategory::Transient
@@ -598,7 +604,7 @@ mod tests {
         let result = write_with_policy(move || {
             calls_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(PersistenceError::BackendUnavailable {
-                reason: "nats down".to_string(),
+                source: "nats down".into(),
             })
         })
         .await;
@@ -613,7 +619,7 @@ mod tests {
     #[test]
     fn log_write_failure_emits_none_seq_fields_for_non_conflict_category() {
         let failure = WriteFailure::classify(PersistenceError::BackendUnavailable {
-            reason: "nats down".to_string(),
+            source: "nats down".into(),
         });
         let json = capture_tracing(|| {
             log_write_failure(&failure, WriteFailureContext::default());
@@ -693,9 +699,7 @@ mod tests {
         let result = write_with_policy(|| {
             calls += 1;
             if calls < 3 {
-                Err(PersistenceError::BackendUnavailable {
-                    reason: "x".to_string(),
-                })
+                Err(PersistenceError::BackendUnavailable { source: "x".into() })
             } else {
                 Ok(())
             }
@@ -710,9 +714,7 @@ mod tests {
         let mut calls = 0;
         let result = write_with_policy(|| {
             calls += 1;
-            Err(PersistenceError::BackendUnavailable {
-                reason: "x".to_string(),
-            })
+            Err(PersistenceError::BackendUnavailable { source: "x".into() })
         })
         .await;
         assert_eq!(calls, u32::from(BOUNDED_RETRY_ATTEMPTS) + 1);
@@ -754,7 +756,7 @@ mod tests {
         let async_result = write_with_policy(|| {
             async_calls += 1;
             Err(PersistenceError::BackendUnavailable {
-                reason: "nats down".to_string(),
+                source: "nats down".into(),
             })
         })
         .await;
@@ -763,7 +765,7 @@ mod tests {
         let sync_result = write_with_policy_sync(|| {
             sync_calls += 1;
             Err(PersistenceError::BackendUnavailable {
-                reason: "nats down".to_string(),
+                source: "nats down".into(),
             })
         });
 
@@ -806,9 +808,7 @@ mod tests {
         let result = write_with_policy_sync(|| {
             calls += 1;
             if calls < 2 {
-                Err(PersistenceError::BackendUnavailable {
-                    reason: "x".to_string(),
-                })
+                Err(PersistenceError::BackendUnavailable { source: "x".into() })
             } else {
                 Ok(())
             }
@@ -824,7 +824,7 @@ mod tests {
             calls += 1;
             match calls {
                 1 => Err(PersistenceError::BackendUnavailable {
-                    reason: "nats down".to_string(),
+                    source: "nats down".into(),
                 }),
                 2 => Err(PersistenceError::FencedConflict {
                     expected_seq: None,
@@ -853,7 +853,7 @@ mod tests {
             calls += 1;
             match calls {
                 1 => Err(PersistenceError::BackendUnavailable {
-                    reason: "nats down".to_string(),
+                    source: "nats down".into(),
                 }),
                 2 => Err(PersistenceError::FencedConflict {
                     expected_seq: None,

@@ -1,7 +1,7 @@
 # CHE-0084. Extraction Eligibility and Pardosa Adapter Placement
 
 Date: 2026-07-02
-Last-reviewed: 2026-09-20 — amended — R9 names the canonical producer CI mechanism rearmed for the outer adapter; follows the 2026-09-05 retirement of pardosa-dep-deny with its only subject crate cherry-pit-sd-viz (CHE-0094 retired); R5 remains unweakened
+Last-reviewed: 2026-09-21 — amended — align R5/R9 with accepted CPP-0001 normal/build closure and dev/test scope
 Tier: B
 Status: Accepted
 Crates: gh-report, pardosa
@@ -26,7 +26,7 @@ R3 [5]: CHE-0055:R7 is the counter-precedent, not an exception: GitHub-shaped pa
 
 R4 [5]: A new extracted crate that depends on pardosa chooses placement option (a): a pardosa-family adapter or add-on crate that depends on `pardosa` only through `pardosa::store` or `pardosa::prelude` and reaches no ring-internal module.
 
-R5 [5]: Such a pardosa-family adapter crate is outside the `cherry-pit-*` crate DAG: it MUST NOT be named or wired as a `cherry-pit-*` crate, and it MUST NOT introduce any cherry-pit -> pardosa dependency edge.
+R5 [5]: Such a Pardosa-family adapter MUST NOT be named as a neutral `cherry-pit-*` crate. All eight neutral Cherry normal/build dependency closures MUST exclude Pardosa and MUST NOT reverse-reexport the adapter. Outer adapters may be cohosted in Cherry; dev/test edges may use separate outer test support. This explicitly narrows the former any-edge prohibition per canonical `acje/cherry-pit` CPP-0001:R1/R2/R5.
 
 R6 [5]: The adapter crate MUST NOT implement or expose pardosa backends, generic backend parameters, or backend traits; PGN-0010 sealing remains untouched, and the crate is an adopter of the public facade, not an extension of the substrate ring.
 
@@ -40,9 +40,14 @@ step "deny async-trait and rearm pardosa-cherry-pit-projection DAG guard",
 gh-report consumes its exact reviewed revision. New adapters MUST retain
 equivalent named graph enforcement rather than probing deleted local paths.
 
+The current guard evaluates the normal/build closures specified in R5, not
+the complete dev/test graph. Local producer entry point:
+`python3.12 -B tools/verify.py graph`, per
+[CPP-0001:R6](https://github.com/acje/cherry-pit/blob/ffffa0ddae206a322da9b9b4a94a3ad5e191da6e/docs/decisions/CPP-0001-outer-projection-adapter.md).
+
 ## Consequences
 
-Canonical cutover evidence (2026-09-20): the outer adapter and its rearmed
+Historical cutover evidence (2026-09-20): the outer adapter and its rearmed
 producer DAG guard are owned by `acje/cherry-pit` at
 [`bae8df87873c842e86113183ea892075c6debbab`](https://github.com/acje/cherry-pit/blob/bae8df87873c842e86113183ea892075c6debbab/.github/workflows/ci.yml),
 job `build-test-lint`, step `deny async-trait and rearm pardosa-cherry-pit-projection DAG guard`.
@@ -54,7 +59,7 @@ Positive: Phase 2 no longer argues home; the fiber-store moves to a `pardosa-fib
 
 Negative: the pardosa family gains an adopter-facing add-on surface, so Phase 2 must name and version that surface deliberately.
 
-Open / deferred: exact crate name, README, Cargo metadata, and missing CHE-0010 supersession debt remain outside this ADR.
+The persistent projection placement is settled by CPP-0001; other proposed extractions still require their own public contract and eligibility evidence. Historical source links above remain unchanged.
 
 ## Rejected Alternatives
 

@@ -24,6 +24,15 @@ HEURISTIC (FLAG-IFF):
     has_non_exhaustive = any attribute path is exactly `non_exhaustive`
     is_error_type      = any #[derive(..)] entry's last path segment is `Error`
 
+LIMITS:
+    Only literal pub enums are checked. Direct cfg predicates on enums and
+    inline modules are skipped only when provably false with test=false and
+    every other option unknown. all/any/not and Boolean literals are supported;
+    parsing must consume the entire predicate. No feature environment is read.
+    cfg_attr, macro expansion and out-of-line module ancestry are not evaluated.
+    Error is a spelling heuristic: unrelated Error derives can match, aliases
+    can be missed, and manual Error implementations are outside this rule.
+
 OUTPUT:
     Exit 0 and a terse OK summary on stdout when clean.
     Exit 1 with one VIOLATION line per finding, tab-separated, then a summary.
@@ -83,7 +92,7 @@ fn main() {
 
     if violations.is_empty() {
         println!(
-            "OK: {crates_scanned} library crates scanned, {enums_scanned} pub enums, 0 violations (all error enums are closed)"
+            "OK: {crates_scanned} library crates scanned, {enums_scanned} pub enums, 0 violations (syntax-only predicate; enum count includes private declarations)"
         );
         std::process::exit(0);
     }
@@ -128,7 +137,7 @@ fn collect_enums<'a>(items: &'a [syn::Item], out: &mut Vec<&'a syn::ItemEnum>) {
         match item {
             syn::Item::Enum(e) => out.push(e),
             syn::Item::Mod(m) => {
-                if m.attrs.iter().any(is_cfg_test) {
+                if m.attrs.iter().any(is_cfg_disabled_without_test) {
                     continue;
                 }
                 if let Some((_, inner_items)) = &m.content {
@@ -144,18 +153,79 @@ fn attr_path_is(attr: &syn::Attribute, name: &str) -> bool {
     attr.path().is_ident(name)
 }
 
-fn is_cfg_test(attr: &syn::Attribute) -> bool {
-    if !attr_path_is(attr, "cfg") {
-        return false;
-    }
-    let mut found = false;
-    let _ = attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("test") {
-            found = true;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CfgTruth {
+    False,
+    True,
+    Unknown,
+}
+
+impl syn::parse::Parse for CfgTruth {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        use syn::ext::IdentExt;
+
+        if input.peek(syn::LitBool) {
+            return Ok(if input.parse::<syn::LitBool>()?.value {
+                Self::True
+            } else {
+                Self::False
+            });
         }
-        Ok(())
-    });
-    found
+        let name = input.call(syn::Ident::parse_any)?.unraw().to_string();
+        if input.peek(syn::Token![=]) {
+            input.parse::<syn::Token![=]>()?;
+            input.parse::<syn::LitStr>()?;
+            return Ok(Self::Unknown);
+        }
+        if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let values = content.parse_terminated(Self::parse, syn::Token![,])?;
+            return match name.as_str() {
+                "all" | "any" => {
+                    let decisive = if name == "all" {
+                        Self::False
+                    } else {
+                        Self::True
+                    };
+                    Ok(if values.iter().any(|value| *value == decisive) {
+                        decisive
+                    } else if values.iter().any(|value| *value == Self::Unknown) {
+                        Self::Unknown
+                    } else if name == "all" {
+                        Self::True
+                    } else {
+                        Self::False
+                    })
+                }
+                "not" if values.len() == 1 => Ok(match values[0] {
+                    Self::False => Self::True,
+                    Self::True => Self::False,
+                    Self::Unknown => Self::Unknown,
+                }),
+                _ => Err(input.error("expected all(...), any(...) or not(one predicate)")),
+            };
+        }
+        Ok(if name == "test" {
+            Self::False
+        } else {
+            Self::Unknown
+        })
+    }
+}
+
+fn is_cfg_disabled_without_test(attr: &syn::Attribute) -> bool {
+    attr_path_is(attr, "cfg")
+        && matches!(
+            attr.parse_args_with(|input: syn::parse::ParseStream<'_>| {
+                let value = input.parse::<CfgTruth>()?;
+                if input.peek(syn::Token![,]) {
+                    input.parse::<syn::Token![,]>()?;
+                }
+                Ok(value)
+            }),
+            Ok(CfgTruth::False)
+        )
 }
 
 fn derive_idents(attr: &syn::Attribute) -> Vec<String> {
@@ -177,7 +247,9 @@ fn derive_idents(attr: &syn::Attribute) -> Vec<String> {
 }
 
 fn is_violation(item_enum: &syn::ItemEnum) -> bool {
-    if !matches!(item_enum.vis, syn::Visibility::Public(_)) {
+    if !matches!(item_enum.vis, syn::Visibility::Public(_))
+        || item_enum.attrs.iter().any(is_cfg_disabled_without_test)
+    {
         return false;
     }
 
@@ -280,5 +352,74 @@ mod tests {
     fn negative_non_pub_error_enum() {
         let e = first_enum("#[derive(thiserror::Error)] #[non_exhaustive] enum PrivErr { A }");
         assert!(!is_violation(&e));
+    }
+
+    #[test]
+    fn compound_cfg_test_only_is_skipped() {
+        assert_eq!(
+            collect_from(
+                "#[cfg(all(test, feature = \"x\"))] mod tests { #[derive(thiserror::Error)] #[non_exhaustive] pub enum E { A } }"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn cfg_truth_controls_enum_and_inline_module_scanning() {
+        for (predicate, skipped) in [
+            ("test", true),
+            ("test,", true),
+            ("r#test", true),
+            ("not(test)", false),
+            ("not(not(test))", true),
+            ("all(test, feature = \"x\")", true),
+            ("any(test, feature = \"x\")", false),
+            ("not(any(not(test), feature = \"x\"))", true),
+            ("all()", false),
+            ("any()", true),
+            ("true", false),
+            ("false", true),
+            ("feature = \"test\"", false),
+            ("test = \"x\"", false),
+            ("all(test, broken())", false),
+            ("test, broken()", false),
+            ("not(test, test)", false),
+            ("not()", false),
+            ("test = 1", false),
+            ("test extra", false),
+        ] {
+            let attrs = format!("#[cfg({predicate})]");
+            let declaration = "#[derive(thiserror::Error)] #[non_exhaustive] pub enum E { A }";
+            let e = first_enum(&format!("{attrs} {declaration}"));
+            assert_eq!(is_violation(&e), !skipped, "enum: {predicate}");
+            assert_eq!(
+                collect_from(&format!("{attrs} mod m {{ {declaration} }}")),
+                usize::from(!skipped),
+                "module: {predicate}"
+            );
+        }
+    }
+
+    #[test]
+    fn cfg_attr_is_not_expanded_and_derive_identity_is_not_resolved() {
+        for source in [
+            "#[cfg_attr(not(test), cfg(test))] #[derive(thiserror::Error)] #[non_exhaustive] pub enum E { A }",
+            "#[derive(unrelated::Error)] #[non_exhaustive] pub enum E { A }",
+        ] {
+            assert!(is_violation(&first_enum(source)));
+        }
+        for source in [
+            "#[cfg_attr(feature = \"x\", non_exhaustive)] #[derive(thiserror::Error)] pub enum E { A }",
+            "#[derive(AliasedError)] #[non_exhaustive] pub enum E { A }",
+            "#[derive(Debug)] #[non_exhaustive] pub enum E { A }",
+            "#[derive(thiserror::Error)] #[non_exhaustive] pub(crate) enum E { A }",
+            "#[cfg(feature = \"x\")] #[cfg(test)] #[derive(thiserror::Error)] #[non_exhaustive] pub enum E { A }",
+        ] {
+            assert!(!is_violation(&first_enum(source)));
+        }
+        assert_eq!(
+            collect_from("#[cfg_attr(not(test), cfg(test))] mod m { pub enum E { A } }"),
+            1
+        );
     }
 }

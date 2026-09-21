@@ -1,7 +1,7 @@
 # CHE-0048. Cherry Pit Projection Design
 
 Date: 2026-05-09
-Last-reviewed: 2026-08-20 - refined - dropped retired CHE-0036 from References; no rule of it survives CHE-0100
+Last-reviewed: 2026-09-21 - amended - align current placement with canonical Cherry CPP-0001; preserve behavioral obligations and replay exemption
 Tier: B
 Status: Accepted
 
@@ -19,13 +19,13 @@ This ADR resolves five gaps as one posture bundle: storage shape, rebuild primit
 
 ## Decision
 
-The projection storage adapter uses a pardosa-backed persistent backend (pgno/nats) as the production backend, with an in-memory backend for tests and ephemeral views. Both implement a single internal port trait parameterised on `P: Projection`.
+Neutral `cherry-pit-projection` owns drivers and ephemeral views. The Pardosa-backed persistent capability lives in the outer `pardosa-cherry-pit-projection` package cohosted in canonical Cherry, per [CPP-0001](https://github.com/acje/cherry-pit/blob/ffffa0ddae206a322da9b9b4a94a3ad5e191da6e/docs/decisions/CPP-0001-outer-projection-adapter.md). This current amendment does not rewrite the immutable source snapshot cited by that decision or require a new common backend trait.
 
-**Scope (R1–R2).** The persistent snapshot + checkpoint persistence mandate in R1 and R2 binds the `cherry-pit-projection` crate — the canonical projection runtime. Consumers that elect replay-as-rebuild through the pardosa adapter (CHE-0071) are exempt; `gh-report` is the v0.1 instance of this election, retiring `baseline.msgpack` and `checkpoint` files in favour of event-log replay. The exemption is a scope reduction, not a content reversal: R1–R2 remain binding for cherry-pit-projection. This election is the EPHEMERAL backend generalised by R10.
+**Scope (R1–R2).** Persistent snapshot and checkpoint obligations bind the outer persistent adapter. Consumers electing replay-as-rebuild (CHE-0071), including gh-report, retain their exemption. gh-report does not currently link the outer projection adapter; this amendment makes no application-runtime adoption claim.
 
-R1 [5]: Within cherry-pit-projection, the PERSISTENT backend stores each (aggregate_id, projection_name) snapshot through the pardosa store facade (pgno default, nats optional; CHE-0072 selector), reusing the native-pardosa GenomeSafe DTO bridge pattern of CHE-0074/CHE-0098; MessagePack/rmp-serde file snapshots are removed. Atomicity is delegated to the pardosa backend, not file temp-rename.
+R1 [5]: Within `pardosa-cherry-pit-projection`, the PERSISTENT backend stores each (aggregate_id, projection_name) snapshot through Pardosa's public store/prelude facade (pgno default, nats optional; CHE-0072 selector), retaining the native DTO boundary of CHE-0074/CHE-0098. Snapshot and checkpoint are ordered effects, not an atomic pair or exactly-once guarantee.
 
-R2 [5]: Within `cherry-pit-projection`, a sibling checkpoint file is written strictly after the snapshot file for each (aggregate_id, projection_name) pair, recording aggregate_id, last applied sequence (NonZeroU64), and handler identity string, so that a crash between snapshot and checkpoint causes replay of already-applied events rather than skipping unapplied ones
+R2 [5]: Within `pardosa-cherry-pit-projection`, the checkpoint is written strictly after the snapshot for each (aggregate_id, projection_name) pair, retaining aggregate identity, last applied sequence and handler identity, so a crash between effects causes replay rather than skipping unapplied events. Checkpoint sequence non-regression remains required.
 
 R3 [5]: Projection::apply must be idempotent over the same EventEnvelope sequence — replaying the same monotonic sub-sequence from a checkpoint produces the same snapshot state, which is a Projection-author obligation enforced by convention and documented here rather than in the trait definition
 
@@ -39,13 +39,13 @@ R7 [5]: Per-aggregate write coordination follows the single-process model inheri
 
 R8 [5]: The adapter calls validate_stream() on every EventStore::load result before driving Projection::apply, per CHE-0042:R3–R4
 
-R9 [5]: The `ProjectionCheckpoint` data type lives in cherry-pit-core as a peer of `EventEnvelope` (CHE-0042) — both are core-resident serde-deriving carriers — while `FileProjectionStore` and identity validation (R8) remain in cherry-pit-projection, which re-exports `ProjectionCheckpoint` for back-compat; core's dep budget (CHE-0029:R4) is preserved with no new dependencies
+R9 [5]: `ProjectionCheckpoint` remains a neutral cherry-pit-core carrier. Persistent stores live in the outer adapter; neutral drivers retain stream validation (R8). Neutral crates MUST NOT reverse-reexport the outer adapter or acquire Pardosa normal/build dependencies. Core's dependency budget (CHE-0029:R4) is preserved.
 
-R10 [5]: cherry-pit-projection exposes exactly two sanctioned persistence backends behind one internal port trait parameterised on P: Projection: EPHEMERAL (in-memory, rebuild-from-log every start; R5) and PERSISTENT (pardosa-backed; R1). Both are first-class; consumers select per deployment. No third backend without a new ADR.
+R10 [5]: The neutral/outer split preserves two sanctioned capabilities: EPHEMERAL (in-memory, rebuild-from-log; R5) and PERSISTENT (outer Pardosa-backed adapter; R1). Both remain first-class; consumers import the persistent adapter explicitly when required. No third backend without a new ADR.
 
 ## Consequences
 
-The persistent-backend posture inherits the single-process locking assumption from CHE-0006:R1 and CHE-0053:R13. Multi-process projection writers would require a new ADR establishing cross-process coordination semantics — this is explicitly deferred. The PERSISTENT backend (R1) may impose an additional bound on `P` (e.g. `GenomeSafe`) as a pay-for-what-you-use constraint; the shared `Projection` trait and the EPHEMERAL backend's bounds (R5) are unchanged.
+The persistent-backend posture inherits the single-process locking assumption from CHE-0006:R1 and CHE-0053:R13. Multi-process projection writers would require a new ADR establishing cross-process coordination semantics — this is explicitly deferred. The PERSISTENT backend (R1) may impose additional native serialization bounds at its consumer boundary; the shared `Projection` trait and the EPHEMERAL backend's bounds (R5) are unchanged.
 
 Single-aggregate, single-projection-per-driver scope means cross-aggregate read models (spanning bounded contexts per CHE-0005:R3) are out of scope for v0.1. Multi-projection composition deferred to WU-5 cherry-pit-app design.
 

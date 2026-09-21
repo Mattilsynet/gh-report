@@ -76,6 +76,12 @@ pub async fn run_team_refresh_tick(
     client: &GitHubClient,
     fetched_at: &str,
 ) -> Result<(), TickFailure> {
+    state
+        .ensure_write_admission()
+        .map_err(|error| TickFailure {
+            error: AppError::Persistence(error),
+            context: WriteFailureContextOwned::default(),
+        })?;
     let org = client.org_name.clone();
     let evidence_repos = state.projection_snapshot();
     let mut team_pairs = team_owner_slugs(&evidence_repos);
@@ -186,11 +192,8 @@ async fn write_team_event(
     })
 }
 
-/// Warn-log a team-refresh tick failure without propagating it into the
-/// caller's control flow. The team-refresh cadence is decoupled from the
-/// repo collect cycle (ghr-3fda2878): a failed tick does not abort the
-/// daemon or the next repo collection, it is retried on the next
-/// scheduled team-refresh tick.
+/// Log a tick failure. The supervisor separately stops admission for
+/// indeterminate persistence; only other failures may reach another tick.
 pub fn log_tick_failure(error: &AppError, context: &WriteFailureContextOwned) {
     let (expected_seq, actual_seq) = conflict_seq_fields(error);
     warn!(
@@ -201,7 +204,7 @@ pub fn log_tick_failure(error: &AppError, context: &WriteFailureContextOwned) {
         writer_id = context.writer_id.as_deref(),
         expected_seq,
         actual_seq,
-        "team-refresh tick failed; will retry on the next scheduled tick"
+        "team-refresh tick failed"
     );
 }
 
@@ -975,7 +978,7 @@ mod tests {
         let context = WriteFailureContextOwned::default();
         let error =
             AppError::Persistence(cherry_pit_storage::PersistenceError::BackendUnavailable {
-                reason: "nats down".to_string(),
+                source: "nats down".into(),
             });
         let json = capture_tracing(|| log_tick_failure(&error, &context));
         let parsed: serde_json::Value =

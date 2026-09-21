@@ -29,9 +29,9 @@
 
 use gh_report::app::state::AppState;
 use gh_report::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
-    CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
-    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
+    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersContent,
+    CodeownersResult, DependabotResult, DependabotStatus, EnabledProvenance, ProbeSource,
+    RepositoryChecks, SecretScanningAlerts, SecretScanningResult, SecurityPolicyResult,
 };
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
@@ -164,17 +164,18 @@ fn minimal_evidence(name: &str) -> RepositoryEvidence {
             license_spdx: None,
         },
         checks: RepositoryChecks {
-            security_policy: SecurityPolicyResult {
-                status: SecurityPolicyStatus::Pass,
-                evidence: SecurityPolicyEvidence::Setting,
-                path: None,
+            security_policy: SecurityPolicyResult::EnabledBySetting {
                 timestamp: ts.to_string(),
             },
-            secret_scanning: SecretScanningResult {
-                status: SecretScanningStatus::Enabled,
-                has_open_alerts: Some(false),
-                alerts_observable: true,
-                reason: None,
+            secret_scanning: SecretScanningResult::Enabled {
+                provenance: EnabledProvenance::Metadata {
+                    http_status: None,
+                    alerts: SecretScanningAlerts::Observable {
+                        source: ProbeSource::PerRepoEndpoint,
+                        has_open_alerts: false,
+                        http_status: None,
+                    },
+                },
                 timestamp: ts.to_string(),
             },
             dependabot_security_updates: DependabotResult {
@@ -199,12 +200,9 @@ fn minimal_evidence(name: &str) -> RepositoryEvidence {
                 },
                 timestamp: ts.to_string(),
             },
-            codeowners: CodeownersResult {
-                status: CodeownersStatus::Conforming,
-                path: Some(".github/CODEOWNERS".to_string()),
+            codeowners: CodeownersResult::Conforming {
+                content: CodeownersContent::Unparsed,
                 timestamp: ts.to_string(),
-                parsed: None,
-                truncation: None,
             },
         },
         last_commit: None,

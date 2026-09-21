@@ -1,6 +1,7 @@
 use jiff::Timestamp as JiffTimestamp;
 use pardosa::prelude::*;
 
+use super::IndeterminateReason;
 use super::limits::{
     MAX_ALERT_BUCKET, MAX_ALERT_BUCKETS, MAX_ASSESSMENT_DATE, MAX_BRANCH_NAME,
     MAX_CODEOWNERS_OWNER, MAX_CODEOWNERS_PATTERN, MAX_DESCRIPTION, MAX_DOMAIN_KEY, MAX_GITHUB_ID,
@@ -304,37 +305,141 @@ conversion_pair!(sr::Repository => Repository {
     }
 });
 
-conversion_pair!(s::SecurityPolicyResult => SecurityPolicyResult {
-    try_from(v) {
-        status: v.status.into(),
-        evidence: v.evidence.into(),
-        path: to_es_opt::<MAX_PATH>("security_policy.path", v.path)?,
-        timestamp: ts_required("security_policy.timestamp", &v.timestamp)?,
+impl TryFrom<s::SecurityPolicyResult> for SecurityPolicyResult {
+    type Error = EventConversionError;
+
+    fn try_from(v: s::SecurityPolicyResult) -> Conv<Self> {
+        let timestamp = ts_required("security_policy.timestamp", v.timestamp())?;
+        Ok(match v {
+            s::SecurityPolicyResult::EnabledBySetting { .. } => {
+                Self::EnabledBySetting { timestamp }
+            }
+            s::SecurityPolicyResult::EnabledByFile { path, .. } => Self::EnabledByFile {
+                path: to_nes::<MAX_PATH>("security_policy.path", path.as_str())?,
+                timestamp,
+            },
+            s::SecurityPolicyResult::Absent { .. } => Self::Absent { timestamp },
+            s::SecurityPolicyResult::NotApplicable { .. } => Self::NotApplicable { timestamp },
+            s::SecurityPolicyResult::Unobservable { reason, .. } => Self::Unobservable {
+                reason: reason.into(),
+                timestamp,
+            },
+        })
     }
-    from(v) {
-        status: v.status.into(),
-        evidence: v.evidence.into(),
-        path: v.path.map(|p| p.as_str().to_string()),
-        timestamp: ts_to_string(v.timestamp),
+}
+
+impl From<SecurityPolicyResult> for s::SecurityPolicyResult {
+    fn from(v: SecurityPolicyResult) -> Self {
+        match v {
+            SecurityPolicyResult::EnabledBySetting { timestamp } => Self::EnabledBySetting {
+                timestamp: ts_to_string(timestamp),
+            },
+            SecurityPolicyResult::EnabledByFile { path, timestamp } => Self::EnabledByFile {
+                path: s::SecurityPolicyPath::new(path.as_str()).expect("native path is nonempty"),
+                timestamp: ts_to_string(timestamp),
+            },
+            SecurityPolicyResult::Absent { timestamp } => Self::Absent {
+                timestamp: ts_to_string(timestamp),
+            },
+            SecurityPolicyResult::NotApplicable { timestamp } => Self::NotApplicable {
+                timestamp: ts_to_string(timestamp),
+            },
+            SecurityPolicyResult::Unobservable { reason, timestamp } => Self::Unobservable {
+                reason: reason.into(),
+                timestamp: ts_to_string(timestamp),
+            },
+        }
     }
+}
+
+bijective_enum!(s::IndeterminateReason <=> IndeterminateReason {
+    PermissionDenied, PermissionSuspected, Transient, RateLimited, Invalid, Pending,
 });
 
-conversion_pair!(s::SecretScanningResult => SecretScanningResult {
-    try_from(v) {
-        status: v.status.into(),
-        has_open_alerts: v.has_open_alerts,
-        alerts_observable: v.alerts_observable,
-        reason: to_es_opt::<MAX_REASON>("secret_scanning.reason", v.reason)?,
-        timestamp: ts_required("secret_scanning.timestamp", &v.timestamp)?,
-    }
-    from(v) {
-        status: v.status.into(),
-        has_open_alerts: v.has_open_alerts,
-        alerts_observable: v.alerts_observable,
-        reason: v.reason.map(|r| r.as_str().to_string()),
-        timestamp: ts_to_string(v.timestamp),
-    }
+use super::{
+    DisabledObservation, EnabledProvenance, MetadataUnavailable, ProbeSource, SecretScanningAlerts,
+    SecretScanningFailureReason, UnobservableProbe,
+};
+bijective_enum!(s::SecretScanningFailureReason <=> SecretScanningFailureReason {
+    PermissionDenied, PermissionSuspected, RateLimited, Transient, Unavailable, InsufficientEvidence, Conflict, Invalid, Pending
 });
+bijective_enum!(s::ProbeSource <=> ProbeSource { OrgSummary, PerRepoEndpoint });
+
+macro_rules! secret_conversion {
+    ($ty:ident { $($variant:ident { $($field:ident),* }),* $(,)? }) => {
+        impl From<s::$ty> for $ty {
+            fn from(value: s::$ty) -> Self { match value { $(s::$ty::$variant { $($field),* } => Self::$variant { $($field: $field.into()),* }),* } }
+        }
+        impl From<$ty> for s::$ty {
+            fn from(value: $ty) -> Self { match value { $($ty::$variant { $($field),* } => Self::$variant { $($field: $field.into()),* }),* } }
+        }
+    };
+}
+secret_conversion!(MetadataUnavailable { Missing { http_status }, Malformed { http_status }, Failure { reason, http_status } });
+secret_conversion!(SecretScanningAlerts { Observable { source, has_open_alerts, http_status }, Unobservable { source, reason, http_status } });
+secret_conversion!(EnabledProvenance { Metadata { http_status, alerts }, Fallback { metadata, has_open_alerts, http_status } });
+secret_conversion!(DisabledObservation { NoMismatch { source, http_status }, StatusMismatch { source, http_status }, ProbeFailed { source, reason, http_status } });
+secret_conversion!(UnobservableProbe { Failed { source, reason, http_status }, OrgSummaryObserved { has_open_alerts, http_status } });
+
+impl TryFrom<s::SecretScanningResult> for SecretScanningResult {
+    type Error = EventConversionError;
+    fn try_from(value: s::SecretScanningResult) -> Conv<Self> {
+        let timestamp = ts_required("secret_scanning.timestamp", value.timestamp())?;
+        Ok(match value {
+            s::SecretScanningResult::Enabled { provenance, .. } => Self::Enabled {
+                provenance: provenance.into(),
+                timestamp,
+            },
+            s::SecretScanningResult::Disabled {
+                metadata_http_status,
+                observation,
+                ..
+            } => Self::Disabled {
+                metadata_http_status,
+                observation: observation.into(),
+                timestamp,
+            },
+            s::SecretScanningResult::Unobservable {
+                metadata, probe, ..
+            } => Self::Unobservable {
+                metadata: metadata.into(),
+                probe: probe.into(),
+                timestamp,
+            },
+        })
+    }
+}
+impl From<SecretScanningResult> for s::SecretScanningResult {
+    fn from(value: SecretScanningResult) -> Self {
+        match value {
+            SecretScanningResult::Enabled {
+                provenance,
+                timestamp,
+            } => Self::Enabled {
+                provenance: provenance.into(),
+                timestamp: ts_to_string(timestamp),
+            },
+            SecretScanningResult::Disabled {
+                metadata_http_status,
+                observation,
+                timestamp,
+            } => Self::Disabled {
+                metadata_http_status,
+                observation: observation.into(),
+                timestamp: ts_to_string(timestamp),
+            },
+            SecretScanningResult::Unobservable {
+                metadata,
+                probe,
+                timestamp,
+            } => Self::Unobservable {
+                metadata: metadata.into(),
+                probe: probe.into(),
+                timestamp: ts_to_string(timestamp),
+            },
+        }
+    }
+}
 
 conversion_pair!(s::DependabotResult => DependabotResult {
     try_from(v) {
@@ -426,22 +531,81 @@ conversion_pair!(sc::ParsedCodeowners => ParsedCodeowners {
     }
 });
 
-conversion_pair!(s::CodeownersResult => CodeownersResult {
-    try_from(v) {
-        status: v.status.into(),
-        path: to_es_opt::<MAX_PATH>("codeowners.path", v.path)?,
-        timestamp: ts_required("codeowners.timestamp", &v.timestamp)?,
-        parsed: v.parsed.map(ParsedCodeowners::try_from).transpose()?,
-        truncation: v.truncation.map(Into::into),
+use super::{CodeownersContent, CodeownersNonConformingLocation};
+bijective_enum!(s::CodeownersNonConformingLocation <=> CodeownersNonConformingLocation { Root, Docs });
+
+impl TryFrom<s::CodeownersContent> for CodeownersContent {
+    type Error = EventConversionError;
+    fn try_from(value: s::CodeownersContent) -> Conv<Self> {
+        Ok(match value {
+            s::CodeownersContent::Parsed(value) => Self::Parsed(value.try_into()?),
+            s::CodeownersContent::Truncated(value) => Self::Truncated(value.into()),
+            s::CodeownersContent::Unparsed => Self::Unparsed,
+        })
     }
-    from(v) {
-        status: v.status.into(),
-        path: v.path.map(|p| p.as_str().to_string()),
-        timestamp: ts_to_string(v.timestamp),
-        parsed: v.parsed.map(Into::into),
-        truncation: v.truncation.map(Into::into),
+}
+
+impl From<CodeownersContent> for s::CodeownersContent {
+    fn from(value: CodeownersContent) -> Self {
+        match value {
+            CodeownersContent::Parsed(value) => Self::Parsed(value.into()),
+            CodeownersContent::Truncated(value) => Self::Truncated(value.into()),
+            CodeownersContent::Unparsed => Self::Unparsed,
+        }
     }
-});
+}
+
+impl TryFrom<s::CodeownersResult> for CodeownersResult {
+    type Error = EventConversionError;
+    fn try_from(value: s::CodeownersResult) -> Conv<Self> {
+        let timestamp = ts_required("codeowners.timestamp", value.timestamp())?;
+        Ok(match value {
+            s::CodeownersResult::Conforming { content, .. } => Self::Conforming {
+                content: content.try_into()?,
+                timestamp,
+            },
+            s::CodeownersResult::NonConforming {
+                location, content, ..
+            } => Self::NonConforming {
+                location: location.into(),
+                content: content.try_into()?,
+                timestamp,
+            },
+            s::CodeownersResult::Absent { .. } => Self::Absent { timestamp },
+            s::CodeownersResult::Unobservable { reason, .. } => Self::Unobservable {
+                reason: reason.into(),
+                timestamp,
+            },
+        })
+    }
+}
+
+impl From<CodeownersResult> for s::CodeownersResult {
+    fn from(value: CodeownersResult) -> Self {
+        match value {
+            CodeownersResult::Conforming { content, timestamp } => Self::Conforming {
+                content: content.into(),
+                timestamp: ts_to_string(timestamp),
+            },
+            CodeownersResult::NonConforming {
+                location,
+                content,
+                timestamp,
+            } => Self::NonConforming {
+                location: location.into(),
+                content: content.into(),
+                timestamp: ts_to_string(timestamp),
+            },
+            CodeownersResult::Absent { timestamp } => Self::Absent {
+                timestamp: ts_to_string(timestamp),
+            },
+            CodeownersResult::Unobservable { reason, timestamp } => Self::Unobservable {
+                reason: reason.into(),
+                timestamp: ts_to_string(timestamp),
+            },
+        }
+    }
+}
 
 conversion_pair!(s::RepositoryChecks => RepositoryChecks {
     try_from(v) {
@@ -631,6 +795,7 @@ impl TryFrom<sm::OrgAlertSummary> for OrgAlertSummary {
                 "org_alert_summary.collection_reason",
                 v.collection_reason,
             )?,
+            http_status: v.http_status,
             per_repo,
             open_secret_alert_age_buckets,
             total_open_secret_alerts: v.total_open_secret_alerts,
@@ -651,6 +816,7 @@ impl From<OrgAlertSummary> for sm::OrgAlertSummary {
         Self {
             collection_status: v.collection_status.into(),
             collection_reason: v.collection_reason.as_ref().map(|s| s.as_str().to_string()),
+            http_status: v.http_status,
             per_repo: v
                 .per_repo
                 .into_inner()

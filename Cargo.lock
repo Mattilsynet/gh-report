@@ -561,7 +561,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-app"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "cherry-pit-core",
  "cherry-pit-gateway",
@@ -576,7 +576,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-core"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "jiff",
  "serde",
@@ -586,7 +586,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-gateway"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "cherry-pit-core",
  "jiff",
@@ -599,7 +599,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-merger"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "cherry-pit-core",
  "tokio",
@@ -609,7 +609,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-projection"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "cherry-pit-core",
  "serde",
@@ -622,7 +622,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-storage"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "gethostname",
  "jiff",
@@ -638,7 +638,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-web"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "arc-swap",
  "axum",
@@ -660,7 +660,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-wq"
 version = "0.2.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "cherry-pit-core",
  "futures-util",
@@ -2501,7 +2501,7 @@ checksum = "8c04f5d74368e4d0dfe06c45c8627c81bd7c317d52762d118fb9b3076f6420fd"
 [[package]]
 name = "pardosa"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=d1fd21a9746c6b7a285549bb1890ac0f21f838eb#d1fd21a9746c6b7a285549bb1890ac0f21f838eb"
+source = "git+https://github.com/acje/pardosa?rev=49ea5ec42a782aa9303b0e6eab2659d59d181e69#49ea5ec42a782aa9303b0e6eab2659d59d181e69"
 dependencies = [
  "blake3",
  "crc32c",
@@ -2512,7 +2512,7 @@ dependencies = [
 [[package]]
 name = "pardosa-cherry-pit-test-support"
 version = "0.0.0"
-source = "git+https://github.com/acje/cherry-pit?rev=bae8df87873c842e86113183ea892075c6debbab#bae8df87873c842e86113183ea892075c6debbab"
+source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
 dependencies = [
  "cherry-pit-core",
  "jiff",
@@ -2525,7 +2525,7 @@ dependencies = [
 [[package]]
 name = "pardosa-derive"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=d1fd21a9746c6b7a285549bb1890ac0f21f838eb#d1fd21a9746c6b7a285549bb1890ac0f21f838eb"
+source = "git+https://github.com/acje/pardosa?rev=49ea5ec42a782aa9303b0e6eab2659d59d181e69#49ea5ec42a782aa9303b0e6eab2659d59d181e69"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2535,7 +2535,7 @@ dependencies = [
 [[package]]
 name = "pardosa-nats"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=d1fd21a9746c6b7a285549bb1890ac0f21f838eb#d1fd21a9746c6b7a285549bb1890ac0f21f838eb"
+source = "git+https://github.com/acje/pardosa?rev=49ea5ec42a782aa9303b0e6eab2659d59d181e69#49ea5ec42a782aa9303b0e6eab2659d59d181e69"
 dependencies = [
  "async-nats",
  "blake3",
@@ -2543,6 +2543,7 @@ dependencies = [
  "crc32c",
  "futures-util",
  "pardosa",
+ "tempfile",
  "tokio",
 ]
 
