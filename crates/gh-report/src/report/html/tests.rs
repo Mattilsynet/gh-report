@@ -7824,6 +7824,106 @@ fn evidence_with_lifecycle_retirement_mixed_population() -> Evidence {
 }
 
 #[test]
+fn alert_free_enabled_failed_probe_preserves_permission_disclosure() {
+    use crate::domain::checks::{
+        EnabledProvenance, ProbeSource, SecretScanningAlerts, SecretScanningFailureReason,
+        SecretScanningResult,
+    };
+
+    for source in [ProbeSource::OrgSummary, ProbeSource::PerRepoEndpoint] {
+        for (reason, expected) in [
+            (
+                SecretScanningFailureReason::PermissionDenied,
+                "Permission denied",
+            ),
+            (
+                SecretScanningFailureReason::PermissionSuspected,
+                "Permission denied",
+            ),
+            (
+                SecretScanningFailureReason::RateLimited,
+                "Alerts unobservable",
+            ),
+            (
+                SecretScanningFailureReason::Transient,
+                "Alerts unobservable",
+            ),
+            (
+                SecretScanningFailureReason::Unavailable,
+                "Alerts unobservable",
+            ),
+            (
+                SecretScanningFailureReason::InsufficientEvidence,
+                "Alerts unobservable",
+            ),
+            (SecretScanningFailureReason::Conflict, "Alerts unobservable"),
+            (SecretScanningFailureReason::Invalid, "Alerts unobservable"),
+            (SecretScanningFailureReason::Pending, "Alerts unobservable"),
+        ] {
+            let mut evidence = evidence_with_alert_free_mixed_population();
+            let repo = evidence
+                .repositories
+                .iter_mut()
+                .find(|repo| repo.repository.name == "repo-unknown-alerts")
+                .unwrap();
+            repo.checks.secret_scanning = SecretScanningResult::Enabled {
+                provenance: EnabledProvenance::Metadata {
+                    http_status: Some(200),
+                    alerts: SecretScanningAlerts::Unobservable {
+                        source,
+                        reason,
+                        http_status: Some(403),
+                    },
+                },
+                timestamp: String::new(),
+            };
+            let vm = build_alert_free_view_model(&evidence).unwrap();
+            assert_eq!((vm.numerator, vm.denominator), (1, 2));
+            assert_eq!(vm.eligible.len(), 2);
+            assert_eq!(vm.unmeasured.len(), 3);
+            let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+            let reasons = repo_reasons_in_unmeasured_rows(&pages["alert_free.html"]);
+            assert_eq!(
+                reasons["repo-unknown-alerts"], expected,
+                "{source:?} {reason:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn alert_free_unknown_nonpermission_remains_generic() {
+    use crate::domain::checks::{
+        MetadataUnavailable, ProbeSource, SecretScanningFailureReason, SecretScanningResult,
+        UnobservableProbe,
+    };
+
+    let mut evidence = evidence_with_alert_free_mixed_population();
+    let repo = evidence
+        .repositories
+        .iter_mut()
+        .find(|repo| repo.repository.name == "repo-unknown-alerts")
+        .unwrap();
+    repo.checks.secret_scanning = SecretScanningResult::Unobservable {
+        metadata: MetadataUnavailable::Missing { http_status: None },
+        probe: UnobservableProbe::Failed {
+            source: ProbeSource::PerRepoEndpoint,
+            reason: SecretScanningFailureReason::Transient,
+            http_status: Some(503),
+        },
+        timestamp: String::new(),
+    };
+    let vm = build_alert_free_view_model(&evidence).unwrap();
+    assert_eq!((vm.numerator, vm.denominator), (1, 2));
+    let row = vm
+        .unmeasured
+        .iter()
+        .find(|row| row.repo_name == "repo-unknown-alerts")
+        .unwrap();
+    assert_eq!(row.reason_label, "Unknown");
+}
+
+#[test]
 fn alert_free_drill_down_mixed_population_agrees_with_card_metrics() {
     let evidence = evidence_with_alert_free_mixed_population();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();

@@ -909,7 +909,13 @@ fn build_alert_free_view_model(
             } else if ss.status() == SecretScanningStatus::Unknown {
                 "Unknown"
             } else if !ss.alerts_observable() {
-                "Alerts unobservable"
+                match ss.failure_reason() {
+                    Some(
+                        crate::domain::checks::SecretScanningFailureReason::PermissionDenied
+                        | crate::domain::checks::SecretScanningFailureReason::PermissionSuspected,
+                    ) => "Permission denied",
+                    _ => "Alerts unobservable",
+                }
             } else {
                 "Not applicable"
             };
