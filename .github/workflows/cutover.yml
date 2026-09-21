@@ -4,15 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       revision:
-        description: "Cloud Run revision name (e.g. ghreport-00102-2ln)"
+        description: Cloud Run revision to receive traffic
         required: true
         type: string
-        default: "ghreport-00102-2ln"
       percent:
-        description: "Traffic percentage to assign to this revision (0 to 100)"
+        description: Traffic percentage for this revision, 1 to 100
         required: true
         type: string
-        default: "100"
+      expected_current_revision:
+        description: Revision expected to be serving all traffic now; split remainder goes here
+        required: true
+        type: string
+
+concurrency:
+  group: cutover-traffic-ghreport
+  cancel-in-progress: false
 
 jobs:
   cutover:
@@ -24,6 +30,12 @@ jobs:
       id-token: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Guard Self-Test
+        run: python3 -B tools/test_cutover_guard.py
+
       - id: auth-deploy
         name: Authenticate to Google Cloud (deploy)
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -35,32 +47,24 @@ jobs:
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: Inspect Current Status
+        env:
+          CUTOVER_REVISION: ${{ inputs.revision }}
         run: |
           echo "=== Cloud Run Revisions ==="
           gcloud run revisions list --region europe-north1 --project ghreport-d302 --service ghreport
           echo "=== Service Status & Traffic ==="
           gcloud run services describe ghreport --region europe-north1 --project ghreport-d302 --format="yaml(status.traffic,status.conditions,status.url)"
           echo "=== Revision Status ==="
-          gcloud run revisions describe "${{ inputs.revision }}" --region europe-north1 --project ghreport-d302 --format="yaml(status.conditions,status.logUrl)"
+          gcloud run revisions describe "$CUTOVER_REVISION" --region europe-north1 --project ghreport-d302 --format="yaml(status.conditions,status.logUrl)"
 
       - name: Shift Traffic
-        if: "${{ inputs.percent != '0' }}"
-        run: |
-          echo "Shifting ${{ inputs.percent }}% traffic to ${{ inputs.revision }}..."
-          if [ "${{ inputs.percent }}" = "100" ]; then
-            gcloud run services update-traffic ghreport \
-              --region europe-north1 \
-              --project ghreport-d302 \
-              --to-revisions "${{ inputs.revision }}=100"
-          else
-            gcloud run services update-traffic ghreport \
-              --region europe-north1 \
-              --project ghreport-d302 \
-              --to-revisions "${{ inputs.revision }}=${{ inputs.percent }},ghreport-00101-bzs=$((100 - ${{ inputs.percent }}))"
-          fi
+        env:
+          CUTOVER_REVISION: ${{ inputs.revision }}
+          CUTOVER_PERCENT: ${{ inputs.percent }}
+          CUTOVER_EXPECTED_CURRENT: ${{ inputs.expected_current_revision }}
+        run: python3 -B tools/cutover_guard.py
 
       - name: Verify Post-Update Traffic
         run: |
           echo "=== Updated Traffic ==="
           gcloud run services describe ghreport --region europe-north1 --project ghreport-d302 --format="yaml(status.traffic)"
-
