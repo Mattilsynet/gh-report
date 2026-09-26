@@ -211,15 +211,25 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         MESSAGE_READY,
     );
 
-    let mut collection_loop = spawn_collection_loop(
-        config.clone(),
-        Arc::clone(&app_state),
-        Arc::clone(&force_flag),
-        Arc::clone(&force_refresh_flag),
-        collect_cancel_rx.clone(),
-    );
-    let mut team_refresh_loop =
-        spawn_team_refresh_loop(&config, Arc::clone(&app_state), collect_cancel_rx);
+    let (mut collection_loop, mut team_refresh_loop) = if config.serve_only {
+        info!("serve-only replica mode enabled: background collection and team refresh loops are disabled");
+        (tokio::spawn(async {}), tokio::spawn(async {}))
+    } else {
+        app_state.preflight_write_lease().await.map_err(|e| {
+            error!(error = %e, "write lease preflight failed: another writer instance holds the lease or meta stream is unreadable; pass --serve-only to run as a read replica without write authority");
+            crate::error::ServerError::Runtime(format!("write lease preflight failed: {e}; use --serve-only to run as a read replica"))
+        })?;
+        (
+            spawn_collection_loop(
+                config.clone(),
+                Arc::clone(&app_state),
+                Arc::clone(&force_flag),
+                Arc::clone(&force_refresh_flag),
+                collect_cancel_rx.clone(),
+            ),
+            spawn_team_refresh_loop(&config, Arc::clone(&app_state), collect_cancel_rx),
+        )
+    };
     let server_config = crate::server::served_dashboard_server_config();
 
     let server_result = cherry_pit_web::serve::start(
@@ -1811,6 +1821,7 @@ mod tests {
             sweep_timeout: crate::config::SweepTimeout::default(),
             max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
+            serve_only: false,
         };
         let force_flag = OneShotFlag::new(true);
         let force_refresh_flag = OneShotFlag::new(true);
@@ -1945,6 +1956,7 @@ mod tests {
             sweep_timeout: crate::config::SweepTimeout::default(),
             max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
+            serve_only: false,
         }
     }
 
@@ -3753,5 +3765,20 @@ mod fence_propagation_tests {
             DeliveryStep::Delivered
         ));
         assert!(!state.run_is_fenced());
+    }
+
+    #[tokio::test]
+    async fn preflight_write_lease_succeeds_on_clean_store() {
+        let state = AppState::new().await;
+        assert!(state.preflight_write_lease().await.is_ok());
+    }
+
+    #[test]
+    fn runtime_config_supports_serve_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = RuntimeConfig::new("test-org", true, 1, dir.path().to_path_buf()).unwrap();
+        assert!(!config.serve_only);
+        config.serve_only = true;
+        assert!(config.serve_only);
     }
 }

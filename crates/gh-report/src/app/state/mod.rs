@@ -2011,6 +2011,24 @@ impl AppState {
         .map_err(std::io::Error::other)?
         .map_err(std::io::Error::other)
     }
+
+    /// Preflight writer lease ownership across all three stores.
+    ///
+    /// # Errors
+    /// Returns an error if another writer session holds the lease, or the meta stream is unreadable.
+    pub(crate) async fn preflight_write_lease(&self) -> Result<(), std::io::Error> {
+        let event_store = Arc::clone(&self.event_store);
+        let org_event_store = Arc::clone(&self.org_event_store);
+        let team_event_store = Arc::clone(&self.team_event_store);
+        tokio::task::spawn_blocking(move || {
+            event_store.preflight_write_lease()?;
+            org_event_store.preflight_write_lease()?;
+            team_event_store.preflight_write_lease()
+        })
+        .await
+        .map_err(std::io::Error::other)?
+        .map_err(std::io::Error::other)
+    }
 }
 
 impl AppState {
@@ -3091,6 +3109,7 @@ mod tests {
             sweep_timeout: crate::config::SweepTimeout::default(),
             max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
+            serve_only: false,
         }
     }
 

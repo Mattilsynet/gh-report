@@ -105,5 +105,4 @@ jobs:
             --project ghreport-d302 \
             --image "europe-north1-docker.pkg.dev/artifacts-352708/${{ vars.ARTIFACT_REPO_ID }}/${{ github.event.repository.name }}@${{ needs.build.outputs.digest }}" \
             --no-cpu-throttling \
-            --startup-probe="initialDelaySeconds=30,timeoutSeconds=5,failureThreshold=30,periodSeconds=10,httpGet.path=/healthz,httpGet.port=8080" \
-            --to-latest
+            --startup-probe="initialDelaySeconds=30,timeoutSeconds=5,failureThreshold=30,periodSeconds=10,httpGet.path=/healthz,httpGet.port=8080"

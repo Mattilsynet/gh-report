@@ -63,6 +63,8 @@ pub struct RuntimeConfig {
     /// The caller maintains the obligation to keep an outer handle alive
     /// synchronously until all background tasks have drained.
     pub nats_runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    /// Run as a read-only serving replica: do not run background collection or team refresh loops.
+    pub serve_only: bool,
 }
 
 /// Pardosa authoritative backend selected once at startup.
@@ -230,6 +232,7 @@ impl RuntimeConfig {
             sweep_timeout: config::SweepTimeout::default(),
             max_repos: config::MaxRepos::default(),
             nats_runtime: None,
+            serve_only: false,
         })
     }
 
