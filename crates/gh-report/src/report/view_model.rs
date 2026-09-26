@@ -1655,6 +1655,30 @@ impl CoverageNotice {
     }
 }
 
+pub(crate) fn count_unscanned_repos(evidence: &Evidence) -> usize {
+    evidence
+        .repositories
+        .iter()
+        .filter(|repo| {
+            crate::domain::evidence::RepositoryReadState::from_checks(&repo.checks)
+                == crate::domain::evidence::RepositoryReadState::Pending
+        })
+        .count()
+}
+
+pub(crate) fn derive_warm_start_badge(warm_start: bool, unscanned: usize) -> Option<String> {
+    if warm_start || unscanned > 0 {
+        let unread_note = match unscanned {
+            0 => String::new(),
+            1 => " · 1 repo not scanned".to_string(),
+            n => format!(" · {n} repos not scanned"),
+        };
+        Some(format!("Cached · next update in progress{unread_note}"))
+    } else {
+        None
+    }
+}
+
 /// Pre-computed display values for the HTML report template.
 ///
 /// All formatting is done here so the Askama template only interpolates
@@ -1882,6 +1906,8 @@ pub struct ReportViewModel {
     /// Whether this report was rendered from a cached baseline (warm-start)
     /// rather than a fresh API collection.
     pub warm_start: bool,
+    /// Warning badge text on the front page index when built with stale or pending evidence.
+    pub warm_start_badge: Option<String>,
 
     /// Read-only operator diagnostics for collection-health and credential limits.
     pub admin_diagnostics: AdminDiagnosticsViewModel,
@@ -2196,7 +2222,19 @@ impl ReportViewModel {
             orphaned_count: 0,
             deleted_count: u32::try_from(evidence.deleted.len()).unwrap_or(u32::MAX),
             warm_start: metadata.warm_start,
+            warm_start_badge: derive_warm_start_badge(
+                metadata.warm_start,
+                count_unscanned_repos(evidence),
+            ),
             admin_diagnostics,
+        }
+    }
+
+    /// Update the cached warm-start state and derive the updated warning badge.
+    pub fn update_warm_start(&mut self, warm_start: bool) {
+        self.warm_start = warm_start;
+        if warm_start && self.warm_start_badge.is_none() {
+            self.warm_start_badge = Some("Cached · next update in progress".to_string());
         }
     }
 
