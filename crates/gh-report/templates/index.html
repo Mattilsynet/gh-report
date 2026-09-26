@@ -101,7 +101,8 @@
     {% if let Some(owners_vm) = vm.owners %}
     <div class="owner-summary">
         <div class="owner-summary-header">
-            <h3>CODEOWNERS Summary <span class="ascended-count">Ascended ({{ ascended_count }})</span></h3>
+            <h3>CODEOWNERS Summary</h3>
+            <span class="ascended-count">Ascended ({{ ascended_count }})</span>
             <p><strong>{{ owners_vm.rows.len() }}</strong> owners identified across {{ vm.total_repos }} repositories.</p>
         </div>
         {% if !vm.top_security_teams.is_empty() %}

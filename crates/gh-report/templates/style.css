@@ -749,10 +749,20 @@ details>*:not(summary) {
 
 .owner-summary-header h3 {
    margin: 0;
+   flex: 1 1 auto;
+}
+
+.owner-summary-header .ascended-count {
+   font-size: 0.85em;
+   font-weight: normal;
+   text-align: center;
+   flex: 0 0 auto;
 }
 
 .owner-summary-header p {
    margin: 0;
+   flex: 1 1 auto;
+   text-align: right;
 }
 
 .owner-summary p {
@@ -894,6 +904,16 @@ details>*:not(summary) {
       margin-right: -1em;
       padding-left: 1em;
       padding-right: 1em;
+   }
+
+   .owner-summary-header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: .3em;
+   }
+
+   .owner-summary-header p {
+      text-align: left;
    }
 
    .data-table {
