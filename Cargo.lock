@@ -561,9 +561,9 @@ dependencies = [
 [[package]]
 name = "cherry-pit-app"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
- "cherry-pit-core 0.1.0 (git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e)",
+ "cherry-pit-core",
  "cherry-pit-gateway",
  "cherry-pit-projection",
  "cherry-pit-web",
@@ -576,16 +576,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-core"
 version = "0.1.0"
-dependencies = [
- "jiff",
- "serde",
- "uuid",
-]
-
-[[package]]
-name = "cherry-pit-core"
-version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
  "jiff",
  "serde",
@@ -595,9 +586,9 @@ dependencies = [
 [[package]]
 name = "cherry-pit-gateway"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
- "cherry-pit-core 0.1.0 (git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e)",
+ "cherry-pit-core",
  "jiff",
  "scc",
  "serde",
@@ -608,9 +599,9 @@ dependencies = [
 [[package]]
 name = "cherry-pit-merger"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
- "cherry-pit-core 0.1.0 (git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e)",
+ "cherry-pit-core",
  "tokio",
  "tracing",
 ]
@@ -618,9 +609,9 @@ dependencies = [
 [[package]]
 name = "cherry-pit-projection"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
- "cherry-pit-core 0.1.0 (git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e)",
+ "cherry-pit-core",
  "serde",
  "serde_json",
  "tokio",
@@ -631,7 +622,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-storage"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
  "gethostname",
  "jiff",
@@ -647,11 +638,12 @@ dependencies = [
 [[package]]
 name = "cherry-pit-web"
 version = "0.1.0"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
  "arc-swap",
  "axum",
  "bytes",
- "cherry-pit-core 0.1.0",
+ "cherry-pit-core",
  "futures-util",
  "percent-encoding",
  "serde",
@@ -668,9 +660,9 @@ dependencies = [
 [[package]]
 name = "cherry-pit-wq"
 version = "0.2.0"
-source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
- "cherry-pit-core 0.1.0 (git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e)",
+ "cherry-pit-core",
  "futures-util",
  "scc",
  "tokio",
@@ -1463,7 +1455,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "cherry-pit-app",
- "cherry-pit-core 0.1.0 (git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e)",
+ "cherry-pit-core",
  "cherry-pit-gateway",
  "cherry-pit-merger",
  "cherry-pit-storage",
@@ -2521,9 +2513,9 @@ dependencies = [
 [[package]]
 name = "pardosa-cherry-pit-test-support"
 version = "0.0.0"
-source = "git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e#ffffa0ddae206a322da9b9b4a94a3ad5e191da6e"
+source = "git+https://github.com/acje/cherry-pit?rev=b407d958f72b2eb65ddf514a67eddfc771adfd00#b407d958f72b2eb65ddf514a67eddfc771adfd00"
 dependencies = [
- "cherry-pit-core 0.1.0 (git+https://github.com/acje/cherry-pit?rev=ffffa0ddae206a322da9b9b4a94a3ad5e191da6e)",
+ "cherry-pit-core",
  "jiff",
  "pardosa",
  "serde",

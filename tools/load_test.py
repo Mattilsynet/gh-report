@@ -94,7 +94,17 @@ class LoadTester:
     try:
       req = urllib.request.Request(f"{self.base_url}/owners.html", headers=headers)
       with urllib.request.urlopen(req, timeout=15) as resp:
-        html = resp.read().decode("utf-8", errors="ignore")
+        data = resp.read()
+        if resp.headers.get("Content-Encoding") == "zstd":
+          import subprocess
+
+          try:
+            data = subprocess.run(
+                ["zstd", "-d"], input=data, capture_output=True, check=True
+            ).stdout
+          except Exception:
+            pass
+        html = data.decode("utf-8", errors="ignore")
         team_links = set(re.findall(r'href="(owners/[^"#\?]+\.html)"', html))
         for link in sorted(team_links):
           self.pages.append(f"/{link}")
