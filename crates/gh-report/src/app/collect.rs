@@ -2852,6 +2852,13 @@ fn reuse_from_baseline(
             );
             continue;
         }
+        if evidence.checks.branch_protection.status == BranchProtectionStatus::Unknown {
+            debug!(
+                repo = %repo.name,
+                "skipping baseline reuse: branch protection was unknown"
+            );
+            continue;
+        }
 
         debug!(
             repo = %repo.name,
@@ -7256,6 +7263,39 @@ mod tests {
         assert!(
             !baseline_cache.contains_key("id-repo-1"),
             "public repo with unknown security policy must NOT be reused from baseline"
+        );
+    }
+
+    #[tokio::test]
+    async fn reuse_from_baseline_bypasses_repo_with_unknown_branch_protection() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let mut evidence = sample_repo("repo-1");
+        evidence.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
+        evidence.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
+        );
+
+        let repo = arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z"));
+        let completed = HashMap::new();
+
+        let baseline_cache = reuse_from_baseline(
+            &[repo],
+            &completed,
+            "2026-04-10T00:00:00Z",
+            &state,
+            false,
+            &test_org_summary(),
+        );
+
+        assert!(
+            !baseline_cache.contains_key("id-repo-1"),
+            "repo with unknown branch protection must NOT be reused from baseline"
         );
     }
 
