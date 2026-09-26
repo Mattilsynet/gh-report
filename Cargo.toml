@@ -216,3 +216,6 @@ string_lit_as_bytes = "warn"
 todo = "warn"
 unimplemented = "warn"
 unused_result_ok = "warn"
+
+[patch."https://github.com/acje/cherry-pit"]
+cherry-pit-web = { path = "../cherry-pit/crates/cherry-pit-web" }

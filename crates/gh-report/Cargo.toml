@@ -172,6 +172,7 @@ tokio-tungstenite = { workspace = true }
 tower = { workspace = true }
 
 futures-util = { workspace = true }
+zstd = { workspace = true }
 
 # panic = "unwind" (default) is intentional — Drop-based lock cleanup in
 # src/infra/lock.rs requires stack unwinding, and tokio::spawn catches task

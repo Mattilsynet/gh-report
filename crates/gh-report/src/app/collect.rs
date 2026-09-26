@@ -2625,7 +2625,7 @@ fn render_publication_cache(
 ) -> Result<HashMap<String, CachedPage>, AppError> {
     let mut page_count = 0usize;
     let mut total_bytes = 0usize;
-    let cache = tokio::task::block_in_place(|| {
+    let mut cache = tokio::task::block_in_place(|| {
         let mut cache = HashMap::new();
         html::render_publication_streaming(
             evidence,
@@ -2649,6 +2649,7 @@ fn render_publication_cache(
         )?;
         Ok::<_, crate::error::ReportError>(cache)
     })?;
+    cherry_pit_web::serve::populate_route_aliases(&mut cache);
     info!(page_count, total_bytes, "dashboard pages rendered");
     Ok(cache)
 }
@@ -9911,5 +9912,34 @@ mod tests {
                 .contains("10 non-archived report rows (may include unread and retained evidence)"),
             "coverage notice must not suppress population disclosure when counts are equal but membership differs; got: {equal_report}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn publication_cache_populates_route_aliases() {
+        let repositories = vec![crate::test_fixtures::all_passing_evidence("repo-0")];
+        let candidate = build_cached_pages(
+            &sample_config(),
+            &admission_evidence(repositories),
+            PublicationStage::Intermediate,
+        )
+        .await
+        .unwrap();
+        let pages = candidate.into_pages();
+        let html_pages: Vec<String> = pages
+            .keys()
+            .filter(|k| k.ends_with(".html") && *k != "index.html" && !k.ends_with("/index.html"))
+            .cloned()
+            .collect();
+        assert!(
+            !html_pages.is_empty(),
+            "expected at least one non-index .html page"
+        );
+        for html_key in html_pages {
+            let alias = html_key.strip_suffix(".html").unwrap();
+            assert!(
+                pages.contains_key(alias),
+                "clean route alias for {html_key} must exist in cache"
+            );
+        }
     }
 }
