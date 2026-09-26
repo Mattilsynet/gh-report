@@ -70,7 +70,8 @@ pub(crate) fn server_ws_policy() -> cherry_pit_web::WsPolicy {
 }
 
 /// [`cherry_pit_web::serve::ServeOptions`] for the served-dashboard path:
-/// applies [`SERVED_CSP_WITH_WASM_UNSAFE_EVAL`] on top of the defaults.
+/// applies [`SERVED_CSP_WITH_WASM_UNSAFE_EVAL`] and enables zstd enforcement
+/// on top of the defaults.
 ///
 /// # Panics
 ///
@@ -79,6 +80,7 @@ pub(crate) fn server_ws_policy() -> cherry_pit_web::WsPolicy {
 pub(crate) fn served_dashboard_server_config() -> cherry_pit_web::serve::ServeOptions {
     cherry_pit_web::serve::ServeOptions::builder()
         .csp_override(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
+        .enforce_zstd(true)
         .build()
         .expect("default options are valid")
 }
@@ -149,6 +151,7 @@ mod tests {
             config.csp_override(),
             Some(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
         );
+        assert!(config.enforce_zstd());
     }
 
     #[test]
@@ -258,7 +261,22 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        let page_resp = reqwest::get(format!("http://{addr}/{owner_key}"))
+        let client = reqwest::Client::new();
+        let uncompressed_resp = client
+            .get(format!("http://{addr}/{owner_key}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(uncompressed_resp.status(), 406);
+        assert_eq!(
+            uncompressed_resp.text().await.unwrap(),
+            "must support zstd level 19 compression"
+        );
+
+        let page_resp = client
+            .get(format!("http://{addr}/{owner_key}"))
+            .header(reqwest::header::ACCEPT_ENCODING, "zstd")
+            .send()
             .await
             .unwrap();
         assert_eq!(page_resp.status(), 200);
@@ -270,7 +288,8 @@ mod tests {
             .unwrap();
         assert_eq!(csp, SERVED_CSP_WITH_WASM_UNSAFE_EVAL);
 
-        let body = page_resp.text().await.unwrap();
+        let body_bytes = page_resp.bytes().await.unwrap();
+        let body = String::from_utf8(zstd::stream::decode_all(&*body_bytes).unwrap()).unwrap();
         assert!(
             !body.to_lowercase().contains("onclick"),
             "production-rendered owner page must introduce zero onclick attributes"
@@ -285,6 +304,16 @@ mod tests {
                 tag[..end].contains("src="),
                 "every <script> tag on the served production page must be external"
             );
+        }
+
+        if let Some(alias_key) = owner_key.strip_suffix(".html") {
+            let alias_resp = client
+                .get(format!("http://{addr}/{alias_key}"))
+                .header(reqwest::header::ACCEPT_ENCODING, "zstd")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(alias_resp.status(), 200);
         }
 
         handle.abort();
@@ -326,7 +355,22 @@ mod tests {
         });
         wait_for_server(addr).await;
 
-        let icon_resp = reqwest::get(format!("http://{addr}/favicon.svg"))
+        let client = reqwest::Client::new();
+        let uncompressed_icon_resp = client
+            .get(format!("http://{addr}/favicon.svg"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(uncompressed_icon_resp.status(), 406);
+        assert_eq!(
+            uncompressed_icon_resp.text().await.unwrap(),
+            "must support zstd level 19 compression"
+        );
+
+        let icon_resp = client
+            .get(format!("http://{addr}/favicon.svg"))
+            .header(reqwest::header::ACCEPT_ENCODING, "zstd")
+            .send()
             .await
             .unwrap();
         assert_eq!(icon_resp.status(), 200);
@@ -339,7 +383,8 @@ mod tests {
                 .unwrap(),
             "image/svg+xml"
         );
-        let icon_body = icon_resp.text().await.unwrap();
+        let icon_bytes = icon_resp.bytes().await.unwrap();
+        let icon_body = String::from_utf8(zstd::stream::decode_all(&*icon_bytes).unwrap()).unwrap();
         assert!(
             icon_body.contains("<svg"),
             "favicon body must be an SVG document"

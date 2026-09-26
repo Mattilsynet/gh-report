@@ -100,15 +100,15 @@ clap = { version = "4", features = ["derive"] }
 ron = "0.12"
 
 # === Internal ===
-cherry-pit-core = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.1.0" }
-cherry-pit-gateway = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.1.0" }
-cherry-pit-projection = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.1.0" }
-cherry-pit-web = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.1.0" }
-cherry-pit-app = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.1.0" }
-cherry-pit-merger = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.1.0" }
-cherry-pit-wq = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.2.0" }
-cherry-pit-storage = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.1.0" }
-pardosa-cherry-pit-test-support = { git = "https://github.com/acje/cherry-pit", rev = "ffffa0ddae206a322da9b9b4a94a3ad5e191da6e", version = "0.0.0" }
+cherry-pit-core = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.1.0" }
+cherry-pit-gateway = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.1.0" }
+cherry-pit-projection = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.1.0" }
+cherry-pit-web = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.1.0" }
+cherry-pit-app = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.1.0" }
+cherry-pit-merger = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.1.0" }
+cherry-pit-wq = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.2.0" }
+cherry-pit-storage = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.1.0" }
+pardosa-cherry-pit-test-support = { git = "https://github.com/acje/cherry-pit", rev = "b407d958f72b2eb65ddf514a67eddfc771adfd00", version = "0.0.0" }
 pardosa = { git = "https://github.com/acje/pardosa", rev = "49ea5ec42a782aa9303b0e6eab2659d59d181e69", version = "0.5.5" }
 pardosa-nats = { git = "https://github.com/acje/pardosa", rev = "49ea5ec42a782aa9303b0e6eab2659d59d181e69", version = "0.5.5" }
 
