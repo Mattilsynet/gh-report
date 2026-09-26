@@ -6306,7 +6306,8 @@ fn rendered_index_heading_shows_zero_ascended_for_imperfect_owner() {
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("CODEOWNERS Summary <span class=\"ascended-count\">Ascended (0)</span>"),
+        index.contains("<h3>CODEOWNERS Summary</h3>")
+            && index.contains("<span class=\"ascended-count\">Ascended (0)</span>"),
         "index heading must render the exact ascended count"
     );
 }
@@ -6329,7 +6330,8 @@ fn rendered_index_heading_shows_ascended_team_at_full_score() {
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("CODEOWNERS Summary <span class=\"ascended-count\">Ascended (1)</span>"),
+        index.contains("<h3>CODEOWNERS Summary</h3>")
+            && index.contains("<span class=\"ascended-count\">Ascended (1)</span>"),
         "a team scoring exactly 100 must be counted in the rendered heading"
     );
 }
@@ -6366,7 +6368,8 @@ fn rendered_index_heading_counts_only_perfect_team_in_mixed_owners() {
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("CODEOWNERS Summary <span class=\"ascended-count\">Ascended (1)</span>"),
+        index.contains("<h3>CODEOWNERS Summary</h3>")
+            && index.contains("<span class=\"ascended-count\">Ascended (1)</span>"),
         "mixed owners must render only the perfect team in the heading count"
     );
 }
@@ -6403,7 +6406,8 @@ fn rendered_index_heading_counts_every_team_when_all_perfect() {
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("CODEOWNERS Summary <span class=\"ascended-count\">Ascended (2)</span>"),
+        index.contains("<h3>CODEOWNERS Summary</h3>")
+            && index.contains("<span class=\"ascended-count\">Ascended (2)</span>"),
         "every perfect team must be counted in the rendered heading"
     );
 }
