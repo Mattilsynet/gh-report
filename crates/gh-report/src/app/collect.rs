@@ -5141,6 +5141,7 @@ mod tests {
             sweep_timeout: crate::config::SweepTimeout::default(),
             max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
+            serve_only: false,
         }
     }
 

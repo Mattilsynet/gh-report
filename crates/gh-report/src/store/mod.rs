@@ -333,6 +333,23 @@ impl<E: PardosaSchema> StoreInner<E> {
         Ok(())
     }
 
+    fn preflight_write_lease(&self) -> Result<(), StoreError> {
+        let _state = self.lock_knowledge()?;
+        match &self.backend {
+            StorageBackend::File(path) => {
+                let adapter = FileStorageAdapter::new(path);
+                let epoch = adapter.current_epoch()?;
+                let _session = adapter.open_write(epoch)?;
+                Ok(())
+            }
+            StorageBackend::Nats(adapter) => {
+                let epoch = adapter.current_epoch()?;
+                let _session = adapter.open_write(epoch)?;
+                Ok(())
+            }
+        }
+    }
+
     fn record(&self, domain_key: &str, event: E) -> Result<(), StoreError> {
         #[cfg(test)]
         if let Some(condition) = self.write_failure.lock().unwrap().clone() {
@@ -560,6 +577,14 @@ impl NativeStore {
         self.inner.resync_from_authoritative()
     }
 
+    /// Preflight writer lease ownership on the authoritative store.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if another writer session holds the lease, or the meta stream is unreadable.
+    pub fn preflight_write_lease(&self) -> Result<(), StoreError> {
+        self.inner.preflight_write_lease()
+    }
+
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
         self.backend_reachable
@@ -710,6 +735,14 @@ impl NativeOrgStore {
         self.inner.resync_from_authoritative()
     }
 
+    /// Preflight writer lease ownership on the authoritative store.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if another writer session holds the lease, or the meta stream is unreadable.
+    pub fn preflight_write_lease(&self) -> Result<(), StoreError> {
+        self.inner.preflight_write_lease()
+    }
+
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
         self.backend_reachable
@@ -796,6 +829,14 @@ impl NativeTeamStore {
 
     pub(crate) fn resync_from_authoritative(&self) -> Result<(), StoreError> {
         self.inner.resync_from_authoritative()
+    }
+
+    /// Preflight writer lease ownership on the authoritative store.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] if another writer session holds the lease, or the meta stream is unreadable.
+    pub fn preflight_write_lease(&self) -> Result<(), StoreError> {
+        self.inner.preflight_write_lease()
     }
 
     #[must_use]

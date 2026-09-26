@@ -374,6 +374,10 @@ struct Cli {
     #[arg(long, env = "GH_REPORT_TEAM_ROSTER_LIVE_FETCH")]
     team_roster_live_fetch: bool,
 
+    /// Run as a read-only serving replica: do not run background collection or team refresh loops.
+    #[arg(long, alias = "read-only", env = "GH_REPORT_SERVE_ONLY")]
+    serve_only: bool,
+
     /// Persistent store directory for baseline, checkpoints, and lock files.
     #[arg(long, default_value = "store")]
     store_dir: PathBuf,
@@ -516,6 +520,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.team_roster_read_from_projection = !cli.team_roster_live_fetch;
         config.nats_runtime = root_nats_guard;
         config.max_repos = cli.max_repos;
+        config.serve_only = cli.serve_only;
         let nats_creds_path = config
             .nats_creds
             .as_ref()

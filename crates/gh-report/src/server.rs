@@ -212,6 +212,7 @@ mod tests {
             sweep_timeout: crate::config::SweepTimeout::default(),
             max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
+            serve_only: false,
         };
 
         (config, evidence)
@@ -769,6 +770,7 @@ mod tests {
             sweep_timeout: crate::config::SweepTimeout::default(),
             max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
+            serve_only: false,
         };
 
         assert!(warm_start_from_baseline(&config, &state).await);
@@ -905,6 +907,7 @@ mod tests {
             sweep_timeout: crate::config::SweepTimeout::default(),
             max_repos: crate::config::MaxRepos::default(),
             nats_runtime: None,
+            serve_only: false,
         };
         let evidence = test_fixtures::make_full_evidence(
             test_fixtures::make_metadata(),
