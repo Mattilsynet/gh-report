@@ -212,7 +212,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     );
 
     let (mut collection_loop, mut team_refresh_loop) = if config.serve_only {
-        info!("serve-only replica mode enabled: background collection and team refresh loops are disabled");
+        info!(
+            "serve-only replica mode enabled: background collection and team refresh loops are disabled"
+        );
         (tokio::spawn(async {}), tokio::spawn(async {}))
     } else {
         app_state.preflight_write_lease().await.map_err(|e| {
