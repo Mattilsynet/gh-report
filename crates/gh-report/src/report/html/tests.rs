@@ -6041,6 +6041,100 @@ fn warm_start_badge_hidden_when_warm_start_false() {
     );
 }
 
+fn make_pending_repo_evidence(name: &str) -> RepositoryEvidence {
+    let mut ev = test_fixtures::all_passing_evidence(name);
+    ev.checks = make_checks_with_statuses(
+        SecurityPolicyStatus::Unknown,
+        SecretScanningStatus::Unknown,
+        DependabotStatus::Unknown,
+        BranchProtectionStatus::Unknown,
+    );
+    ev.checks.secret_scanning = SecretScanningResult::unobservable(
+        crate::domain::checks::SecretScanningFailureReason::Pending,
+        test_fixtures::make_timestamp(),
+    );
+    ev.checks.dependabot_security_updates.reason = Some("pending".to_string());
+    ev.checks.branch_protection.details.reason = Some("pending".to_string());
+    ev.checks.codeowners = test_fixtures::codeowners_unknown();
+    ev
+}
+
+#[test]
+fn warm_start_badge_notes_unscanned_count_single_repo() {
+    let metadata = test_fixtures::make_metadata();
+    let evidence = test_fixtures::make_full_evidence(
+        metadata,
+        test_fixtures::make_collection_statistics(2, 2, 0, 0),
+        test_fixtures::make_minimal_metrics(),
+        test_fixtures::make_observability(),
+        vec![
+            test_fixtures::all_passing_evidence("repo-1"),
+            make_pending_repo_evidence("repo-2"),
+        ],
+    );
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("warm-start-badge"),
+        "index should contain warm-start-badge when unscanned repos exist"
+    );
+    assert!(
+        index.contains("Cached · next update in progress · 1 repo not scanned"),
+        "index should note 1 repo not scanned; got: {index}"
+    );
+}
+
+#[test]
+fn warm_start_badge_notes_unscanned_count_multiple_repos() {
+    let metadata = test_fixtures::make_metadata();
+    let evidence = test_fixtures::make_full_evidence(
+        metadata,
+        test_fixtures::make_collection_statistics(3, 3, 0, 0),
+        test_fixtures::make_minimal_metrics(),
+        test_fixtures::make_observability(),
+        vec![
+            test_fixtures::all_passing_evidence("repo-1"),
+            make_pending_repo_evidence("repo-2"),
+            make_pending_repo_evidence("repo-3"),
+        ],
+    );
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("Cached · next update in progress · 2 repos not scanned"),
+        "index should note 2 repos not scanned; got: {index}"
+    );
+}
+
+#[test]
+fn warm_start_badge_visible_when_warm_start_false_but_unscanned_repos_present() {
+    let mut metadata = test_fixtures::make_metadata();
+    metadata.warm_start = false;
+
+    let evidence = test_fixtures::make_full_evidence(
+        metadata,
+        test_fixtures::make_collection_statistics(2, 2, 0, 0),
+        test_fixtures::make_minimal_metrics(),
+        test_fixtures::make_observability(),
+        vec![
+            test_fixtures::all_passing_evidence("repo-1"),
+            make_pending_repo_evidence("repo-2"),
+        ],
+    );
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("warm-start-badge"),
+        "index should contain warm-start-badge when warm_start is false but pending repos exist"
+    );
+}
+
 #[test]
 fn warm_start_meta_refresh_present_when_warm_start_true() {
     let mut metadata = test_fixtures::make_metadata();

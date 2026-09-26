@@ -584,7 +584,7 @@ pub(crate) fn render_publication_streaming(
     );
 
     let mut vm = ReportViewModel::from_evidence(evidence, tiers);
-    vm.warm_start = warm_start;
+    vm.update_warm_start(warm_start);
     vm.owners.clone_from(&owners_vm);
     vm.orphaned_count = orphaned_count;
     (vm.team_access_guidance, vm.team_access_help_links) =
@@ -620,7 +620,7 @@ pub(crate) fn render_publication_streaming(
         vm: &vm,
         nav: nav.clone(),
         title: format!("{} Security Dashboard", vm.organization),
-        warm_start,
+        warm_start: warm_start || vm.warm_start_badge.is_some(),
         ascended_count: owners_vm.as_ref().map_or(0, count_ascended_teams),
         build_footer: build_footer_text(),
         coverage_badge,
@@ -635,12 +635,7 @@ pub(crate) fn render_publication_streaming(
     sink("report.html".to_string(), report);
     sink("index.html".to_string(), index);
     sink("admin.html".to_string(), admin);
-    sink("style.css".to_string(), STYLESHEET.to_string());
-    sink("ws.js".to_string(), WS_CLIENT_JS.to_string());
-    sink("favicon.svg".to_string(), FAVICON_SVG.to_string());
-    sink("gh-report-web-client.js".to_string(), String::new());
-    sink("gh-report-web-client_bg.wasm".to_string(), String::new());
-    sink("sort-init.js".to_string(), String::new());
+    sink_static_assets(&mut sink);
 
     if let Some(ref owners) = owners_vm {
         render_owner_pages(
@@ -668,6 +663,15 @@ pub(crate) fn render_publication_streaming(
     )?;
 
     Ok(())
+}
+
+fn sink_static_assets(mut sink: impl FnMut(String, String)) {
+    sink("style.css".to_string(), STYLESHEET.to_string());
+    sink("ws.js".to_string(), WS_CLIENT_JS.to_string());
+    sink("favicon.svg".to_string(), FAVICON_SVG.to_string());
+    sink("gh-report-web-client.js".to_string(), String::new());
+    sink("gh-report-web-client_bg.wasm".to_string(), String::new());
+    sink("sort-init.js".to_string(), String::new());
 }
 
 /// Render `orphans.html`, `deleted.html`, `branch_protection.html`, and the
