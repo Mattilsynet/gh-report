@@ -228,10 +228,12 @@ fn policy_failure(outcome: &ApiOutcome, contents: bool) -> Option<IndeterminateR
                     data.get("type").and_then(serde_json::Value::as_str),
                     Some("file" | "dir" | "submodule" | "symlink")
                 ),
-                (false, Some(data)) => data
-                    .get("is_security_policy_enabled")
-                    .and_then(serde_json::Value::as_bool)
-                    .is_some(),
+                (false, Some(data)) => {
+                    data.is_object()
+                        && data
+                            .get("is_security_policy_enabled")
+                            .is_none_or(|v| v.is_boolean() || v.is_null())
+                }
                 _ => false,
             };
             (!valid).then_some(IndeterminateReason::Invalid)
@@ -450,6 +452,31 @@ mod tests {
         }
 
         let result = evaluate(&test_client(&server.uri()), &public_repo("absent-repo"), TS).await;
+
+        assert_eq!(result.status(), SecurityPolicyStatus::Fail);
+        assert_eq!(result.evidence(), SecurityPolicyEvidence::Absent);
+        assert!(result.path().is_none());
+    }
+
+    #[tokio::test]
+    async fn evaluator_fails_absent_when_github_omits_setting_field_and_no_file_exists() {
+        let server = MockServer::start().await;
+        mount_details(
+            &server,
+            "real-repo",
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 12345,
+                "name": "real-repo",
+                "default_branch": "main",
+                "visibility": "public",
+            })),
+        )
+        .await;
+        for &file_path in config::SECURITY_POLICY_PATHS {
+            mount_policy_path(&server, "real-repo", file_path, status(404)).await;
+        }
+
+        let result = evaluate(&test_client(&server.uri()), &public_repo("real-repo"), TS).await;
 
         assert_eq!(result.status(), SecurityPolicyStatus::Fail);
         assert_eq!(result.evidence(), SecurityPolicyEvidence::Absent);
