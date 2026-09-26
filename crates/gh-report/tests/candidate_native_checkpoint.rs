@@ -18,7 +18,7 @@ fn native_candidate_records_reopens_and_replays() {
     drop(store);
     let reopened = NativeStore::open_pgno(&path).unwrap();
     assert_eq!(reopened.events().unwrap(), vec![(false, event)]);
-    assert_eq!(gh_report::config::EVIDENCE_SCHEMA_VERSION, "25.0");
+    assert_eq!(gh_report::config::EVIDENCE_SCHEMA_VERSION, "24.0");
 }
 
 #[test]

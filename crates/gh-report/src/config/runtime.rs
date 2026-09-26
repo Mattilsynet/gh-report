@@ -294,7 +294,7 @@ mod tests {
         assert!(cfg.durable_consumer.contains(major));
 
         let token = org_token(b"acme");
-        let next_major = "v26";
+        let next_major = "v25";
         assert_ne!(major, next_major, "counterfactual major must differ");
 
         let this_stream = cfg.stream_name.clone();
@@ -400,9 +400,9 @@ mod tests {
         let dotted = NatsStoreConfig::for_org("a.b", DEFAULT_NATS_URL).unwrap();
         let dashed = NatsStoreConfig::for_org("a-b", DEFAULT_NATS_URL).unwrap();
 
-        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267-v25");
-        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.v25.events");
-        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267-v25");
+        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267-v24");
+        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.v24.events");
+        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267-v24");
         assert_ne!(my_org.stream_name, my_dash_org.stream_name);
         assert_ne!(my_org.subject, my_dash_org.subject);
         assert_ne!(dotted.stream_name, dashed.stream_name);
@@ -417,9 +417,9 @@ mod tests {
         let repo = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL).unwrap();
         let org = repo.org_events();
 
-        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-v25-org");
-        assert_eq!(org.subject, "gh-report.org_6d79206f7267.v25.org.events");
-        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-v25-org");
+        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-v24-org");
+        assert_eq!(org.subject, "gh-report.org_6d79206f7267.v24.org.events");
+        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-v24-org");
         assert_ne!(repo.stream_name, org.stream_name);
         assert_ne!(repo.subject, org.subject);
     }
@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(cfg.nats_url, DEFAULT_NATS_URL);
         assert_eq!(
             cfg.nats_store_config().unwrap().stream_name,
-            "gh-report-org_6f7267-v25"
+            "gh-report-org_6f7267-v24"
         );
         assert!(cfg.nats_store_config().unwrap().credentials_path.is_none());
     }
