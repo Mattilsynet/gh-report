@@ -9927,7 +9927,14 @@ mod tests {
         let pages = candidate.into_pages();
         let html_pages: Vec<String> = pages
             .keys()
-            .filter(|k| k.ends_with(".html") && *k != "index.html" && !k.ends_with("/index.html"))
+            .filter(|k| {
+                std::path::Path::new(k)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+                    && *k != "index.html"
+                    && !k.ends_with("/index.html")
+            })
             .cloned()
             .collect();
         assert!(
