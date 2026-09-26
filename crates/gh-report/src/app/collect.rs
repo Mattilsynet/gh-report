@@ -45,7 +45,7 @@ use crate::config::runtime::RuntimeConfig;
 use crate::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
     DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
-    SecurityPolicyResult,
+    SecurityPolicyResult, SecurityPolicyStatus,
 };
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::OrgAlertSummary;
@@ -2840,6 +2840,15 @@ fn reuse_from_baseline(
                     .get(&ghas_scanning::scope_key(repo))
                     .is_some_and(|s| s.open_alert_count > 0),
                 "skipping baseline reuse: conflicting baseline alert evidence versus fresh successful org alert summary"
+            );
+            continue;
+        }
+        if repo.is_public()
+            && evidence.checks.security_policy.status() == SecurityPolicyStatus::Unknown
+        {
+            debug!(
+                repo = %repo.name,
+                "skipping baseline reuse: public repo has unknown security policy"
             );
             continue;
         }
@@ -7211,6 +7220,42 @@ mod tests {
         assert!(
             baseline_cache.is_empty(),
             "force_refresh must bypass baseline reuse even for an unchanged repo"
+        );
+    }
+
+    #[tokio::test]
+    async fn reuse_from_baseline_bypasses_public_repo_with_unknown_security_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let mut evidence = sample_repo("repo-1");
+        evidence.repository.updated_at =
+            crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
+        evidence.checks.security_policy = SecurityPolicyResult::Unobservable {
+            reason: crate::domain::checks::IndeterminateReason::Invalid,
+            timestamp: "2026-04-10T00:00:00Z".to_string(),
+        };
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
+        );
+
+        let repo = arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z"));
+        let completed = HashMap::new();
+
+        let baseline_cache = reuse_from_baseline(
+            &[repo],
+            &completed,
+            "2026-04-10T00:00:00Z",
+            &state,
+            false,
+            &test_org_summary(),
+        );
+
+        assert!(
+            !baseline_cache.contains_key("id-repo-1"),
+            "public repo with unknown security policy must NOT be reused from baseline"
         );
     }
 
