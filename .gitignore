@@ -54,6 +54,7 @@ rss.csv
 .opencode/node_modules/
 *.db
 .beads-credential-key
+*.pem
 
 # gh-report runtime storage (--store-dir default is "store"); also catch
 # any per-crate runs that materialise a nested store/ tree.

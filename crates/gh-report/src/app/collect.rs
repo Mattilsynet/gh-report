@@ -2852,13 +2852,6 @@ fn reuse_from_baseline(
             );
             continue;
         }
-        if evidence.checks.branch_protection.status == BranchProtectionStatus::Unknown {
-            debug!(
-                repo = %repo.name,
-                "skipping baseline reuse: branch protection was unknown"
-            );
-            continue;
-        }
 
         debug!(
             repo = %repo.name,
@@ -7267,7 +7260,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reuse_from_baseline_bypasses_repo_with_unknown_branch_protection() {
+    async fn reuse_from_baseline_reuses_repo_with_unknown_branch_protection() {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new_with_cache_capacity(10).await;
 
@@ -7294,8 +7287,8 @@ mod tests {
         );
 
         assert!(
-            !baseline_cache.contains_key("id-repo-1"),
-            "repo with unknown branch protection must NOT be reused from baseline"
+            baseline_cache.contains_key("id-repo-1"),
+            "repo with unknown branch protection should be reused from baseline when updated_at matches"
         );
     }
 
