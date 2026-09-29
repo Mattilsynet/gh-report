@@ -604,13 +604,13 @@ async fn rearm_fenced_run(
     nats: Result<&crate::config::runtime::NatsStoreConfig, &ConfigError>,
     state: &Arc<AppState>,
     mut run_cfg: impl FnMut() -> RuntimeConfig,
-) {
+) -> Option<collect::CollectionOutcome> {
     let Ok(nats) = nats else {
         error!(
             owner_id = %state.owner_id,
             "fence-conflict re-arm skipped: NATS store config invalid — falling back to next scheduled tick"
         );
-        return;
+        return None;
     };
     let outcome = rearm_after_fenced_conflict(
         &RearmPolicy::DEFAULT,
@@ -619,11 +619,13 @@ async fn rearm_fenced_run(
     )
     .await;
     match outcome {
-        Ok(collect::CollectionOutcome::Completed { .. }) => {
-            info!(owner_id = %state.owner_id, "fence-conflict re-arm converged");
+        Ok(collect::CollectionOutcome::Completed { unscanned }) => {
+            info!(owner_id = %state.owner_id, unscanned, "fence-conflict re-arm converged");
+            Some(collect::CollectionOutcome::Completed { unscanned })
         }
         Ok(collect::CollectionOutcome::Cancelled) => {
             info!(owner_id = %state.owner_id, "fence-conflict re-arm aborted on shutdown");
+            Some(collect::CollectionOutcome::Cancelled)
         }
         Ok(collect::CollectionOutcome::FencedConflict) => {
             unreachable!("rearm_after_fenced_conflict never returns Ok(FencedConflict)")
@@ -634,6 +636,7 @@ async fn rearm_fenced_run(
                 error = %error,
                 "fence-conflict re-arm exhausted — reverting to next scheduled tick"
             );
+            None
         }
     }
 }
@@ -811,14 +814,18 @@ fn spawn_collection_loop(
                         expected = "rollover",
                         "initial collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
                     );
-                    rearm_fenced_run(
+                    consecutive_retries = match rearm_fenced_run(
                         &events_dir,
                         config.pardosa_backend,
                         nats.as_ref(),
                         &state,
                         || initial_run_config(&config, &force_flag, &force_refresh_flag),
                     )
-                    .await;
+                    .await
+                    {
+                        Some(collect::CollectionOutcome::Completed { unscanned: 0 }) => 0,
+                        _ => 1,
+                    };
                 }
                 Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
                     let failure = WriteFailure::classify(error);
@@ -884,14 +891,18 @@ fn spawn_collection_loop(
                         expected = "rollover",
                         "scheduled collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
                     );
-                    rearm_fenced_run(
+                    consecutive_retries = match rearm_fenced_run(
                         &events_dir,
                         config.pardosa_backend,
                         nats.as_ref(),
                         &state,
                         || scheduled_run_config(&config, &force_flag, &force_refresh_flag),
                     )
-                    .await;
+                    .await
+                    {
+                        Some(collect::CollectionOutcome::Completed { unscanned: 0 }) => 0,
+                        _ => consecutive_retries.saturating_add(1),
+                    };
                 }
                 Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
                     consecutive_retries = consecutive_retries.saturating_add(1);
