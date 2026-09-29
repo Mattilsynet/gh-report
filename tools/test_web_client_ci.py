@@ -23,6 +23,13 @@ PREBUILDS = [
 ]
 
 
+def is_install_step(step):
+    return step.get("run") == INSTALL or (
+        "install-action" in step.get("uses", "")
+        and "wasm-bindgen-cli@0.2.128" in step.get("with", {}).get("tool", "")
+    )
+
+
 def assert_gates(test, workflow):
     job = workflow["jobs"]["build-test-lint"]
     test.assertEqual(job["runs-on"], "ubuntu-latest")
@@ -34,7 +41,7 @@ def assert_gates(test, workflow):
                if step.get("with", {}).get("toolchain") == "1.98.0"]
     test.assertEqual(len(matches), 1, "toolchain setup")
     setup = matches[0]
-    matches = [i for i, step in enumerate(steps) if step.get("run") == INSTALL]
+    matches = [i for i, step in enumerate(steps) if is_install_step(step)]
     test.assertEqual(len(matches), 1, INSTALL)
     install = matches[0]
     test.assertLess(setup, install)
@@ -117,7 +124,7 @@ class WorkflowGates(unittest.TestCase):
                 steps = changed["jobs"]["build-test-lint"]["steps"]
                 matches = [step for step in steps
                            if (step.get("with", {}).get("toolchain") == "1.98.0"
-                               if anchor == "setup" else step.get("run") == INSTALL)]
+                               if anchor == "setup" else is_install_step(step))]
                 self.assertEqual(len(matches), 1, anchor)
                 if mutation == "remove":
                     steps.remove(matches[0])
@@ -171,7 +178,7 @@ class WorkflowGates(unittest.TestCase):
                 changed = copy.deepcopy(workflow)
                 job = changed["jobs"]["build-test-lint"]
                 target = job if location == "job" else next(
-                    step for step in job["steps"] if step.get("run") == INSTALL)
+                    step for step in job["steps"] if is_install_step(step))
                 target[field] = value
                 with self.assertRaises(AssertionError):
                     assert_gates(self, changed)
