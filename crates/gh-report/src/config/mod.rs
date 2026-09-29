@@ -133,6 +133,13 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 /// field is still collected on every tick.
 pub const COLLECTION_INTERVAL_SECS: u64 = 3_600;
 
+/// Interval (seconds) between collection retries after an incomplete or failed
+/// collection run.
+///
+/// Harmonic with [`COLLECTION_INTERVAL_SECS`] per FLO-0002:R2:
+/// `3_600 / 60 = 60`.
+pub const COLLECTION_RETRY_INTERVAL_SECS: u64 = 60;
+
 /// Maximum age (seconds) a baseline entry may be reused for, even when
 /// the repository's `updated_at` still matches the baseline's recorded
 /// value.
@@ -513,6 +520,19 @@ mod tests {
         assert_eq!(
             Duration::from_secs(COLLECTION_INTERVAL_SECS),
             Duration::from_hours(1)
+        );
+    }
+
+    #[test]
+    fn collection_retry_interval_is_sixty_seconds_harmonic_with_collection_interval() {
+        assert_eq!(super::COLLECTION_RETRY_INTERVAL_SECS, 60);
+        assert_eq!(
+            COLLECTION_INTERVAL_SECS % super::COLLECTION_RETRY_INTERVAL_SECS,
+            0
+        );
+        assert_eq!(
+            COLLECTION_INTERVAL_SECS / super::COLLECTION_RETRY_INTERVAL_SECS,
+            60
         );
     }
 
