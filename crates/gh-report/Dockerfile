@@ -13,8 +13,22 @@
 # Run:
 #   podman run --rm -p 8080:8080 -e GITHUB_TOKEN=ghp_... -e BIND_ADDRESS=0.0.0.0 gh-report --org MyOrg
 
-# ── Stage 1: Build ───────────────────────────────────────────────
-FROM rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS builder
+# ── Stage 1: Base Chef ──────────────────────────────────────────
+FROM rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS chef
+
+COPY --from=lukemathwalker/cargo-chef:0.1.78-rust-1.98-bookworm /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
+WORKDIR /app
+ENV RUSTUP_TOOLCHAIN=1.98.0
+
+# ── Stage 2: Recipe Planner ──────────────────────────────────────
+FROM chef AS planner
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 3: Builder ─────────────────────────────────────────────
+FROM chef AS builder
 
 # cmake + clang + perl: required by aws-lc-sys (transitive dep of jsonwebtoken).
 # --no-install-recommends keeps the layer small.
@@ -22,36 +36,25 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends cmake clang perl \
  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+COPY --from=planner /app/recipe.json recipe.json
 
-# Pin toolchain via env var — the base image ships 1.98.0 but
-# without this, rustup may try to re-verify on each cargo invocation.
-# rust-toolchain.toml is intentionally excluded from the build context.
-ENV RUSTUP_TOOLCHAIN=1.98.0
+# Cook dependencies - this layer is cached by Docker until Cargo.lock or dependencies change.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo chef cook --release --locked -p gh-report --recipe-path recipe.json
 
-# Copy workspace manifest and lockfile first for dependency layer caching.
+# Copy workspace source
 COPY Cargo.toml Cargo.lock ./
-
-# Copy the whole crates/ tree. The root Cargo.toml is a workspace manifest
-# listing all 20 members by path, so cargo resolves the entire workspace even
-# under `-p gh-report`; every member manifest must therefore be present. Copying
-# the full tree is the simple-correct approach (COM-0001) and is robust against
-# inter-member manifest references; only gh-report's dependency graph actually
-# compiles. gh-report's transitive local crates are cherry-pit-{core,storage,
-# web,wq} and pardosa{,-derive,-file,-nats,-schema,-wire}.
 COPY crates/ crates/
 
 ARG APP_VERSION
 ARG APP_GIT_SHA
 
-# Cache mounts: Cargo registry + target dir survive across builds.
-# The final binary is copied out so the cache mount is not in the image.
+# Compile application using pre-cooked dependencies
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
     APP_VERSION="$APP_VERSION" APP_GIT_SHA="$APP_GIT_SHA" cargo build --release --locked -p gh-report \
  && cp target/release/gh-report /usr/local/bin/gh-report
 
-# ── Stage 2: Runtime ────────────────────────────────────────────
+# ── Stage 4: Runtime ────────────────────────────────────────────
 # distroless/cc: glibc + libgcc (required by Rust glibc-linked binaries).
 # :nonroot tag runs as uid 65532 — no shell, no package manager.
 # Pinned to digest for supply-chain integrity; update digest when upgrading.

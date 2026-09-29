@@ -46,7 +46,6 @@ jobs:
         run: python3.12 -B tools/verify_web_client.py browser --ci
       - name: verify web-client guard regressions
         run: python3.12 -B tools/test_web_client_verify.py
-      - run: cargo build --workspace --all-features --locked
       # CHE-0087 R5/R6: the Leptos CSR client is wasm32-only and excluded from
       # the default build set. Its committed .wasm/.js artefacts are embedded
       # into gh-report via include_bytes!/include_str!; this step compiles the

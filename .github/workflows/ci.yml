@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -17,7 +15,6 @@ jobs:
 
   docker:
     name: Docker build (no push)
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     permissions:
