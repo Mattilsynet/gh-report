@@ -1529,6 +1529,19 @@ fn team_rosters_from_projection(state: &AppState) -> Vec<crate::domain::metrics:
         .collect()
 }
 
+fn bootstrap_github_credential(
+    app_config: Option<&GitHubAppConfig>,
+) -> Result<GitHubCredential, AppError> {
+    if app_config.is_some() {
+        Ok(GitHubCredential::from_installation_token(
+            String::new(),
+            jiff::Timestamp::from_second(0).expect("valid timestamp 0"),
+        ))
+    } else {
+        GitHubCredential::from_environment().map_err(AppError::GitHubApi)
+    }
+}
+
 async fn prepare_collection(
     config: &RuntimeConfig,
     run: &RunMetadata,
@@ -1561,7 +1574,7 @@ async fn prepare_collection(
         .github_client_or_try_init(|| async {
             let (budget, rate_limit) = state.github_api_controls();
             let app_config = GitHubAppConfig::from_environment()?;
-            let credential = GitHubCredential::from_environment()?;
+            let credential = bootstrap_github_credential(app_config.as_ref())?;
             let client = GitHubClient::new(
                 credential,
                 crate::config::DEFAULT_GITHUB_API_BASE_URL,
@@ -10027,5 +10040,22 @@ mod tests {
                 "clean route alias for {html_key} must exist in cache"
             );
         }
+    }
+
+    #[test]
+    fn bootstrap_github_credential_uses_zero_expiry_installation_token_when_app_config_present() {
+        let app_config = GitHubAppConfig {
+            app_id: 12345,
+            private_key_pem: secrecy::SecretString::from("dummy-pem"),
+            installation_id: 67890,
+        };
+        let cred = bootstrap_github_credential(Some(&app_config))
+            .expect("bootstrapping with app_config should succeed without environment credentials");
+        assert_eq!(cred.mode, AuthMode::GitHubApp);
+        assert_eq!(cred.expires_at_unix(), 0);
+        assert_eq!(
+            cred.expires_at,
+            Some(jiff::Timestamp::from_second(0).expect("valid timestamp 0"))
+        );
     }
 }
