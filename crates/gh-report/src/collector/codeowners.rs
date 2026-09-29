@@ -86,7 +86,7 @@ fn build_result_with_parsed(
             content,
             timestamp,
         },
-        other => other,
+        other @ (CodeownersResult::Absent { .. } | CodeownersResult::Unobservable { .. }) => other,
     }
 }
 

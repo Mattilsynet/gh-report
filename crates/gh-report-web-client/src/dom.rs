@@ -207,7 +207,9 @@ fn apply_sort(table: &HtmlTableElement, state: &SortState) {
                     .item(state.column)
                     .and_then(|cell| cell.get_attribute("data-sort-value"))
                     .unwrap_or_default(),
-                _ => cell_text(&row, state.column),
+                SortType::Numeric | SortType::Date | SortType::Text => {
+                    cell_text(&row, state.column)
+                }
             };
             (row, text)
         })

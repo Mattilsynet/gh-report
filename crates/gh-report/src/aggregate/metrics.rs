@@ -1831,7 +1831,7 @@ mod tests {
         let mut projection = crate::projection::EvidenceProjection::default();
         projection
             .repositories
-            .insert(active.repository.inventory_key.clone(), active.clone());
+            .insert(active.repository.inventory_key.clone(), active);
         projection.deleted.insert(
             "id-deleted-denominator".to_string(),
             crate::projection::DeletedRepoRecord {

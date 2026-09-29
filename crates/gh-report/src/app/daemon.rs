@@ -604,13 +604,13 @@ async fn rearm_fenced_run(
     nats: Result<&crate::config::runtime::NatsStoreConfig, &ConfigError>,
     state: &Arc<AppState>,
     mut run_cfg: impl FnMut() -> RuntimeConfig,
-) {
+) -> Option<collect::CollectionOutcome> {
     let Ok(nats) = nats else {
         error!(
             owner_id = %state.owner_id,
             "fence-conflict re-arm skipped: NATS store config invalid — falling back to next scheduled tick"
         );
-        return;
+        return None;
     };
     let outcome = rearm_after_fenced_conflict(
         &RearmPolicy::DEFAULT,
@@ -619,11 +619,13 @@ async fn rearm_fenced_run(
     )
     .await;
     match outcome {
-        Ok(collect::CollectionOutcome::Completed { .. }) => {
-            info!(owner_id = %state.owner_id, "fence-conflict re-arm converged");
+        Ok(collect::CollectionOutcome::Completed { unscanned }) => {
+            info!(owner_id = %state.owner_id, unscanned, "fence-conflict re-arm converged");
+            Some(collect::CollectionOutcome::Completed { unscanned })
         }
         Ok(collect::CollectionOutcome::Cancelled) => {
             info!(owner_id = %state.owner_id, "fence-conflict re-arm aborted on shutdown");
+            Some(collect::CollectionOutcome::Cancelled)
         }
         Ok(collect::CollectionOutcome::FencedConflict) => {
             unreachable!("rearm_after_fenced_conflict never returns Ok(FencedConflict)")
@@ -634,6 +636,7 @@ async fn rearm_fenced_run(
                 error = %error,
                 "fence-conflict re-arm exhausted — reverting to next scheduled tick"
             );
+            None
         }
     }
 }
@@ -811,14 +814,18 @@ fn spawn_collection_loop(
                         expected = "rollover",
                         "initial collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
                     );
-                    rearm_fenced_run(
+                    consecutive_retries = match rearm_fenced_run(
                         &events_dir,
                         config.pardosa_backend,
                         nats.as_ref(),
                         &state,
                         || initial_run_config(&config, &force_flag, &force_refresh_flag),
                     )
-                    .await;
+                    .await
+                    {
+                        Some(collect::CollectionOutcome::Completed { unscanned: 0 }) => 0,
+                        _ => 1,
+                    };
                 }
                 Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
                     let failure = WriteFailure::classify(error);
@@ -884,14 +891,18 @@ fn spawn_collection_loop(
                         expected = "rollover",
                         "scheduled collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
                     );
-                    rearm_fenced_run(
+                    consecutive_retries = match rearm_fenced_run(
                         &events_dir,
                         config.pardosa_backend,
                         nats.as_ref(),
                         &state,
                         || scheduled_run_config(&config, &force_flag, &force_refresh_flag),
                     )
-                    .await;
+                    .await
+                    {
+                        Some(collect::CollectionOutcome::Completed { unscanned: 0 }) => 0,
+                        _ => consecutive_retries.saturating_add(1),
+                    };
                 }
                 Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
                     consecutive_retries = consecutive_retries.saturating_add(1);
@@ -1182,7 +1193,7 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
         let owner = match &source {
             JobSource::ScheduledBatch => match active.as_ref() {
                 Some(owner) if Some(owner.id) == correlation => Some(Arc::clone(owner)),
-                _ => {
+                Some(_) | None => {
                     warn!(
                         ?correlation,
                         "discarding stale scheduled delivery: no matching run owner"
@@ -1190,7 +1201,7 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
                     continue;
                 }
             },
-            _ => None,
+            JobSource::InitialLoad | JobSource::External { .. } | _ => None,
         };
         if state.run_is_fenced() {
             warn!(
@@ -1394,11 +1405,11 @@ fn handle_failure_outcome<R: RepoRecorder + ?Sized>(
     let (repo_name, step) = if let Some(existing) = existing {
         let name = existing.repository.name.clone();
         let failure = collect::failure_evidence(
-            &std::sync::Arc::new(existing.repository.clone()),
+            &std::sync::Arc::new(existing.repository),
             &jiff::Timestamp::now().to_string(),
         );
         let timestamp = jiff::Timestamp::now().to_string();
-        let step = match recorder.record_repo(domain_key, failure.clone(), &name, &timestamp) {
+        let step = match recorder.record_repo(domain_key, failure, &name, &timestamp) {
             Ok(()) => DeliveryStep::Delivered,
             Err(write_failure) => {
                 classify_failure_state_persist_failure(write_failure, domain_key, &name)

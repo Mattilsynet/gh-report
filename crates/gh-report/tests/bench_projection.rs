@@ -261,7 +261,9 @@ fn apply_envelope(projection: &mut EvidenceProjection, stored: &EventEnvelope) {
             repo_name: repo_name.as_str().to_string(),
             detected_at: detected_at.as_nanos().to_string(),
         },
-        other => panic!("unexpected benchmark event: {other:?}"),
+        other @ (DomainEvent::OrgStateCaptured(_) | DomainEvent::TeamStateCaptured(_)) => {
+            panic!("unexpected benchmark event: {other:?}")
+        }
     };
     let envelope = cherry_pit_core::EventEnvelope::new(
         uuid::Uuid::now_v7(),
@@ -331,7 +333,11 @@ fn assert_stored_chain_and_heads(envelopes: &[EventEnvelope], total: usize, fibe
                 event_nanos(expected_idx),
                 "repo-{repo_idx} fiber head identity (alias-free per-event marker)"
             ),
-            other => panic!("unexpected fiber head event: {other:?}"),
+            other @ (DomainEvent::RepositoryDeleted { .. }
+            | DomainEvent::OrgStateCaptured(_)
+            | DomainEvent::TeamStateCaptured(_)) => {
+                panic!("unexpected fiber head event: {other:?}")
+            }
         }
     }
 }

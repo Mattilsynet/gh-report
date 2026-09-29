@@ -969,7 +969,7 @@ mod tests {
     fn updated_at_opaque_string_round_trip() {
         let mut repo = sample_repository();
         repo.updated_at = sr::UpdatedAt::new("not-a-timestamp");
-        let event_repo = Repository::try_from(repo.clone()).expect("conversion to event");
+        let event_repo = Repository::try_from(repo).expect("conversion to event");
         let round_tripped = sr::Repository::from(event_repo);
         assert_eq!(round_tripped.updated_at.as_deref(), Some("not-a-timestamp"));
     }
@@ -978,7 +978,7 @@ mod tests {
     fn updated_at_offset_spelling_preserved() {
         let mut repo = sample_repository();
         repo.updated_at = sr::UpdatedAt::new("2026-04-01T14:00:00+02:00");
-        let event_repo = Repository::try_from(repo.clone()).expect("conversion to event");
+        let event_repo = Repository::try_from(repo).expect("conversion to event");
         let round_tripped = sr::Repository::from(event_repo);
         assert_eq!(
             round_tripped.updated_at.as_deref(),
@@ -990,14 +990,13 @@ mod tests {
     fn is_empty_flag_preserved() {
         let mut repo = sample_repository();
         repo.is_empty = true;
-        let event_repo = Repository::try_from(repo.clone()).expect("conversion to event");
+        let event_repo = Repository::try_from(repo).expect("conversion to event");
         let round_tripped = sr::Repository::from(event_repo);
         assert!(round_tripped.is_empty);
 
         let mut repo_false = sample_repository();
         repo_false.is_empty = false;
-        let event_repo_false =
-            Repository::try_from(repo_false.clone()).expect("conversion to event");
+        let event_repo_false = Repository::try_from(repo_false).expect("conversion to event");
         let round_tripped_false = sr::Repository::from(event_repo_false);
         assert!(!round_tripped_false.is_empty);
     }
@@ -1006,7 +1005,7 @@ mod tests {
     fn updated_at_whitespace_preserved() {
         let mut repo = sample_repository();
         repo.updated_at = sr::UpdatedAt::new(" ");
-        let event_repo = Repository::try_from(repo.clone()).expect("conversion to event");
+        let event_repo = Repository::try_from(repo).expect("conversion to event");
         let round_tripped = sr::Repository::from(event_repo);
         assert_eq!(round_tripped.updated_at.as_deref(), Some(" "));
     }

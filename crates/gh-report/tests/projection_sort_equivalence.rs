@@ -112,7 +112,7 @@ fn projection_sorted_snapshot_orders_by_id_then_name_distinct_from_insertion_and
     let c = ev("m-key-3", "a-id", "c-name");
 
     let mut projection = EvidenceProjection::default();
-    projection.load_baseline(vec![a.clone(), b.clone(), c.clone()]);
+    projection.load_baseline(vec![a, b, c]);
 
     let snapshot = projection.sorted_snapshot();
     let ids: Vec<&str> = snapshot.iter().map(|e| e.repository.id.as_str()).collect();

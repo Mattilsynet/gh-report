@@ -56,6 +56,10 @@ impl StoreError {
 }
 
 impl From<OperationFailure> for StoreError {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "FailureCondition is an external enum with 20+ variants where only StoreAlreadyExists/ConcurrencyConflict/StaleEpoch map specially"
+    )]
     fn from(err: OperationFailure) -> Self {
         match err.condition() {
             FailureCondition::StoreAlreadyExists => StoreError::AlreadyExists(err),
@@ -137,7 +141,9 @@ fn creation_failure(error: OperationFailure) -> StoreError {
 fn require_absent(presence: ArtefactPresence) -> Result<(), StoreError> {
     match presence {
         ArtefactPresence::None => Ok(()),
-        _ => Err(StoreError::AlreadyExists(OperationFailure::new(
+        ArtefactPresence::OwnershipRecordOnly
+        | ArtefactPresence::EventDataOnly
+        | ArtefactPresence::Both => Err(StoreError::AlreadyExists(OperationFailure::new(
             FailureCondition::StoreAlreadyExists,
             "store artefacts precede create",
         ))),
@@ -1188,6 +1194,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "test assertion matches ConcurrencyConflict and panics on other StoreError variants"
+    )]
     fn typed_concurrency_conflict_maps_to_conflict_variant_without_inventing_sequences() {
         let failure = OperationFailure::new(
             FailureCondition::ConcurrencyConflict,
@@ -1536,7 +1546,7 @@ pub(crate) mod tests {
             .expect("connect to live nats");
         let stem = format!("test_nats_unreachable_{}", uuid::Uuid::now_v7());
         let adapter =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem, rt.clone());
+            NatsStorageAdapter::from_client_with_runtime(client, stem, std::sync::Arc::clone(&rt));
         let store = NativeStore::create_nats(adapter).expect("create nats store");
         store
             .record(
@@ -1667,7 +1677,11 @@ pub(crate) mod tests {
                 );
                 assert_eq!(detected_at.as_nanos(), 60);
             }
-            other => panic!("unexpected preserved event: {other:?}"),
+            other @ (DomainEvent::RepositoryStateCaptured { .. }
+            | DomainEvent::OrgStateCaptured(_)
+            | DomainEvent::TeamStateCaptured(_)) => {
+                panic!("unexpected preserved event: {other:?}")
+            }
         }
     }
 
@@ -2012,7 +2026,7 @@ pub(crate) mod tests {
         let adapter_valid = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_valid.clone(),
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let store = NativeStore::create_nats(adapter_valid).expect("create valid nats store");
         store
@@ -2030,7 +2044,7 @@ pub(crate) mod tests {
         let adapter_reopen = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_valid.clone(),
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let reopened = NativeStore::open_nats(adapter_reopen).expect("reopen valid nats store");
         assert_eq!(reopened.events().expect("events").len(), 1);
@@ -2046,8 +2060,11 @@ pub(crate) mod tests {
             .expect("append second event after reopen");
         drop(reopened);
 
-        let adapter_second_reopen =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid, rt.clone());
+        let adapter_second_reopen = NatsStorageAdapter::from_client_with_runtime(
+            client,
+            stem_valid,
+            std::sync::Arc::clone(&rt),
+        );
         let second_reopened =
             NativeStore::open_nats(adapter_second_reopen).expect("second reopen valid nats store");
         let events = second_reopened.events().expect("events");
@@ -2062,7 +2079,9 @@ pub(crate) mod tests {
                 assert_eq!(repo_name.as_str(), "repo-nats-1");
                 assert_eq!(detected_at.as_nanos(), 20);
             }
-            _ => panic!("unexpected event 0 variant"),
+            DomainEvent::RepositoryStateCaptured { .. }
+            | DomainEvent::OrgStateCaptured(_)
+            | DomainEvent::TeamStateCaptured(_) => panic!("unexpected event 0 variant"),
         }
         match &events[1].1 {
             DomainEvent::RepositoryDeleted {
@@ -2074,7 +2093,9 @@ pub(crate) mod tests {
                 assert_eq!(repo_name.as_str(), "repo-nats-2");
                 assert_eq!(detected_at.as_nanos(), 30);
             }
-            _ => panic!("unexpected event 1 variant"),
+            DomainEvent::RepositoryStateCaptured { .. }
+            | DomainEvent::OrgStateCaptured(_)
+            | DomainEvent::TeamStateCaptured(_) => panic!("unexpected event 1 variant"),
         }
     }
 
@@ -2098,7 +2119,7 @@ pub(crate) mod tests {
         let adapter_mismatched_raw = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_mismatched.clone(),
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let claim = default_claim(1, "mismatched-nats");
         let mut session = adapter_mismatched_raw
@@ -2110,7 +2131,7 @@ pub(crate) mod tests {
         let adapter_mismatched = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_mismatched,
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let Err(err_mismatched) = NativeStore::open_nats(adapter_mismatched) else {
             panic!("open mismatched nats store must fail closed");
@@ -2125,7 +2146,7 @@ pub(crate) mod tests {
         let adapter_unadmitted_raw = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_unadmitted.clone(),
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let claim_unadmitted = default_claim(1, "unadmitted-nats");
         adapter_unadmitted_raw
@@ -2315,7 +2336,7 @@ pub(crate) mod tests {
 
         let out_invalid_utf8 = make_test_output(0, b"\xFF\xFE\xFD");
         assert!(matches!(
-            classify_probe_result(Ok(out_invalid_utf8), "2.14.5", dummy.clone()),
+            classify_probe_result(Ok(out_invalid_utf8), "2.14.5", dummy),
             ProbeOutcome::Fatal(msg) if msg.contains("valid UTF-8")
         ));
     }
@@ -2329,7 +2350,7 @@ pub(crate) mod tests {
         assert!(matches!(outcome_absent, ProbeOutcome::Unavailable(_)));
 
         let perm_denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
-        let outcome_fatal = classify_probe_result(Err(perm_denied), "2.14.5", dummy_path.clone());
+        let outcome_fatal = classify_probe_result(Err(perm_denied), "2.14.5", dummy_path);
         assert!(matches!(outcome_fatal, ProbeOutcome::Fatal(_)));
     }
 }

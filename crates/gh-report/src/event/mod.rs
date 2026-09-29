@@ -1809,6 +1809,10 @@ pub(crate) fn v22_org_state_descriptor() -> pardosa::prelude::SchemaDescriptor {
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "primitive/scalar descriptor nodes all have depth 0"
+    )]
     fn ast_depth(node: &DescriptorNode) -> usize {
         match node {
             DescriptorNode::Option { inner } | DescriptorNode::EventVec { inner, .. } => {

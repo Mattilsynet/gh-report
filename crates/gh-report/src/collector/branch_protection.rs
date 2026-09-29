@@ -855,7 +855,9 @@ mod tests {
                     assert_eq!(failure.reason, IndeterminateReason::PermissionDenied);
                     assert_eq!(failure.http_status, Some(403));
                 }
-                _ => panic!("403 must classify as an indeterminate denial"),
+                EndpointEvidence::Observed(_) | EndpointEvidence::ConfirmedAbsent { .. } => {
+                    panic!("403 must classify as an indeterminate denial")
+                }
             }
         }
     }
@@ -897,7 +899,9 @@ mod tests {
                     assert_eq!(failure.http_status, status);
                     assert!(failure.reason.persisted().is_indeterminate());
                 }
-                _ => panic!("failure {status:?} must never classify as observed or absent"),
+                EndpointEvidence::Observed(_) | EndpointEvidence::ConfirmedAbsent { .. } => {
+                    panic!("failure {status:?} must never classify as observed or absent")
+                }
             }
         }
     }

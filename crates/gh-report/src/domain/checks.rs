@@ -152,7 +152,10 @@ impl SecurityPolicyResult {
     pub fn path(&self) -> Option<&str> {
         match self {
             Self::EnabledByFile { path, .. } => Some(path.as_str()),
-            _ => None,
+            Self::EnabledBySetting { .. }
+            | Self::Absent { .. }
+            | Self::Unobservable { .. }
+            | Self::NotApplicable { .. } => None,
         }
     }
 
@@ -179,7 +182,10 @@ impl From<&SecurityPolicyResult> for ScoreCategory {
                 | IndeterminateReason::Invalid
                 | IndeterminateReason::Pending => ExclusionReason::Other,
             }),
-            _ => Self::from(result.status()),
+            SecurityPolicyResult::EnabledBySetting { .. }
+            | SecurityPolicyResult::EnabledByFile { .. }
+            | SecurityPolicyResult::Absent { .. }
+            | SecurityPolicyResult::NotApplicable { .. } => Self::from(result.status()),
         }
     }
 }
@@ -437,7 +443,7 @@ impl SecretScanningResult {
                     },
                 ..
             } => Some(*has_open_alerts),
-            _ => None,
+            Self::Enabled { .. } | Self::Disabled { .. } | Self::Unobservable { .. } => None,
         }
     }
 
@@ -477,7 +483,7 @@ impl SecretScanningResult {
                 ..
             } => Some(*reason),
             Self::Unobservable { metadata, .. } => Some(metadata.failure_reason()),
-            _ => None,
+            Self::Enabled { .. } | Self::Disabled { .. } => None,
         }
     }
 
@@ -1220,7 +1226,7 @@ impl CodeownersResult {
                 location: CodeownersNonConformingLocation::Docs,
                 ..
             } => Some("docs/CODEOWNERS"),
-            _ => None,
+            Self::Absent { .. } | Self::Unobservable { .. } => None,
         }
     }
 
@@ -1257,7 +1263,10 @@ impl CodeownersResult {
                 content: CodeownersContent::Parsed(parsed),
                 ..
             } => Some(parsed),
-            _ => None,
+            Self::Conforming { .. }
+            | Self::NonConforming { .. }
+            | Self::Absent { .. }
+            | Self::Unobservable { .. } => None,
         }
     }
 
@@ -1272,7 +1281,10 @@ impl CodeownersResult {
                 content: CodeownersContent::Truncated(reason),
                 ..
             } => Some(*reason),
-            _ => None,
+            Self::Conforming { .. }
+            | Self::NonConforming { .. }
+            | Self::Absent { .. }
+            | Self::Unobservable { .. } => None,
         }
     }
 }
@@ -1288,7 +1300,9 @@ impl From<&CodeownersResult> for ScoreCategory {
                 | IndeterminateReason::Invalid
                 | IndeterminateReason::Pending => ExclusionReason::Other,
             }),
-            _ => Self::from(result.status()),
+            CodeownersResult::Conforming { .. }
+            | CodeownersResult::NonConforming { .. }
+            | CodeownersResult::Absent { .. } => Self::from(result.status()),
         }
     }
 }
