@@ -11,13 +11,8 @@ concurrency:
 # Adapted from Mattilsynet/rust-ci-conf/.github/workflows/upload.yaml.
 
 jobs:
-  ci:
-    name: CI
-    uses: ./.github/workflows/ci-reusable.yml
-
   build:
     name: Build and push to GAR
-    needs: ci
     runs-on: ubuntu-latest
 
     env:
