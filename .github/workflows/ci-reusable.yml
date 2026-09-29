@@ -118,6 +118,9 @@ jobs:
       - name: adr-number-collision check (GND-0009)
         if: always()
         run: tools/tripwires.sh adr-number-collision
+      - name: forbid-unsafe-total check (RST-0005:R1)
+        if: always()
+        run: tools/tripwires.sh forbid-unsafe-total
       # The pardosa-nats live-test harness (crates/pardosa-nats/src/test_support.rs)
       # spawns a real `nats-server` and asserts its --version matches the pin in
       # tools/.nats-server-version. Install exactly that version, checksum-verified
