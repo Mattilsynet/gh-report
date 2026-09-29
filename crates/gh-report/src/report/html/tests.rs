@@ -427,6 +427,10 @@ fn projection_current_state_renders_stable_html() {
         .repositories
         .remove(&removed.repository.inventory_key);
 
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "SortedSnapshot query exclusively returns Many variant"
+    )]
     let repositories = match EvidenceProjectionReadPort::resolve(
         &projection,
         EvidenceProjectionQuery::SortedSnapshot,

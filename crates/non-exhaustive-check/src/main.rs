@@ -132,6 +132,10 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "syn::Item has dozens of AST variants; only Enum and Mod can contain enum declarations"
+)]
 fn collect_enums<'a>(items: &'a [syn::Item], out: &mut Vec<&'a syn::ItemEnum>) {
     for item in items {
         match item {

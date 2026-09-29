@@ -56,6 +56,10 @@ impl StoreError {
 }
 
 impl From<OperationFailure> for StoreError {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "FailureCondition is an external enum with 20+ variants where only StoreAlreadyExists/ConcurrencyConflict/StaleEpoch map specially"
+    )]
     fn from(err: OperationFailure) -> Self {
         match err.condition() {
             FailureCondition::StoreAlreadyExists => StoreError::AlreadyExists(err),
@@ -137,7 +141,9 @@ fn creation_failure(error: OperationFailure) -> StoreError {
 fn require_absent(presence: ArtefactPresence) -> Result<(), StoreError> {
     match presence {
         ArtefactPresence::None => Ok(()),
-        _ => Err(StoreError::AlreadyExists(OperationFailure::new(
+        ArtefactPresence::OwnershipRecordOnly
+        | ArtefactPresence::EventDataOnly
+        | ArtefactPresence::Both => Err(StoreError::AlreadyExists(OperationFailure::new(
             FailureCondition::StoreAlreadyExists,
             "store artefacts precede create",
         ))),
@@ -1188,6 +1194,10 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "test assertion matches ConcurrencyConflict and panics on other StoreError variants"
+    )]
     fn typed_concurrency_conflict_maps_to_conflict_variant_without_inventing_sequences() {
         let failure = OperationFailure::new(
             FailureCondition::ConcurrencyConflict,
@@ -1667,7 +1677,11 @@ pub(crate) mod tests {
                 );
                 assert_eq!(detected_at.as_nanos(), 60);
             }
-            other => panic!("unexpected preserved event: {other:?}"),
+            other @ (DomainEvent::RepositoryStateCaptured { .. }
+            | DomainEvent::OrgStateCaptured(_)
+            | DomainEvent::TeamStateCaptured(_)) => {
+                panic!("unexpected preserved event: {other:?}")
+            }
         }
     }
 
@@ -2065,7 +2079,9 @@ pub(crate) mod tests {
                 assert_eq!(repo_name.as_str(), "repo-nats-1");
                 assert_eq!(detected_at.as_nanos(), 20);
             }
-            _ => panic!("unexpected event 0 variant"),
+            DomainEvent::RepositoryStateCaptured { .. }
+            | DomainEvent::OrgStateCaptured(_)
+            | DomainEvent::TeamStateCaptured(_) => panic!("unexpected event 0 variant"),
         }
         match &events[1].1 {
             DomainEvent::RepositoryDeleted {
@@ -2077,7 +2093,9 @@ pub(crate) mod tests {
                 assert_eq!(repo_name.as_str(), "repo-nats-2");
                 assert_eq!(detected_at.as_nanos(), 30);
             }
-            _ => panic!("unexpected event 1 variant"),
+            DomainEvent::RepositoryStateCaptured { .. }
+            | DomainEvent::OrgStateCaptured(_)
+            | DomainEvent::TeamStateCaptured(_) => panic!("unexpected event 1 variant"),
         }
     }
 

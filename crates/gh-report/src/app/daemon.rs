@@ -1182,7 +1182,7 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
         let owner = match &source {
             JobSource::ScheduledBatch => match active.as_ref() {
                 Some(owner) if Some(owner.id) == correlation => Some(Arc::clone(owner)),
-                _ => {
+                Some(_) | None => {
                     warn!(
                         ?correlation,
                         "discarding stale scheduled delivery: no matching run owner"
@@ -1190,7 +1190,7 @@ pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
                     continue;
                 }
             },
-            _ => None,
+            JobSource::InitialLoad | JobSource::External { .. } | _ => None,
         };
         if state.run_is_fenced() {
             warn!(

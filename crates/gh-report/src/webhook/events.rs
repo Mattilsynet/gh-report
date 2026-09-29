@@ -613,7 +613,9 @@ mod tests {
             map_event_to_action("repository", body.to_string().as_bytes(), &state).unwrap();
         match result {
             WebhookAction::Remove { inventory_key } => assert_eq!(inventory_key, "888"),
-            _ => panic!("expected Remove for archived action"),
+            WebhookAction::Enqueue { .. } | WebhookAction::Ignore => {
+                panic!("expected Remove for archived action")
+            }
         }
     }
 

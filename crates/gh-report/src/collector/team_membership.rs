@@ -235,7 +235,11 @@ fn member_entry<T: serde::de::DeserializeOwned>(item: &serde_json::Value) -> Wir
             Ok(member) => WireEntry::Member(member),
             Err(e) => WireEntry::Malformed(e),
         },
-        _ => WireEntry::NotAnObject,
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_)
+        | serde_json::Value::Array(_) => WireEntry::NotAnObject,
     }
 }
 

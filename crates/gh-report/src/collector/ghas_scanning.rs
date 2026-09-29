@@ -131,7 +131,9 @@ fn evaluate_org_alert_outcome(
             summary.collection_reason = Some("malformed_response".to_string());
             Err(Box::new(summary))
         }
-        _ => Err(Box::new(build_failure_summary(result))),
+        ApiOutcome::Success { .. } | ApiOutcome::Failure { .. } => {
+            Err(Box::new(build_failure_summary(result)))
+        }
     }
 }
 
@@ -146,7 +148,13 @@ fn classified_org_outcome(
             summary.collection_reason = Some("malformed_response".to_string());
             Err(Box::new(summary))
         }
-        _ => Ok(result),
+        crate::github::client::RequestClassification::Success { .. }
+        | crate::github::client::RequestClassification::BodyRead { .. }
+        | crate::github::client::RequestClassification::HttpError { .. }
+        | crate::github::client::RequestClassification::TransportError
+        | crate::github::client::RequestClassification::CredentialRefreshFailed
+        | crate::github::client::RequestClassification::BudgetAcquireCancelled
+        | crate::github::client::RequestClassification::HaltedBeforeDispatch => Ok(result),
     }
 }
 
@@ -475,16 +483,20 @@ fn org_probe(repo: &Repository, summary: &OrgAlertSummary) -> SecretScanningAler
         }
         CollectionStatus::PermissionDenied => SecretScanningFailureReason::PermissionDenied,
         CollectionStatus::TransientError => SecretScanningFailureReason::Transient,
-        _ => match summary.collection_reason.as_deref() {
-            Some(
-                "malformed_response" | "malformed_alert_item" | "alert_correlation_unidentifiable",
-            ) => SecretScanningFailureReason::Invalid,
-            Some("alert_coordinate_conflict" | "repository_alias_collision") => {
-                SecretScanningFailureReason::Conflict
+        CollectionStatus::NotCollected | CollectionStatus::Unavailable => {
+            match summary.collection_reason.as_deref() {
+                Some(
+                    "malformed_response"
+                    | "malformed_alert_item"
+                    | "alert_correlation_unidentifiable",
+                ) => SecretScanningFailureReason::Invalid,
+                Some("alert_coordinate_conflict" | "repository_alias_collision") => {
+                    SecretScanningFailureReason::Conflict
+                }
+                Some("rate_limited") => SecretScanningFailureReason::RateLimited,
+                _ => SecretScanningFailureReason::Unavailable,
             }
-            Some("rate_limited") => SecretScanningFailureReason::RateLimited,
-            _ => SecretScanningFailureReason::Unavailable,
-        },
+        }
     };
     SecretScanningAlerts::Unobservable {
         source,

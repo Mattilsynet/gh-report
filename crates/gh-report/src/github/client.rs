@@ -286,7 +286,7 @@ impl RequestRun {
     pub(crate) fn is_truncated(&self) -> bool {
         match &self.result {
             RunResult::Success { truncated, .. } => *truncated,
-            _ => false,
+            RunResult::NeverDispatched(_) | RunResult::Failed { .. } => false,
         }
     }
 
@@ -306,7 +306,7 @@ impl RequestRun {
         !self.halt_triggered
             && match &self.result {
                 RunResult::Failed { failure, .. } => failure.is_retryable(),
-                _ => false,
+                RunResult::NeverDispatched(_) | RunResult::Success { .. } => false,
             }
     }
 
@@ -334,7 +334,7 @@ impl RequestRun {
     pub(crate) fn failure_kind(&self) -> Option<&RequestFailureKind> {
         match &self.result {
             RunResult::Failed { failure, .. } => Some(failure),
-            _ => None,
+            RunResult::NeverDispatched(_) | RunResult::Success { .. } => None,
         }
     }
 

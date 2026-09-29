@@ -4006,7 +4006,15 @@ accounts: {
                 assert_eq!(expected_seq, Some(42));
                 assert_eq!(actual_seq, Some(44));
             }
-            other => panic!("expected FencedConflict, got {other:?}"),
+            other @ (PersistenceError::Indeterminate(_)
+            | PersistenceError::LockFailed { .. }
+            | PersistenceError::AtomicWriteFailed { .. }
+            | PersistenceError::LoadFailed { .. }
+            | PersistenceError::TornWriteRecovery { .. }
+            | PersistenceError::BackendUnavailable { .. }
+            | PersistenceError::InvariantViolation { .. }
+            | PersistenceError::PoisonedState
+            | PersistenceError::Io(_)) => panic!("expected FencedConflict, got {other:?}"),
         }
     }
 
@@ -4448,7 +4456,9 @@ accounts: {
                     crate::event::team_domain_key(team.org.as_str(), team.team_slug.as_str())
                         .is_ok_and(|key| key == team_key)
                 }
-                _ => false,
+                NativeDomainEvent::RepositoryStateCaptured { .. }
+                | NativeDomainEvent::RepositoryDeleted { .. }
+                | NativeDomainEvent::OrgStateCaptured(_) => false,
             })
             .count()
     }
@@ -4718,7 +4728,9 @@ accounts: {
                             )
                             .is_ok_and(|key| key == team_key)
                         }
-                        _ => false,
+                        NativeDomainEvent::RepositoryStateCaptured { .. }
+                        | NativeDomainEvent::RepositoryDeleted { .. }
+                        | NativeDomainEvent::OrgStateCaptured(_) => false,
                     }
             })
             .count()
@@ -4764,7 +4776,9 @@ accounts: {
                 NativeDomainEvent::OrgStateCaptured(org) => {
                     org.assessment_metadata.organization.as_str() == organization
                 }
-                _ => false,
+                NativeDomainEvent::RepositoryStateCaptured { .. }
+                | NativeDomainEvent::RepositoryDeleted { .. }
+                | NativeDomainEvent::TeamStateCaptured(_) => false,
             })
             .count()
     }
