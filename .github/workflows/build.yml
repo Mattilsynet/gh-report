@@ -2,6 +2,7 @@ name: Build
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
 
 concurrency:
@@ -67,6 +68,7 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
           build-args: |
             APP_VERSION=${{ github.ref_name }}
             APP_GIT_SHA=${{ github.sha }}
