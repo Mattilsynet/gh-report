@@ -1535,11 +1535,8 @@ pub(crate) mod tests {
             .block_on(async_nats::connect(&server.url))
             .expect("connect to live nats");
         let stem = format!("test_nats_unreachable_{}", uuid::Uuid::now_v7());
-        let adapter = NatsStorageAdapter::from_client_with_runtime(
-            client.clone(),
-            stem,
-            std::sync::Arc::clone(&rt),
-        );
+        let adapter =
+            NatsStorageAdapter::from_client_with_runtime(client, stem, std::sync::Arc::clone(&rt));
         let store = NativeStore::create_nats(adapter).expect("create nats store");
         store
             .record(
@@ -2050,7 +2047,7 @@ pub(crate) mod tests {
         drop(reopened);
 
         let adapter_second_reopen = NatsStorageAdapter::from_client_with_runtime(
-            client.clone(),
+            client,
             stem_valid,
             std::sync::Arc::clone(&rt),
         );
@@ -2321,7 +2318,7 @@ pub(crate) mod tests {
 
         let out_invalid_utf8 = make_test_output(0, b"\xFF\xFE\xFD");
         assert!(matches!(
-            classify_probe_result(Ok(out_invalid_utf8), "2.14.5", dummy.clone()),
+            classify_probe_result(Ok(out_invalid_utf8), "2.14.5", dummy),
             ProbeOutcome::Fatal(msg) if msg.contains("valid UTF-8")
         ));
     }
@@ -2335,7 +2332,7 @@ pub(crate) mod tests {
         assert!(matches!(outcome_absent, ProbeOutcome::Unavailable(_)));
 
         let perm_denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
-        let outcome_fatal = classify_probe_result(Err(perm_denied), "2.14.5", dummy_path.clone());
+        let outcome_fatal = classify_probe_result(Err(perm_denied), "2.14.5", dummy_path);
         assert!(matches!(outcome_fatal, ProbeOutcome::Fatal(_)));
     }
 }

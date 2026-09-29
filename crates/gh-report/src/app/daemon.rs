@@ -1394,11 +1394,11 @@ fn handle_failure_outcome<R: RepoRecorder + ?Sized>(
     let (repo_name, step) = if let Some(existing) = existing {
         let name = existing.repository.name.clone();
         let failure = collect::failure_evidence(
-            &std::sync::Arc::new(existing.repository.clone()),
+            &std::sync::Arc::new(existing.repository),
             &jiff::Timestamp::now().to_string(),
         );
         let timestamp = jiff::Timestamp::now().to_string();
-        let step = match recorder.record_repo(domain_key, failure.clone(), &name, &timestamp) {
+        let step = match recorder.record_repo(domain_key, failure, &name, &timestamp) {
             Ok(()) => DeliveryStep::Delivered,
             Err(write_failure) => {
                 classify_failure_state_persist_failure(write_failure, domain_key, &name)

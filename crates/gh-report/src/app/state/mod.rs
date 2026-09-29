@@ -538,7 +538,7 @@ impl AppState {
             .github
             .repo_detail_cache
             .iter()
-            .map(|(key, detail)| ((*key).clone(), detail.clone()))
+            .map(|(key, detail)| ((*key).clone(), detail))
             .collect();
         client.seed_cache(entries);
     }
@@ -2849,9 +2849,8 @@ mod tests {
         let org_nats = nats_config.org_events();
 
         {
-            let url = url.clone();
             let nats_runtime = Arc::clone(&nats_runtime);
-            let org_stream_name = org_nats.stream_name.clone();
+            let org_stream_name = org_nats.stream_name;
             let (meta_subj, data_subj) = nats_subjects_for_stem(&org_stream_name);
             let client = nats_runtime
                 .block_on(async_nats::connect(&url))
@@ -2933,9 +2932,8 @@ mod tests {
         let team_nats = nats_config.team_events();
 
         {
-            let url = url.clone();
             let nats_runtime = Arc::clone(&nats_runtime);
-            let team_stream_name = team_nats.stream_name.clone();
+            let team_stream_name = team_nats.stream_name;
             let (meta_subj, data_subj) = nats_subjects_for_stem(&team_stream_name);
             let client = nats_runtime
                 .block_on(async_nats::connect(&url))
@@ -3770,10 +3768,7 @@ accounts: {
         }
         cache.run_pending_tasks().await;
 
-        let exported: Vec<_> = cache
-            .iter()
-            .map(|(k, v)| ((*k).clone(), v.clone()))
-            .collect();
+        let exported: Vec<_> = cache.iter().map(|(k, v)| ((*k).clone(), v)).collect();
         assert_eq!(exported.len(), 3);
 
         let new_cache = crate::app::github_infra::build_cache(100);
@@ -4182,12 +4177,7 @@ accounts: {
 
         evidence.repository.archived = true;
         state
-            .record_repo(
-                &domain_key,
-                evidence.clone(),
-                &repo_name,
-                "2026-06-11T00:05:00Z",
-            )
+            .record_repo(&domain_key, evidence, &repo_name, "2026-06-11T00:05:00Z")
             .expect("replay apply, standing in for the re-armed retry's fresh authoritative read");
 
         let latest = state
@@ -5765,7 +5755,7 @@ accounts: {
             ),
         );
 
-        for evidence in [removed.clone(), kept.clone()] {
+        for evidence in [removed.clone(), kept] {
             let domain_key = evidence.repository.inventory_key.clone();
             let repo_name = evidence.repository.name.clone();
             state

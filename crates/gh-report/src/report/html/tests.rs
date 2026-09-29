@@ -422,7 +422,7 @@ fn projection_current_state_renders_stable_html() {
     active.checks.codeowners = test_fixtures::codeowners_absent();
     let removed = test_fixtures::all_passing_evidence("removed-repo");
 
-    projection.load_baseline(vec![active.clone(), removed.clone()]);
+    projection.load_baseline(vec![active, removed.clone()]);
     projection
         .repositories
         .remove(&removed.repository.inventory_key);

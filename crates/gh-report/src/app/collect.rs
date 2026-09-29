@@ -4296,7 +4296,7 @@ mod tests {
             vec![b.clone(), a.clone(), c.clone()],
             vec![b.clone(), c.clone(), a.clone()],
             vec![c.clone(), a.clone(), b.clone()],
-            vec![c.clone(), b.clone(), a.clone()],
+            vec![c, b, a],
         ];
 
         for (idx, perm) in permutations.into_iter().enumerate() {
@@ -4473,7 +4473,7 @@ mod tests {
 
         for order in [
             vec![r1.clone(), r2.clone(), r3.clone(), r4.clone()],
-            vec![r4.clone(), r3.clone(), r2.clone(), r1.clone()],
+            vec![r4, r3, r2, r1],
         ] {
             let unique = validate_and_deduplicate_repositories(order.clone())
                 .expect("distinct repositories must be accepted");
@@ -4514,7 +4514,7 @@ mod tests {
         let r_dup = r.clone();
         let s = test_repository("repo-s");
 
-        let payload = inventory_payload_with(vec![r.clone(), r_dup, s.clone()]);
+        let payload = inventory_payload_with(vec![r, r_dup, s]);
         let load = inventory_load_from_payload(payload)
             .expect("fully identical duplicates must be accepted");
 

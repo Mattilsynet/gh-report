@@ -301,7 +301,7 @@ mod tests {
         let next_stream = format!("gh-report-{token}-{next_major}");
         let this_subject = cfg.subject.clone();
         let next_subject = format!("gh-report.{token}.{next_major}.events");
-        let this_durable = cfg.durable_consumer.clone();
+        let this_durable = cfg.durable_consumer;
         let next_durable = format!("gh-report-{token}-{next_major}");
 
         assert_ne!(this_stream, next_stream);
