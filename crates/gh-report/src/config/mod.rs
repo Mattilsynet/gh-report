@@ -258,8 +258,8 @@ pub const WORK_QUEUE_CAPACITY: usize = 10_000;
 /// are never dropped.
 ///
 /// Harmonic with [`COLLECTION_INTERVAL_SECS`] per FLO-0002:R2:
-/// 3600 / 10 = 360, an integer. Asserted below.
-pub const PARTIAL_RENDER_HOLD_DOWN: std::time::Duration = std::time::Duration::from_secs(10);
+/// 3600 / 120 = 30, an integer. Asserted below.
+pub const PARTIAL_RENDER_HOLD_DOWN: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Secret alert age bucket definitions: (label, `min_days`, `max_days`).
 ///
@@ -440,8 +440,8 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn partial_render_hold_down_is_ten_seconds() {
-        assert_eq!(PARTIAL_RENDER_HOLD_DOWN, Duration::from_secs(10));
+    fn partial_render_hold_down_is_two_minutes() {
+        assert_eq!(PARTIAL_RENDER_HOLD_DOWN, Duration::from_secs(120));
     }
 
     #[test]
@@ -449,7 +449,7 @@ mod tests {
         let hold_down_secs = PARTIAL_RENDER_HOLD_DOWN.as_secs();
         assert_ne!(hold_down_secs, 0);
         assert_eq!(COLLECTION_INTERVAL_SECS % hold_down_secs, 0);
-        assert_eq!(COLLECTION_INTERVAL_SECS / hold_down_secs, 360);
+        assert_eq!(COLLECTION_INTERVAL_SECS / hold_down_secs, 30);
     }
 
     #[test]

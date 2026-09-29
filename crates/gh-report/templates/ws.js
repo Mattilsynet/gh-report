@@ -17,14 +17,57 @@
 
     var RECONNECT_BASE_MS = 1000;
     var RECONNECT_MAX_MS = 30000;
+    var UPDATE_RELOAD_THROTTLE_MS = 60000;
+    var UPDATE_RELOAD_KEY = 'gh_report_last_update_reload';
     var attempt = 0;
     var ws;
+    var pendingReload = null;
+    var inMemoryLastReload = 0;
 
     function currentPageKey() {
         // Map the browser path to the cache key used by the server.
         // "/" or "" → "index.html"; "/report.html" → "report.html"
         var p = location.pathname.replace(/^\//, '');
         return p || 'index.html';
+    }
+
+    function getLastUpdateReload() {
+        try {
+            var val = sessionStorage.getItem(UPDATE_RELOAD_KEY);
+            if (val) {
+                return parseInt(val, 10) || 0;
+            }
+        } catch (_) {}
+        return inMemoryLastReload;
+    }
+
+    function setLastUpdateReload(ts) {
+        inMemoryLastReload = ts;
+        try {
+            sessionStorage.setItem(UPDATE_RELOAD_KEY, String(ts));
+        } catch (_) {}
+    }
+
+    function triggerUpdateReload() {
+        var now = Date.now();
+        var last = getLastUpdateReload();
+        var elapsed = now - last;
+
+        if (elapsed >= UPDATE_RELOAD_THROTTLE_MS) {
+            if (pendingReload) {
+                clearTimeout(pendingReload);
+                pendingReload = null;
+            }
+            setLastUpdateReload(now);
+            location.reload();
+        } else if (!pendingReload) {
+            var remaining = UPDATE_RELOAD_THROTTLE_MS - elapsed;
+            pendingReload = setTimeout(function () {
+                pendingReload = null;
+                setLastUpdateReload(Date.now());
+                location.reload();
+            }, remaining);
+        }
     }
 
     function connect() {
@@ -40,6 +83,10 @@
             try { msg = JSON.parse(event.data); } catch (_) { return; }
 
             if (msg.type === 'reload') {
+                if (pendingReload) {
+                    clearTimeout(pendingReload);
+                    pendingReload = null;
+                }
                 location.reload();
                 return;
             }
@@ -48,7 +95,7 @@
                 var key = currentPageKey();
                 for (var i = 0; i < msg.pages.length; i++) {
                     if (msg.pages[i] === key) {
-                        location.reload();
+                        triggerUpdateReload();
                         return;
                     }
                 }
