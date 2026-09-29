@@ -37,7 +37,10 @@ jobs:
         with:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo install --locked cargo-hack
+      - name: install cargo-hack
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.68.75
+        with:
+          tool: cargo-hack
       # gh-report-web-client is excluded per CHE-0087:R6 — it is outside the
       # host workspace's default build set and builds only under an explicit
       # --target wasm32-unknown-unknown invocation. Including it here would
