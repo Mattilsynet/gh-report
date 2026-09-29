@@ -1535,8 +1535,11 @@ pub(crate) mod tests {
             .block_on(async_nats::connect(&server.url))
             .expect("connect to live nats");
         let stem = format!("test_nats_unreachable_{}", uuid::Uuid::now_v7());
-        let adapter =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem, rt.clone());
+        let adapter = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem,
+            std::sync::Arc::clone(&rt),
+        );
         let store = NativeStore::create_nats(adapter).expect("create nats store");
         store
             .record(
@@ -2012,7 +2015,7 @@ pub(crate) mod tests {
         let adapter_valid = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_valid.clone(),
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let store = NativeStore::create_nats(adapter_valid).expect("create valid nats store");
         store
@@ -2030,7 +2033,7 @@ pub(crate) mod tests {
         let adapter_reopen = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_valid.clone(),
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let reopened = NativeStore::open_nats(adapter_reopen).expect("reopen valid nats store");
         assert_eq!(reopened.events().expect("events").len(), 1);
@@ -2046,8 +2049,11 @@ pub(crate) mod tests {
             .expect("append second event after reopen");
         drop(reopened);
 
-        let adapter_second_reopen =
-            NatsStorageAdapter::from_client_with_runtime(client.clone(), stem_valid, rt.clone());
+        let adapter_second_reopen = NatsStorageAdapter::from_client_with_runtime(
+            client.clone(),
+            stem_valid,
+            std::sync::Arc::clone(&rt),
+        );
         let second_reopened =
             NativeStore::open_nats(adapter_second_reopen).expect("second reopen valid nats store");
         let events = second_reopened.events().expect("events");
@@ -2098,7 +2104,7 @@ pub(crate) mod tests {
         let adapter_mismatched_raw = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_mismatched.clone(),
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let claim = default_claim(1, "mismatched-nats");
         let mut session = adapter_mismatched_raw
@@ -2110,7 +2116,7 @@ pub(crate) mod tests {
         let adapter_mismatched = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_mismatched,
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let Err(err_mismatched) = NativeStore::open_nats(adapter_mismatched) else {
             panic!("open mismatched nats store must fail closed");
@@ -2125,7 +2131,7 @@ pub(crate) mod tests {
         let adapter_unadmitted_raw = NatsStorageAdapter::from_client_with_runtime(
             client.clone(),
             stem_unadmitted.clone(),
-            rt.clone(),
+            std::sync::Arc::clone(&rt),
         );
         let claim_unadmitted = default_claim(1, "unadmitted-nats");
         adapter_unadmitted_raw

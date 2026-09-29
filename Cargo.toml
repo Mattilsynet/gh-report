@@ -205,6 +205,7 @@ pedantic = { level = "warn", priority = -1 }
 as_underscore = "warn"
 as_pointer_underscore = "warn"
 clear_with_drain = "warn"
+clone_on_ref_ptr = "warn"
 dbg_macro = "warn"
 empty_structs_with_brackets = "warn"
 enum_glob_use = "warn"

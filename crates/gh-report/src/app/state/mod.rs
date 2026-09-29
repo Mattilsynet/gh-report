@@ -2327,8 +2327,7 @@ impl AppState {
 
                 let client = state
                     .github_client()
-                    .expect("ensure_worker_pool called before github_client initialized")
-                    .clone();
+                    .expect("ensure_worker_pool called before github_client initialized");
                 let backoff = Arc::clone(&client.backoff);
 
                 let evaluator =
