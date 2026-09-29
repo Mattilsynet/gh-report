@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -17,7 +15,6 @@ jobs:
 
   docker:
     name: Docker build (no push)
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     permissions:
@@ -39,5 +36,5 @@ jobs:
           build-args: |
             APP_VERSION=pr-${{ github.event.pull_request.number || github.sha }}
             APP_GIT_SHA=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=docker-build
+          cache-to: type=gha,mode=max,scope=docker-build

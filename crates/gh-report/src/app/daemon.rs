@@ -583,7 +583,7 @@ where
         async move {
             match fut.await {
                 Ok(
-                    outcome @ (collect::CollectionOutcome::Completed
+                    outcome @ (collect::CollectionOutcome::Completed { .. }
                     | collect::CollectionOutcome::Cancelled),
                 ) => ConvergeStep::Converged(outcome),
                 Ok(collect::CollectionOutcome::FencedConflict) => ConvergeStep::Fenced,
@@ -619,7 +619,7 @@ async fn rearm_fenced_run(
     )
     .await;
     match outcome {
-        Ok(collect::CollectionOutcome::Completed) => {
+        Ok(collect::CollectionOutcome::Completed { .. }) => {
             info!(owner_id = %state.owner_id, "fence-conflict re-arm converged");
         }
         Ok(collect::CollectionOutcome::Cancelled) => {
@@ -757,11 +757,29 @@ async fn rearm_fenced_team_refresh_tick(
     }
 }
 
+fn collection_interval(consecutive_retries: u32) -> Duration {
+    if consecutive_retries == 0 {
+        Duration::from_secs(config::COLLECTION_INTERVAL_SECS)
+    } else {
+        let factor = 1u64
+            .checked_shl(consecutive_retries.saturating_sub(1))
+            .unwrap_or(u64::MAX);
+        let secs = config::COLLECTION_RETRY_INTERVAL_SECS
+            .saturating_mul(factor)
+            .min(config::COLLECTION_INTERVAL_SECS);
+        Duration::from_secs(secs)
+    }
+}
+
 /// Spawn the background collection task: one initial run with the
 /// caller-supplied `force_unlock` flag, then a scheduled loop that
 /// honours a cooperative cancellation signal between iterations. The
 /// loop never cancels an in-flight `collect::run`; persist→publish
 /// runs to completion before the next tick is considered.
+#[expect(
+    clippy::too_many_lines,
+    reason = "collection loop lifecycle, backoff retry, and re-arm handling is the operator-visible contract"
+)]
 fn spawn_collection_loop(
     config: RuntimeConfig,
     state: Arc<AppState>,
@@ -772,10 +790,18 @@ fn spawn_collection_loop(
     let events_dir = config.store_dir.join("events").join(&config.org_name);
     let nats = config.nats_store_config();
     tokio::spawn(async move {
+        let mut consecutive_retries: u32 = 0;
         {
             let cfg = initial_run_config(&config, &force_flag, &force_refresh_flag);
             match Box::pin(collect::run_with_outcome(cfg, Arc::clone(&state))).await {
-                Ok(collect::CollectionOutcome::Completed) => info!("initial collection complete"),
+                Ok(collect::CollectionOutcome::Completed { unscanned }) => {
+                    info!(unscanned, "initial collection complete");
+                    if unscanned > 0 {
+                        consecutive_retries = 1;
+                    } else {
+                        consecutive_retries = 0;
+                    }
+                }
                 Ok(collect::CollectionOutcome::Cancelled) => {
                     info!("initial collection aborted on shutdown — no report published");
                 }
@@ -804,8 +830,12 @@ fn spawn_collection_loop(
                         source_chain = source_chain(&failure.error).as_str(),
                         "initial collection skipped: lock held"
                     );
+                    consecutive_retries = 1;
                 }
-                Err(e) => log_initial_collection_failure(&e),
+                Err(e) => {
+                    log_initial_collection_failure(&e);
+                    consecutive_retries = 1;
+                }
             }
         }
 
@@ -813,11 +843,7 @@ fn spawn_collection_loop(
             if state.ensure_write_admission().is_err() {
                 return;
             }
-            match next_collection_tick(
-                &mut cancel,
-                Duration::from_secs(crate::config::COLLECTION_INTERVAL_SECS),
-            )
-            .await
+            match next_collection_tick(&mut cancel, collection_interval(consecutive_retries)).await
             {
                 NextTick::Cancel => {
                     return;
@@ -829,12 +855,24 @@ fn spawn_collection_loop(
                 return;
             }
             match Box::pin(collect::run_with_outcome(cfg, Arc::clone(&state))).await {
-                Ok(collect::CollectionOutcome::Completed) => {
+                Ok(collect::CollectionOutcome::Completed { unscanned: 0 }) => {
+                    consecutive_retries = 0;
                     info!(
                         rss_kb = ?read_rss_kb(),
                         projection_repo_count = state.projection_len(),
                         projection_bytes_deep = ?state.projection_bytes_deep(),
                         "scheduled collection complete"
+                    );
+                }
+                Ok(collect::CollectionOutcome::Completed { unscanned }) => {
+                    consecutive_retries = consecutive_retries.saturating_add(1);
+                    warn!(
+                        unscanned,
+                        consecutive_retries,
+                        rss_kb = ?read_rss_kb(),
+                        projection_repo_count = state.projection_len(),
+                        projection_bytes_deep = ?state.projection_bytes_deep(),
+                        "scheduled collection finished with unscanned repos — will retry with backoff"
                     );
                 }
                 Ok(collect::CollectionOutcome::Cancelled) => {
@@ -856,17 +894,22 @@ fn spawn_collection_loop(
                     .await;
                 }
                 Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
+                    consecutive_retries = consecutive_retries.saturating_add(1);
                     let failure = WriteFailure::classify(error);
                     warn!(
                         persist_error_variant = persist_error_variant(&failure.error),
                         category = ?failure.category,
                         response = ?failure.response,
                         owner_id = %state.owner_id,
+                        consecutive_retries,
                         source_chain = source_chain(&failure.error).as_str(),
                         "collection skipped: lock held"
                     );
                 }
-                Err(e) => error!(error = %e, "scheduled collection failed"),
+                Err(e) => {
+                    consecutive_retries = consecutive_retries.saturating_add(1);
+                    error!(error = %e, consecutive_retries, "scheduled collection failed");
+                }
             }
         }
     })
@@ -1849,6 +1892,36 @@ mod tests {
     #[test]
     fn duration_millis_reports_whole_milliseconds() {
         assert_eq!(duration_millis(Duration::from_millis(1_234)), 1_234);
+    }
+
+    #[test]
+    fn collection_interval_with_zero_retries_is_one_hour() {
+        assert_eq!(
+            collection_interval(0),
+            Duration::from_secs(config::COLLECTION_INTERVAL_SECS)
+        );
+    }
+
+    #[test]
+    fn collection_interval_with_first_retry_is_sixty_seconds() {
+        assert_eq!(
+            collection_interval(1),
+            Duration::from_secs(config::COLLECTION_RETRY_INTERVAL_SECS)
+        );
+    }
+
+    #[test]
+    fn collection_interval_backs_off_and_caps_at_one_hour() {
+        assert_eq!(collection_interval(2), Duration::from_mins(2));
+        assert_eq!(collection_interval(3), Duration::from_secs(240));
+        assert_eq!(collection_interval(4), Duration::from_secs(480));
+        assert_eq!(collection_interval(5), Duration::from_mins(16));
+        assert_eq!(collection_interval(6), Duration::from_mins(32));
+        assert_eq!(collection_interval(7), Duration::from_hours(1));
+        assert_eq!(
+            collection_interval(100),
+            Duration::from_secs(config::COLLECTION_INTERVAL_SECS)
+        );
     }
 
     #[test]
@@ -2995,7 +3068,7 @@ mod tests {
                     if attempt == 1 {
                         Ok(collect::CollectionOutcome::FencedConflict)
                     } else {
-                        Ok(collect::CollectionOutcome::Completed)
+                        Ok(collect::CollectionOutcome::Completed { unscanned: 0 })
                     }
                 }
             },
@@ -3003,7 +3076,7 @@ mod tests {
         .await;
 
         assert!(
-            matches!(outcome, Ok(collect::CollectionOutcome::Completed)),
+            matches!(outcome, Ok(collect::CollectionOutcome::Completed { .. })),
             "must converge to Completed on the second attempt, got {outcome:?}"
         );
         assert_eq!(
@@ -3552,7 +3625,7 @@ mod fence_propagation_tests {
                     if fenced_again {
                         Ok(collect::CollectionOutcome::FencedConflict)
                     } else {
-                        Ok(collect::CollectionOutcome::Completed)
+                        Ok(collect::CollectionOutcome::Completed { unscanned: 0 })
                     }
                 }
             },
@@ -3560,7 +3633,7 @@ mod fence_propagation_tests {
         .await;
 
         assert!(
-            matches!(outcome, Ok(collect::CollectionOutcome::Completed)),
+            matches!(outcome, Ok(collect::CollectionOutcome::Completed { .. })),
             "the fenced run must converge through converge_on_fence, got {outcome:?}"
         );
     }

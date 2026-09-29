@@ -71,8 +71,8 @@ jobs:
           build-args: |
             APP_VERSION=${{ github.ref_name }}
             APP_GIT_SHA=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=docker-build
+          cache-to: type=gha,mode=max,scope=docker-build
 
   deploy:
     name: Deploy to Cloud Run
@@ -102,3 +102,14 @@ jobs:
             --image "europe-north1-docker.pkg.dev/artifacts-352708/${{ vars.ARTIFACT_REPO_ID }}/${{ github.event.repository.name }}@${{ needs.build.outputs.digest }}" \
             --no-cpu-throttling \
             --startup-probe="initialDelaySeconds=30,timeoutSeconds=5,failureThreshold=30,periodSeconds=10,httpGet.path=/healthz,httpGet.port=8080"
+
+      - name: Verify Cloud Run service readiness
+        run: |
+          READY=$(gcloud run services describe ghreport \
+            --region europe-north1 \
+            --project ghreport-d302 \
+            --format=json | jq -r '.status.conditions[] | select(.type=="Ready") | .status')
+          if [ "$READY" != "True" ]; then
+            echo "::error::Cloud Run service ghreport is not in Ready state"
+            exit 1
+          fi

@@ -98,7 +98,7 @@ pub(crate) struct JobContext {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollectionOutcome {
-    Completed,
+    Completed { unscanned: usize },
     Cancelled,
     FencedConflict,
 }
@@ -413,23 +413,22 @@ async fn run_collection_inner_with_pipeline<P>(
     pipeline: P,
 ) -> Result<CollectionOutcome, AppError>
 where
-    P: Future<Output = Result<(), AppError>>,
+    P: Future<Output = Result<usize, AppError>>,
 {
     tokio::select! {
         result = pipeline => {
-        match result {
-            Ok(()) => {}
-            Err(AppError::Persistence(PersistenceError::FencedConflict { source, .. })) => {
-                warn!(
-                    expected = "rollover",
-                    source_chain = source_chain(source.as_ref()).as_str(),
-                    "collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7)"
-                );
-                return Ok(CollectionOutcome::FencedConflict);
+            match result {
+                Ok(unscanned) => Ok(CollectionOutcome::Completed { unscanned }),
+                Err(AppError::Persistence(PersistenceError::FencedConflict { source, .. })) => {
+                    warn!(
+                        expected = "rollover",
+                        source_chain = source_chain(source.as_ref()).as_str(),
+                        "collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7)"
+                    );
+                    Ok(CollectionOutcome::FencedConflict)
+                }
+                Err(e) => Err(e),
             }
-            Err(e) => return Err(e),
-        }
-        Ok(CollectionOutcome::Completed)
         }
         () = cancel.cancelled() => {
             info!(
@@ -461,7 +460,7 @@ async fn run_collection_pipeline(
     inventory: &ValidatedInventory,
     org_alert: OrgAlertContext,
     state: &Arc<AppState>,
-) -> Result<(), AppError> {
+) -> Result<usize, AppError> {
     let bounded_inventory = bound_active_repositories(inventory, config.max_repos);
     run.coverage = crate::domain::evidence::CollectionCoverage::known(
         bounded_inventory.total_discovered(),
@@ -788,7 +787,7 @@ impl SweepSaga {
         sweep: &mut SweepCtx<'_>,
         ctx: &CollectionContext,
         inventory: &InventoryLoad,
-    ) -> Result<(), AppError> {
+    ) -> Result<usize, AppError> {
         self.step_start_sweep(sweep, inventory);
 
         debug_assert_eq!(self.phase, SweepPhase::Init);
@@ -818,9 +817,7 @@ impl SweepSaga {
             ));
         }
 
-        self.step_finalize(sweep, ctx, inventory).await?;
-
-        Ok(())
+        self.step_finalize(sweep, ctx, inventory).await
     }
 
     /// Phase 2: Reuse evidence from the previous baseline.
@@ -994,7 +991,7 @@ impl SweepSaga {
         sweep: &mut SweepCtx<'_>,
         ctx: &CollectionContext,
         inventory: &InventoryLoad,
-    ) -> Result<(), AppError> {
+    ) -> Result<usize, AppError> {
         debug_assert_eq!(self.phase, SweepPhase::BatchDrained);
         let config = sweep.config;
         let state = sweep.state;
@@ -1015,7 +1012,7 @@ impl SweepSaga {
         .await;
 
         match result {
-            Ok((pages, warm_start)) => {
+            Ok((pages, warm_start, unscanned)) => {
                 commit_terminal_publication(state, sweep.run_mut(), pages, |run| {
                     self.phase = SweepPhase::Completed;
                     info!(
@@ -1024,10 +1021,11 @@ impl SweepSaga {
                         repo_count = inventory.active_repos().len(),
                         timestamp = %jiff::Timestamp::now(),
                         warm_start,
+                        unscanned,
                         "sweep completed"
                     );
                 })?;
-                Ok(())
+                Ok(unscanned)
             }
             Err(e) => {
                 let error_msg = e.to_string();
@@ -1306,7 +1304,7 @@ struct FinalizeParams<'a> {
 /// replay per CHE-0051:R5 + CHE-0048:R2).
 async fn finalize_and_publish(
     params: FinalizeParams<'_>,
-) -> Result<(PublicationCandidate, bool), AppError> {
+) -> Result<(PublicationCandidate, bool, usize), AppError> {
     let FinalizeParams {
         config,
         run,
@@ -1389,6 +1387,8 @@ async fn finalize_and_publish(
         org_members,
     });
 
+    let unscanned = crate::report::view_model::count_unscanned_repos(&evidence);
+
     drop(snapshot);
     let pages = build_sourced_publication_pages(
         config,
@@ -1411,7 +1411,7 @@ async fn finalize_and_publish(
         "collection render prepared"
     );
 
-    Ok((pages, evidence.assessment_metadata.warm_start))
+    Ok((pages, evidence.assessment_metadata.warm_start, unscanned))
 }
 
 fn log_org_record_failure(write_failure: &crate::app::write_policy::WriteFailure) {
@@ -6410,7 +6410,7 @@ mod tests {
         cancel.cancel();
 
         let outcome = run_collection_inner_with_pipeline(&cancel, async {
-            std::future::pending::<Result<(), AppError>>().await
+            std::future::pending::<Result<usize, AppError>>().await
         })
         .await
         .expect("cancelled collection outcome");
@@ -6422,11 +6422,22 @@ mod tests {
     async fn collection_outcome_is_completed_when_pipeline_finishes() {
         let cancel = tokio_util::sync::CancellationToken::new();
 
-        let outcome = run_collection_inner_with_pipeline(&cancel, async { Ok(()) })
+        let outcome = run_collection_inner_with_pipeline(&cancel, async { Ok(0) })
             .await
             .expect("completed collection outcome");
 
-        assert_eq!(outcome, CollectionOutcome::Completed);
+        assert_eq!(outcome, CollectionOutcome::Completed { unscanned: 0 });
+    }
+
+    #[tokio::test]
+    async fn collection_outcome_reports_unscanned_repositories() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let outcome = run_collection_inner_with_pipeline(&cancel, async { Ok(5) })
+            .await
+            .expect("completed collection outcome");
+
+        assert_eq!(outcome, CollectionOutcome::Completed { unscanned: 5 });
     }
 
     #[tokio::test]
@@ -6519,7 +6530,9 @@ mod tests {
         state: &Arc<AppState>,
     ) -> Result<(), AppError> {
         let mut sweep = test_sweep_ctx(config, run, state);
-        saga.step_finalize(&mut sweep, ctx, inventory).await
+        saga.step_finalize(&mut sweep, ctx, inventory)
+            .await
+            .map(|_| ())
     }
 
     /// Saga-level same-day resume — every inventory repo already in
@@ -7780,6 +7793,7 @@ mod tests {
             run_collection_inner_with_pipeline(&cancel, async {
                 saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
                     .await
+                    .map(|()| 0)
             }),
         )
         .await
@@ -7847,7 +7861,9 @@ mod tests {
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let outcome = run_collection_inner_with_pipeline(&cancel, async {
-            saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state).await
+            saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+                .await
+                .map(|()| 0)
         })
         .await
         .expect("a fenced run aborts through the collection boundary");
@@ -8855,7 +8871,7 @@ mod tests {
                 .mount(server)
                 .await;
             let mut run = test_run_meta();
-            let (candidate, _) = finalize_and_publish(FinalizeParams {
+            let (candidate, ..) = finalize_and_publish(FinalizeParams {
                 config: &config,
                 run: &mut run,
                 inventory: &pp.inventory,
