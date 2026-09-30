@@ -1223,7 +1223,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1472,7 +1472,7 @@ dependencies = [
  "jiff",
  "jsonwebtoken",
  "moka",
- "pardosa",
+ "pardosa 0.5.5 (git+https://github.com/acje/pardosa?rev=41bb7a07f327e679dd9869630f2fcdbe193b4cab)",
  "pardosa-cherry-pit-test-support",
  "pardosa-nats",
  "pem 4.0.0",
@@ -2502,11 +2502,22 @@ checksum = "8c04f5d74368e4d0dfe06c45c8627c81bd7c317d52762d118fb9b3076f6420fd"
 [[package]]
 name = "pardosa"
 version = "0.5.5"
+source = "git+https://github.com/acje/pardosa?rev=41bb7a07f327e679dd9869630f2fcdbe193b4cab#41bb7a07f327e679dd9869630f2fcdbe193b4cab"
+dependencies = [
+ "blake3",
+ "crc32c",
+ "pardosa-derive 0.5.5 (git+https://github.com/acje/pardosa?rev=41bb7a07f327e679dd9869630f2fcdbe193b4cab)",
+ "uuid",
+]
+
+[[package]]
+name = "pardosa"
+version = "0.5.5"
 source = "git+https://github.com/acje/pardosa?rev=d1b9ca45bb539db9c46330b40a636d97a5c7cf38#d1b9ca45bb539db9c46330b40a636d97a5c7cf38"
 dependencies = [
  "blake3",
  "crc32c",
- "pardosa-derive",
+ "pardosa-derive 0.5.5 (git+https://github.com/acje/pardosa?rev=d1b9ca45bb539db9c46330b40a636d97a5c7cf38)",
  "uuid",
 ]
 
@@ -2517,10 +2528,20 @@ source = "git+https://github.com/acje/cherry-pit?rev=7dff63059958540005e0d6f62d5
 dependencies = [
  "cherry-pit-core",
  "jiff",
- "pardosa",
+ "pardosa 0.5.5 (git+https://github.com/acje/pardosa?rev=d1b9ca45bb539db9c46330b40a636d97a5c7cf38)",
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "pardosa-derive"
+version = "0.5.5"
+source = "git+https://github.com/acje/pardosa?rev=41bb7a07f327e679dd9869630f2fcdbe193b4cab#41bb7a07f327e679dd9869630f2fcdbe193b4cab"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2536,14 +2557,14 @@ dependencies = [
 [[package]]
 name = "pardosa-nats"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=d1b9ca45bb539db9c46330b40a636d97a5c7cf38#d1b9ca45bb539db9c46330b40a636d97a5c7cf38"
+source = "git+https://github.com/acje/pardosa?rev=41bb7a07f327e679dd9869630f2fcdbe193b4cab#41bb7a07f327e679dd9869630f2fcdbe193b4cab"
 dependencies = [
  "async-nats",
  "blake3",
  "bytes",
  "crc32c",
  "futures-util",
- "pardosa",
+ "pardosa 0.5.5 (git+https://github.com/acje/pardosa?rev=41bb7a07f327e679dd9869630f2fcdbe193b4cab)",
  "tempfile",
  "tokio",
 ]
@@ -2876,7 +2897,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3212,7 +3233,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3270,7 +3291,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3847,10 +3868,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4641,7 +4662,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
