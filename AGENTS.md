@@ -162,6 +162,7 @@ adr-fmt-xdlw9 O3).
   timeout 900 cargo test --workspace --all-features --locked --no-fail-fast   # ~120s warm (~40s compile + 85.6s exec, incl. doctests)
   cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # 49.0s
   cargo fmt --all -- --check                                        # 1.0s
+  sh scripts/verify.sh
   ```
   `timeout 900` is mandatory on the BOUNDARY test line, and 900s is derived
   from the ~120s warm measurement above (~7.5x that line, ~3.4x the whole
