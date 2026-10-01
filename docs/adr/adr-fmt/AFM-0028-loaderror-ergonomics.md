@@ -1,7 +1,7 @@
 # AFM-0028. LoadError Ergonomics Amendment to AFM-0026
 
 Date: 2026-05-18
-Last-reviewed: 2026-05-18
+Last-reviewed: 2026-10-01
 Tier: S
 Status: Accepted
 
@@ -12,35 +12,23 @@ References: AFM-0026, CHE-0030, COM-0013
 ## Context
 
 AFM-0026:R1 pinned the `adr-fmt` library API surface — including the
-`LoadError` type — but did not constrain its trait impls. The surface
-fixed *what types are public*; it left *what those types implement*
-unsaid. On first integration, that gap bit the current consumer.
+`LoadError` type — but did not constrain its trait implementations. The
+surface fixed what types are public, leaving trait floors unsaid.
 
-`adr-srv` (the current downstream per COM-0013:R1) needs idiomatic
-Rust error handling and discovered that `LoadError` lacks
-`core::fmt::Display`, `core::fmt::Debug`, and `std::error::Error`. The
-workaround in `crates/adr-srv/src/lib.rs:27-30` and
-`crates/adr-srv/tests/smoke.rs:24-29` is a variant-match shim — it
-unblocks the smoke test but does not generalise to the bridge-stage
-patterns `adr-srv` will need: `?` into `Box<dyn Error>`,
-`tracing::error!(?e, ...)`, `panic!("{e}")`, and
-`#[derive(thiserror::Error)] #[from] LoadError` in higher-layer error
-enums. None of these compile against the current `LoadError`.
+On initial integration, `adr-srv` (downstream consumer per COM-0013:R1)
+required idiomatic Rust error handling and discovered `LoadError`
+lacked `Display`, `Debug`, and `std::error::Error`. The variant-match
+shim in `crates/adr-srv/src/lib.rs` unblocks smoke tests but does not
+generalise to `?`, `tracing`, or `#[from]` error conversions.
 
-The conventional baseline is Rust API Guidelines C-GOOD-ERR: public
-error types should implement Display + Debug + std::error::Error.
-AFM-0026:R1 silently dropped this baseline by pinning the surface set
-without naming the trait floor. COM-0013:R1 (no speculative widening
-of the surface without a current consumer) is satisfied here by
-adr-srv being the actually-blocked consumer — this is not anticipatory
-ergonomic polishing, it is unblocking an integration on disk.
+Rust API Guidelines C-GOOD-ERR expects public error types to implement
+`Display + Debug + std::error::Error`. AFM-0026:R1 omitted this baseline.
+COM-0013:R1 (no speculative widening) is satisfied because `adr-srv` is
+an active consumer blocked on disk.
 
-The alternative considered was an in-place edit of AFM-0026:R3 to add
-the trait surface to the semver contract directly. Rejected because
-AFM-0026 is Accepted, and the AFM lifecycle convention amends Accepted
-ADRs via successor (this ADR), not via in-place body edits. The
-amendment-via-successor route also gives the trait-floor rule its own
-identity for future `--refs` traversal.
+Amending AFM-0026 in place was rejected: the AFM convention amends
+Accepted ADRs via successor (this ADR), preserving audit trail and
+providing an independent identifier for `--refs` traversal.
 
 ## Decision
 

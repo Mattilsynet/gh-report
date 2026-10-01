@@ -1,7 +1,7 @@
 # AFM-0026. adr-fmt Library API Surface
 
 Date: 2026-05-18
-Last-reviewed: 2026-05-19
+Last-reviewed: 2026-10-01
 Tier: S
 Status: Accepted
 
@@ -11,31 +11,21 @@ References: AFM-0006, AFM-0017, AFM-0001, CHE-0030, SEC-0004, COM-0007, COM-0013
 
 ## Context
 
-`adr-fmt` ships as both a binary (the SSOT per AFM-0001) and a library
-in the same crate. With Track 3.2 (`adr-srv`) imminent, the library
-seam becomes a cross-crate contract and merits an explicit pin. The
-surface is defined only by what `lib.rs` happens to expose; the oracle
-summary at bd `ghr-19eb22f6` enumerates the minimum set `adr-srv`
-needs, items currently over-exposed, and the drift from CHE-0030. The
-predecessor mission (bd `ghr-72558ee7`; commits `ebe791f` T2 lift,
-`be0b552` Q2 trim) tightened the surface in-code; this ADR pins it.
+`adr-fmt` ships as both a binary (SSOT per AFM-0001) and a library in
+the same crate. With Track 3.2 (`adr-srv`), the library seam becomes a
+cross-crate contract requiring an explicit pin. Predecessor mission
+`ghr-72558ee7` tightened the in-code surface; this ADR ratifies it.
 
-Three pressures shape the decision. AFM-0001:R1 freezes the binary CLI
+Three pressures shape the decision: AFM-0001:R1 freezes the binary CLI
 for v0.1; the library MUST NOT widen what the binary promises.
-SEC-0004:R3 and COM-0007:R4 prefer minimal default-private surfaces.
-COM-0013:R1+R4 forbids speculative complexity and prefers the more
-reversible design — flat `pub use` at the crate root is reversible
-into a future `adr-fmt-core` split without consumer-side change.
+SEC-0004:R3 and COM-0007:R4 require minimal default-private surfaces.
+COM-0013:R1+R4 forbids speculative complexity and prefers flat `pub use`
+at the crate root, reversible into a future `adr-fmt-core` split without
+consumer changes. `adr-srv` is the sole intended consumer.
 
-`adr-srv` is the sole intended consumer. Pinning a small surface now
-is cheaper than negotiating a wider one later.
-
-Amendment 2026-05-19 (Phase 2 v2 M1.3): R1 broadened to add
-`model::{Status, Relationship, RelVerb}`. The `adr-srv` scrape
-pipeline projects `AdrRecord`s into the `AdrIngested` event payload
-and names these three types directly. They were already public on
-`model`; the amendment moves them into the pinned crate-root re-export
-set so `adr-srv` does not name a private path. No new types.
+Amendment 2026-05-19: R1 broadened to re-export `model::{Status,
+Relationship, RelVerb}` for `adr-srv` event ingestion, avoiding private
+module path references.
 
 ## Decision
 
@@ -98,3 +88,13 @@ risks/migration: reversibility per COM-0013:R4 — the current `lib+bin`
   without surface change for consumers, since the surface is at the
   crate root via flat `pub use`. This ADR does not pre-authorise that
   split; re-evaluate when a second non-`adr-srv` consumer appears.
+
+## Tier and reference count footnote
+
+AFM-0026 is Tier S (Intent) per AFM-0011 R1 first-yes-wins as it defines
+the public library API surface for the adr-fmt governance tool.
+References include AFM-0006 (Tier D) as primary parent, triggering an
+intentional tier inversion (L016) to bind the library directly to the
+canonical CLI flag parser. Seven references exceed the S-tier limit of 3
+(T020) because the boundary cross-cuts workspace containment (CHE-0030),
+capability restriction (SEC-0004), and minimalism (COM-0007, COM-0013).

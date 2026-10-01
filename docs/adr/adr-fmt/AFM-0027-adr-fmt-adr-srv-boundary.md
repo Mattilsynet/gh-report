@@ -1,7 +1,7 @@
 # AFM-0027. adr-fmt ↔ adr-srv Boundary
 
 Date: 2026-05-18
-Last-reviewed: 2026-05-18
+Last-reviewed: 2026-10-01
 Tier: S
 Status: Accepted
 
@@ -100,3 +100,13 @@ risks/migration: AFM-0026:R3's stability posture propagates here via
   R3 inherits the new posture automatically and `adr-srv` absorbs the
   migration on its side. `pardosa-genome` evolution is out of scope
   on the `adr-fmt` side by construction (R2).
+
+## Tier and reference count footnote
+
+AFM-0027 is Tier S (Intent) per AFM-0011 R1 first-yes-wins as it defines
+the cross-crate architectural boundary between adr-fmt and adr-srv.
+References include AFM-0006 (Tier D) as primary parent, triggering an
+intentional tier inversion (L016) to maintain exact parity with the
+binary CLI. Seven references exceed the S-tier limit of 3 (T020) to
+comprehensively anchor the acyclic DAG (CHE-0029), encapsulation (CHE-0030),
+and layer directionality (COM-0012, COM-0013).
