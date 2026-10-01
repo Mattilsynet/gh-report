@@ -30,8 +30,8 @@ use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
-    ControlDenominatorViewModel, CoverageNotice, CoverageTier, DashboardHref, DeletedRepoRow,
-    DeletedViewModel, DenominatorRepoRow, DotState, DrillDownPage, GhostTeamRow,
+    ControlDenominatorViewModel, ControlExclusion, CoverageNotice, CoverageTier, DashboardHref,
+    DeletedRepoRow, DeletedViewModel, DenominatorRepoRow, DotState, DrillDownPage, GhostTeamRow,
     LifecycleRetirementViewModel, OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel,
     OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel, ReportViewModel,
     RosterFreshness, RosterSection, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
@@ -1442,36 +1442,19 @@ fn control_cell(
     key: &str,
     tiers: &CoverageTiers,
 ) -> ControlCell {
-    let rate = rate_metric.and_then(|rm| rm.rate);
-    let formatted = rate_metric.map_or_else(|| "N/A".to_string(), ToString::to_string);
-    let table_formatted = rate_metric.map_or_else(
-        || "N/A".to_string(),
-        crate::domain::metrics::RateMetric::to_table_string,
-    );
-    let (excluded_total, excluded_formatted) = if key == ControlKey::AlertFree.as_str() {
+    let exclusion = if key == ControlKey::AlertFree.as_str() {
         let total = rate_metric
             .and_then(|rm| rm.extra.get("unobservable"))
             .and_then(serde_json::Value::as_u64)
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(0);
-        (total, format!("{total} unmeasured"))
+        ControlExclusion::unmeasured(total)
     } else {
-        let exclusion = control_key_to_check_kind(key)
-            .map(|check_kind| format_exclusion(check_kind, score_exclusion_counts));
-        match exclusion {
-            Some(e) => (e.total, e.formatted),
-            None => (0, "0 unmeasured".to_string()),
-        }
+        control_key_to_check_kind(key).map_or_else(ControlExclusion::empty, |check_kind| {
+            format_exclusion(check_kind, score_exclusion_counts)
+        })
     };
-    ControlCell {
-        rate,
-        rate_formatted: formatted,
-        rate_table_formatted: table_formatted,
-        tier: CoverageTier::from_rate(rate, tiers),
-        width_class: rate_to_width_class(rate),
-        excluded_total,
-        excluded_formatted,
-    }
+    ControlCell::from_rate(rate_metric, tiers, exclusion)
 }
 
 /// Derive a roster's age at render time from the persisted

@@ -47,9 +47,9 @@
                 </div>
             </td>
             {% for cell in row.controls %}
-            <td class="text-center"{% if let Some(rate) = cell.rate %} data-sort-value="{{ rate }}"{% else %} data-sort-value="N/A"{% endif %}>
-                <span class="status-dot {{ cell.tier.status_dot_class() }}" title="{{ cell.rate_table_formatted }}{% if cell.excluded_total > 0 %} — {{ cell.excluded_formatted }}{% endif %}"><span class="sr-only">{{ cell.rate_table_formatted }}{% if cell.excluded_total > 0 %} — {{ cell.excluded_formatted }}{% endif %}</span></span>
-                {{ cell.rate_table_formatted }}
+            <td class="text-center"{% if let Some(rate) = cell.rate() %} data-sort-value="{{ rate }}"{% else %} data-sort-value="N/A"{% endif %}>
+                <span class="status-dot {{ cell.tier().status_dot_class() }}" title="{{ cell.rate_table_formatted() }}{% if cell.excluded_total() > 0 %} — {{ cell.excluded_formatted() }}{% endif %}"><span class="sr-only">{{ cell.rate_table_formatted() }}{% if cell.excluded_total() > 0 %} — {{ cell.excluded_formatted() }}{% endif %}</span></span>
+                {{ cell.rate_table_formatted() }}
             </td>
             {% endfor %}
         </tr>

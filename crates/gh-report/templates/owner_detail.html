@@ -117,51 +117,51 @@
         </div>
         {% for card in vm.summary_cards %}
         {% if let Some(href) = card.drill_down_href %}
-        <a href="{{ href }}" class="card {{ card.cell.tier.css_class() }}">
+        <a href="{{ href }}" class="card {{ card.cell.tier().css_class() }}">
             <p class="card-label">{{ card.label }} {% call tooltip::tooltip(card.how_to_fix) %}{% endcall %}</p>
-            <p class="card-value">{{ card.cell.rate_formatted }}</p>
+            <p class="card-value">{{ card.cell.rate_formatted() }}</p>
             <div class="progress-bar">
-                <div class="progress-fill {{ card.cell.tier.css_class() }} {{ card.cell.width_class }}"></div>
+                <div class="progress-fill {{ card.cell.tier().css_class() }} {{ card.cell.width_class() }}"></div>
             </div>
-            {%- if card.cell.excluded_total > 0 %}
-            <p class="card-detail">{{ card.cell.excluded_formatted }}</p>
+            {%- if card.cell.excluded_total() > 0 %}
+            <p class="card-detail">{{ card.cell.excluded_formatted() }}</p>
             {%- endif %}
         </a>
         {% else %}
-        <div class="card {{ card.cell.tier.css_class() }}">
+        <div class="card {{ card.cell.tier().css_class() }}">
             <p class="card-label">{{ card.label }} {% call tooltip::tooltip(card.how_to_fix) %}{% endcall %}</p>
-            <p class="card-value">{{ card.cell.rate_formatted }}</p>
+            <p class="card-value">{{ card.cell.rate_formatted() }}</p>
             <div class="progress-bar">
-                <div class="progress-fill {{ card.cell.tier.css_class() }} {{ card.cell.width_class }}"></div>
+                <div class="progress-fill {{ card.cell.tier().css_class() }} {{ card.cell.width_class() }}"></div>
             </div>
-            {%- if card.cell.excluded_total > 0 %}
-            <p class="card-detail">{{ card.cell.excluded_formatted }}</p>
+            {%- if card.cell.excluded_total() > 0 %}
+            <p class="card-detail">{{ card.cell.excluded_formatted() }}</p>
             {%- endif %}
         </div>
         {% endif %}
         {% endfor %}
-        <div class="card {{ vm.non_stale_cell.tier.css_class() }}">
+        <div class="card {{ vm.non_stale_cell.tier().css_class() }}">
             <p class="card-label">{{ vm.non_stale_label }} {% call tooltip::tooltip(vm.non_stale_tooltip) %}{% endcall %}</p>
-            <p class="card-value">{{ vm.non_stale_cell.rate_formatted }}</p>
+            <p class="card-value">{{ vm.non_stale_cell.rate_formatted() }}</p>
             <div class="progress-bar">
-                <div class="progress-fill {{ vm.non_stale_cell.tier.css_class() }} {{ vm.non_stale_cell.width_class }}"></div>
+                <div class="progress-fill {{ vm.non_stale_cell.tier().css_class() }} {{ vm.non_stale_cell.width_class() }}"></div>
             </div>
         </div>
-        <div class="card {{ vm.non_orphaned_cell.tier.css_class() }}">
+        <div class="card {{ vm.non_orphaned_cell.tier().css_class() }}">
             <p class="card-label">{{ vm.non_orphaned_label }} {% call tooltip::tooltip(vm.non_orphaned_tooltip) %}{% endcall %}</p>
-            <p class="card-value">{{ vm.non_orphaned_cell.rate_formatted }}</p>
+            <p class="card-value">{{ vm.non_orphaned_cell.rate_formatted() }}</p>
             <div class="progress-bar">
-                <div class="progress-fill {{ vm.non_orphaned_cell.tier.css_class() }} {{ vm.non_orphaned_cell.width_class }}"></div>
+                <div class="progress-fill {{ vm.non_orphaned_cell.tier().css_class() }} {{ vm.non_orphaned_cell.width_class() }}"></div>
             </div>
         </div>
-        <div class="card {{ vm.alert_free_cell.tier.css_class() }}">
+        <div class="card {{ vm.alert_free_cell.tier().css_class() }}">
             <p class="card-label">Alert-Free Status {% call tooltip::tooltip("Percentage of this owner's observable repos with no open secret scanning alerts (secret scanning enabled and alerts observable). One of seven controls behind the Team Health score. N/A when no repositories are observable.") %}{% endcall %}</p>
-            <p class="card-value">{{ vm.alert_free_cell.rate_formatted }}</p>
+            <p class="card-value">{{ vm.alert_free_cell.rate_formatted() }}</p>
             <div class="progress-bar">
-                <div class="progress-fill {{ vm.alert_free_cell.tier.css_class() }} {{ vm.alert_free_cell.width_class }}"></div>
+                <div class="progress-fill {{ vm.alert_free_cell.tier().css_class() }} {{ vm.alert_free_cell.width_class() }}"></div>
             </div>
-            {%- if vm.alert_free_cell.excluded_total > 0 %}
-            <p class="card-detail">{{ vm.alert_free_cell.excluded_formatted }}</p>
+            {%- if vm.alert_free_cell.excluded_total() > 0 %}
+            <p class="card-detail">{{ vm.alert_free_cell.excluded_formatted() }}</p>
             {%- endif %}
         </div>
     </div>

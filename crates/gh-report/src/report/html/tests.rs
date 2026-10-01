@@ -1868,7 +1868,7 @@ fn detail_vm_summary_cards_have_labels() {
     assert_eq!(vm.summary_cards[1].label, "Secret Scanning");
     assert_eq!(vm.summary_cards[2].label, "Dependabot Status");
     assert_eq!(vm.summary_cards[3].label, "Branch Protection");
-    assert!(vm.summary_cards[0].cell.rate_formatted.contains('%'));
+    assert!(vm.summary_cards[0].cell.rate_formatted().contains('%'));
 }
 
 #[test]
@@ -2003,8 +2003,8 @@ fn detail_vm_carries_team_health_and_alert_free() {
     assert!(!vm.sec_score_width_class.is_empty());
     assert_eq!(vm.team_health_tooltip, team_health_tooltip());
     assert!(
-        vm.alert_free_cell.rate_formatted.contains('%')
-            || vm.alert_free_cell.rate_formatted.contains("N/A")
+        vm.alert_free_cell.rate_formatted().contains('%')
+            || vm.alert_free_cell.rate_formatted().contains("N/A")
     );
 }
 
@@ -5616,36 +5616,42 @@ fn owners_column_and_detail_card_render_the_same_freshness_control_cell() {
     let detail = &detail_vms[0].1.non_stale_cell;
 
     assert_eq!(
-        overview.rate_formatted, detail.rate_formatted,
+        overview.rate_formatted(),
+        detail.rate_formatted(),
         "overview column and detail card must render the same rate at prose precision"
     );
     assert_eq!(
-        overview.rate_table_formatted, detail.rate_table_formatted,
+        overview.rate_table_formatted(),
+        detail.rate_table_formatted(),
         "overview column and detail card must render the same rate at table precision"
     );
     assert_eq!(
-        overview.tier.css_class(),
-        detail.tier.css_class(),
+        overview.tier().css_class(),
+        detail.tier().css_class(),
         "overview column and detail card must land in the same coverage tier"
     );
     assert_eq!(
-        overview.width_class, detail.width_class,
+        overview.width_class(),
+        detail.width_class(),
         "overview column and detail card must render the same progress width"
     );
     assert_eq!(
-        overview.excluded_total, detail.excluded_total,
+        overview.excluded_total(),
+        detail.excluded_total(),
         "overview column and detail card must report the same exclusion count"
     );
     assert_eq!(
-        overview.excluded_formatted, detail.excluded_formatted,
+        overview.excluded_formatted(),
+        detail.excluded_formatted(),
         "overview column and detail card must report the same exclusion breakdown"
     );
 
     assert_eq!(
-        overview.rate_formatted, "50.0% (1/2)",
+        overview.rate_formatted(),
+        "50.0% (1/2)",
         "both cells must carry the ASYMMETRIC non_stale rate; agreeing on a wrong value is still a regression"
     );
-    assert_eq!(overview.rate_table_formatted, "50% (1/2)");
+    assert_eq!(overview.rate_table_formatted(), "50% (1/2)");
 }
 
 #[test]
@@ -5663,7 +5669,7 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
         .expect("Freshness column must exist");
     let freshness_cell = &row.controls[freshness_idx];
     assert_eq!(
-        freshness_cell.rate_formatted,
+        freshness_cell.rate_formatted(),
         evidence.metrics.owner_metrics[0]
             .per_control_coverage
             .get("non_stale")

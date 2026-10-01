@@ -20,7 +20,7 @@ use crate::domain::checks::{
 };
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
-    AggregatedMetrics, CollectionHealthCheckKind, CollectionHealthCount, OwnerType,
+    AggregatedMetrics, CollectionHealthCheckKind, CollectionHealthCount, OwnerType, RateMetric,
     ScoreExclusionCount, TeamMemberRole,
 };
 use crate::domain::time::{is_repo_stale, parse_iso8601};
@@ -275,26 +275,133 @@ pub struct OwnerOverviewRow {
 }
 
 /// A per-control coverage cell in the owner overview table.
+///
+/// Value, tier, progress-bar width, and exclusion count agreement are enforced
+/// by construction via private fields and [`ControlCell::from_rate`].
+///
+/// Direct struct literal construction is prevented:
+///
+/// ```compile_fail
+/// use gh_report::report::view_model::{ControlCell, CoverageTier};
+/// let _ = ControlCell {
+///     rate: None,
+///     rate_formatted: "N/A".to_string(),
+///     rate_table_formatted: "N/A".to_string(),
+///     tier: CoverageTier::Na,
+///     width_class: "w-0",
+///     excluded_total: 0,
+///     excluded_formatted: "0 unmeasured".to_string(),
+/// };
+/// ```
+///
+/// Field mutation is prevented:
+///
+/// ```compile_fail
+/// use gh_report::config::dashboard::CoverageTiers;
+/// use gh_report::report::view_model::{ControlCell, ControlExclusion};
+/// let mut cell = ControlCell::from_rate(None, &CoverageTiers::default(), ControlExclusion::empty());
+/// cell.rate_formatted = "100.0% (5/5)".to_string();
+/// ```
+///
+/// ```
+/// use gh_report::config::dashboard::CoverageTiers;
+/// use gh_report::domain::metrics::RateMetric;
+/// use gh_report::report::view_model::{ControlCell, ControlExclusion, CoverageTier};
+/// let metric = RateMetric::new(4, 5);
+/// let cell = ControlCell::from_rate(Some(&metric), &CoverageTiers::default(), ControlExclusion::empty());
+/// assert_eq!(cell.rate(), Some(80.0));
+/// assert_eq!(cell.rate_formatted(), "80.0% (4/5)");
+/// assert_eq!(cell.rate_table_formatted(), "80% (4/5)");
+/// assert_eq!(cell.tier(), CoverageTier::Pass);
+/// assert_eq!(cell.width_class(), "w-80");
+/// assert_eq!(cell.excluded_total(), 0);
+/// assert_eq!(cell.excluded_formatted(), "0 unmeasured");
+/// ```
 #[derive(Debug, Clone)]
 pub struct ControlCell {
+    rate: Option<f64>,
+    rate_formatted: String,
+    rate_table_formatted: String,
+    tier: CoverageTier,
+    width_class: &'static str,
+    excluded_total: u32,
+    excluded_formatted: String,
+}
+
+impl ControlCell {
+    /// Derive a control coverage cell from a rate metric, tiers, and exclusion breakdown.
+    ///
+    /// Encapsulates rate formatting, [`CoverageTier`] classification, progress bar width,
+    /// and exclusion counts so illegal states (such as rate/tier/width/exclusion disagreement)
+    /// cannot be represented.
+    #[must_use]
+    pub fn from_rate(
+        rate_metric: Option<&RateMetric>,
+        tiers: &CoverageTiers,
+        exclusion: ControlExclusion,
+    ) -> Self {
+        let rate = rate_metric.and_then(|rm| rm.rate);
+        let rate_formatted = rate_metric.map_or_else(|| "N/A".to_string(), ToString::to_string);
+        let rate_table_formatted =
+            rate_metric.map_or_else(|| "N/A".to_string(), RateMetric::to_table_string);
+        let tier = CoverageTier::from_rate(rate, tiers);
+        let width_class = rate_to_width_class(rate);
+        Self {
+            rate,
+            rate_formatted,
+            rate_table_formatted,
+            tier,
+            width_class,
+            excluded_total: exclusion.total,
+            excluded_formatted: exclusion.formatted,
+        }
+    }
+
     /// Measured compliance rate, or `None` when unmeasured / N/A.
-    pub rate: Option<f64>,
-    /// Formatted rate string at prose precision (e.g., "80.0% (4/5)"),
+    #[must_use]
+    pub fn rate(&self) -> Option<f64> {
+        self.rate
+    }
+
+    /// Formatted rate string at prose precision (e.g., `"80.0% (4/5)"`),
     /// used by owner-detail summary cards.
-    pub rate_formatted: String,
+    #[must_use]
+    pub fn rate_formatted(&self) -> &str {
+        &self.rate_formatted
+    }
+
     /// Formatted rate string at whole-percent table precision (e.g.,
-    /// "80% (4/5)"), used by the owners overview `<table>`.
-    pub rate_table_formatted: String,
+    /// `"80% (4/5)"`), used by the owners overview `<table>`.
+    #[must_use]
+    pub fn rate_table_formatted(&self) -> &str {
+        &self.rate_table_formatted
+    }
+
     /// Coverage tier for styling.
-    pub tier: CoverageTier,
+    #[must_use]
+    pub fn tier(&self) -> CoverageTier {
+        self.tier
+    }
+
     /// CSS width class for progress bar rendering (e.g., `"w-80"`).
-    pub width_class: &'static str,
+    #[must_use]
+    pub fn width_class(&self) -> &'static str {
+        self.width_class
+    }
+
     /// Count of repos excluded from this control's denominator (unmeasured
     /// or not applicable), `0` when none.
-    pub excluded_total: u32,
+    #[must_use]
+    pub fn excluded_total(&self) -> u32 {
+        self.excluded_total
+    }
+
     /// Formatted `"N unmeasured (breakdown)"` string, or `"0 unmeasured"`
-    /// when `excluded_total` is `0` (item6-03, bd bead `ghr-f468d5e9`).
-    pub excluded_formatted: String,
+    /// when `excluded_total` is `0`.
+    #[must_use]
+    pub fn excluded_formatted(&self) -> &str {
+        &self.excluded_formatted
+    }
 }
 
 /// A row in the per-owner detail table (one repo).
@@ -597,12 +704,6 @@ pub struct OwnerDetailViewModel {
     /// Freshness control cell for the "Freshness" card — the
     /// `non_stale` per-control coverage rate `(total - stale) / total`,
     /// the same value that feeds this owner's Team Health score.
-    ///
-    /// A single cell rather than separate count/total/width fields, so the
-    /// card value, tier and progress-bar width are all produced by one
-    /// `build_control_cell` call from one rate. `ControlCell`'s fields stay
-    /// public and independently assignable, so this is single-constructor
-    /// consolidation, not a type-level guarantee of agreement.
     pub non_stale_cell: ControlCell,
     /// Display label for the `non_stale_cell` card, resolved from the
     /// shared control vocabulary rather than hardcoded in the template, so
@@ -1982,10 +2083,53 @@ impl From<u32> for AlertFreeExclusion {
 
 /// Count and formatted breakdown of repos excluded from one control's
 /// coverage denominator. Shared by the org-wide [`ReportViewModel`] fields
-/// and the owner-scoped [`ControlCell`] (item6-03, bd bead `ghr-f468d5e9`).
-pub(crate) struct ControlExclusion {
-    pub(crate) total: u32,
-    pub(crate) formatted: String,
+/// and the owner-scoped [`ControlCell`].
+///
+/// Direct struct literal construction is prevented:
+///
+/// ```compile_fail
+/// use gh_report::report::view_model::ControlExclusion;
+/// let _ = ControlExclusion {
+///     total: 5,
+///     formatted: "0 unmeasured".to_string(),
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct ControlExclusion {
+    total: u32,
+    formatted: String,
+}
+
+impl ControlExclusion {
+    /// Zero excluded repositories with default `"0 unmeasured"` description.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            total: 0,
+            formatted: "0 unmeasured".to_string(),
+        }
+    }
+
+    /// Single-axis unmeasured exclusion with `"N unmeasured"` description.
+    #[must_use]
+    pub fn unmeasured(total: u32) -> Self {
+        Self {
+            total,
+            formatted: format!("{total} unmeasured"),
+        }
+    }
+
+    /// Total count of excluded repositories.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.total
+    }
+
+    /// Human-readable exclusion breakdown string.
+    #[must_use]
+    pub fn formatted(&self) -> &str {
+        &self.formatted
+    }
 }
 
 struct ExclusionBreakdown {
@@ -2127,16 +2271,19 @@ impl ReportViewModel {
                 .branch_protection_coverage
                 .to_table_string(),
             codeowners_coverage_table_formatted: m.codeowners_coverage.to_table_string(),
-            policy_excluded_total: exclusion.policy.total,
-            policy_excluded_formatted: exclusion.policy.formatted,
-            secret_scanning_excluded_total: exclusion.secret_scanning.total,
-            secret_scanning_excluded_formatted: exclusion.secret_scanning.formatted,
-            dependabot_excluded_total: exclusion.dependabot.total,
-            dependabot_excluded_formatted: exclusion.dependabot.formatted,
-            branch_protection_excluded_total: exclusion.branch_protection.total,
-            branch_protection_excluded_formatted: exclusion.branch_protection.formatted,
-            codeowners_excluded_total: exclusion.codeowners.total,
-            codeowners_excluded_formatted: exclusion.codeowners.formatted,
+            policy_excluded_total: exclusion.policy.total(),
+            policy_excluded_formatted: exclusion.policy.formatted().to_string(),
+            secret_scanning_excluded_total: exclusion.secret_scanning.total(),
+            secret_scanning_excluded_formatted: exclusion.secret_scanning.formatted().to_string(),
+            dependabot_excluded_total: exclusion.dependabot.total(),
+            dependabot_excluded_formatted: exclusion.dependabot.formatted().to_string(),
+            branch_protection_excluded_total: exclusion.branch_protection.total(),
+            branch_protection_excluded_formatted: exclusion
+                .branch_protection
+                .formatted()
+                .to_string(),
+            codeowners_excluded_total: exclusion.codeowners.total(),
+            codeowners_excluded_formatted: exclusion.codeowners.formatted().to_string(),
             policy_via_setting: m.policy_counts.via_setting,
             policy_via_file: m.policy_counts.via_file,
             policy_missing: m.policy_counts.missing,
@@ -4883,5 +5030,30 @@ mod tests {
 
         let vm = ReportViewModel::from_evidence(&evidence, &super::CoverageTiers::default());
         assert!(vm.coverage_notice.is_none());
+    }
+
+    #[test]
+    fn control_cell_deriving_constructor_and_accessors() {
+        let tiers = super::CoverageTiers::default();
+
+        let empty_cell = ControlCell::from_rate(None, &tiers, ControlExclusion::empty());
+        assert_eq!(empty_cell.rate(), None);
+        assert_eq!(empty_cell.rate_formatted(), "N/A");
+        assert_eq!(empty_cell.rate_table_formatted(), "N/A");
+        assert_eq!(empty_cell.tier(), CoverageTier::Na);
+        assert_eq!(empty_cell.width_class(), "w-0");
+        assert_eq!(empty_cell.excluded_total(), 0);
+        assert_eq!(empty_cell.excluded_formatted(), "0 unmeasured");
+
+        let metric = RateMetric::new(4, 5);
+        let populated_cell =
+            ControlCell::from_rate(Some(&metric), &tiers, ControlExclusion::unmeasured(3));
+        assert_eq!(populated_cell.rate(), Some(80.0));
+        assert_eq!(populated_cell.rate_formatted(), "80.0% (4/5)");
+        assert_eq!(populated_cell.rate_table_formatted(), "80% (4/5)");
+        assert_eq!(populated_cell.tier(), CoverageTier::Pass);
+        assert_eq!(populated_cell.width_class(), "w-80");
+        assert_eq!(populated_cell.excluded_total(), 3);
+        assert_eq!(populated_cell.excluded_formatted(), "3 unmeasured");
     }
 }
