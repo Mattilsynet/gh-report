@@ -1,7 +1,7 @@
 # RST-0003. Workspace Lint and Format Governance
 
 Date: 2026-04-27
-Last-reviewed: 2026-08-28 — refined — added R6 stating the inner-attribute `dead_code` suppression invariant enforced by dead-code-inner-suppression-tripwire (RST-0007:R2/R5)
+Last-reviewed: 2026-10-01 — refined — clarified R5 item-targeted suppression scope and RFC-2119 keywords, eliminating overlap with R6 (COM-0027, ghr-gnx6o)
 Tier: B
 Status: Accepted
 
@@ -37,10 +37,11 @@ R3 [5]: `rustfmt.toml` at workspace root defines formatting;
   only stable rustfmt options are used
 R4 [5]: CI runs `cargo clippy -- -D warnings` and
   `cargo fmt --check`; both must pass for PR merge
-R5 [6]: Per-site suppression uses `#[expect(clippy::lint, reason =
-  "...")]`, or `#[allow(clippy::lint, reason = "...")]` where the
-  expectation would be unfulfilled; the `reason` argument carries the
-  justification. Blanket module-level allows are not permitted
+R5 [6]: Lint suppressions MUST be targeted to specific items using
+  `#[expect(lint, reason = "...")]` with an explicit justification;
+  `#[allow]` MAY be used only where an expectation cannot be fulfilled.
+  Blanket module-level inner suppressions (`#![allow(...)]` or
+  `#![expect(...)]`) MUST NOT be used
 R6 [5]: Rust sources under `crates/*/src` MUST NOT carry an inner
   attribute `#![allow(dead_code)]` or `#![expect(dead_code)]`,
   including `cfg_attr`-wrapped forms; outer item-level
