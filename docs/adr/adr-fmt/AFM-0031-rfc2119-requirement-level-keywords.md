@@ -27,22 +27,23 @@ unambiguously, orthogonal to the existing Meadows-layer classification
 The corpus adopts the RFC 2119 / RFC 8174 keyword set as its normative
 requirement-level vocabulary, uppercase-only, orthogonal to Meadows layer.
 
-R1 [6]: Use MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD
-  NOT, RECOMMENDED, MAY, and OPTIONAL as the corpus's normative
-  requirement-level vocabulary wherever a tagged rule states a
+R1 [6]: Tagged rules MUST use MUST, MUST NOT, REQUIRED, SHALL, SHALL
+  NOT, SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL as the
+  corpus's normative requirement-level vocabulary wherever stating a
   requirement or prohibition
-R2 [6]: Treat only the uppercase forms of these keywords as carrying
-  normative force per RFC 8174; treat lowercase occurrences of the same
-  words as ordinary prose with no normative meaning
-R3 [6]: Hold the keyword axis orthogonal to the Meadows-layer axis —
-  layer classifies intervention type, keyword classifies requirement
-  strength; a high-layer rule does not imply MUST, and a MUST rule
-  implies no particular layer
-R4 [5]: Reserve keywords for tagged rules expressing a genuine
-  requirement or prohibition per RFC 2119 §6 restraint, tying keyword use
-  to the COM-0001 complexity budget rather than decorative emphasis
-R5 [6]: Apply the keyword vocabulary to new and amended ADRs going
-  forward; leave existing ADRs grandfathered and reword them
+R2 [6]: Readers and tooling MUST treat only the uppercase forms of these
+  keywords as carrying normative force per RFC 8174; lowercase
+  occurrences MUST be treated as ordinary prose with no normative meaning
+R3 [6]: ADR authors MUST hold the keyword axis orthogonal to the
+  Meadows-layer axis — layer classifies intervention type, keyword
+  classifies requirement strength; a high-layer rule does not imply
+  MUST, and a MUST rule implies no particular layer
+R4 [5]: Authors MUST reserve keywords for tagged rules expressing a
+  genuine requirement or prohibition per RFC 2119 §6 restraint, tying
+  keyword use to the COM-0001 complexity budget rather than decorative
+  emphasis
+R5 [6]: Authors MUST apply the keyword vocabulary to new and amended ADRs
+  going forward; existing ADRs MAY remain grandfathered and reworded
   opportunistically in place per AFM-0029:R2, with no flag-day migration
 
 ### Future work
