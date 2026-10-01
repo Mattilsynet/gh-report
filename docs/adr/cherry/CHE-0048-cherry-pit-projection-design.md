@@ -1,13 +1,13 @@
 # CHE-0048. Cherry Pit Projection Design
 
 Date: 2026-05-09
-Last-reviewed: 2026-09-21 - amended - align current placement with canonical Cherry CPP-0001; preserve behavioral obligations and replay exemption
+Last-reviewed: 2026-10-01
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0037:R1, CHE-0038, CHE-0053:R13, CHE-0047, CHE-0044:R3, CHE-0072, CHE-0074, CHE-0098
+References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0037:R1, CHE-0038, CHE-0053:R13, CHE-0047, CHE-0072, CHE-0074, CHE-0098
 
 ## Context
 
@@ -31,7 +31,7 @@ R3 [5]: Projection::apply must be idempotent over the same EventEnvelope sequenc
 
 R4 [5]: The adapter exposes a rebuild method that deletes the existing snapshot and checkpoint, loads the full event history via EventStore::load from sequence 1, replays into a fresh `P::default()`, and persists the result, making rebuild a first-class operational primitive per CHE-0047 runbook discipline
 
-R5 [5]: The in-memory backend uses a concurrent hash map keyed by (aggregate_id, projection_name), holds no durable state, and rebuilds from the EventStore on every process start, providing the zero-dependency test and ephemeral-view backend sanctioned by CHE-0044:R3
+R5 [5]: The in-memory backend uses a concurrent hash map keyed by (aggregate_id, projection_name), holds no durable state, and rebuilds from the EventStore on every process start, providing a zero-dependency test and ephemeral-view backend
 
 R6 [5]: v0.1 scope is single-aggregate, single-projection-per-driver-instance — the adapter binds to one aggregate type per Projection impl via associated types (CHE-0005:R1), and multi-projection composition is deferred to the WU-5 cherry-pit-app design phase where a builder with type-state for compile-time wiring completeness will be evaluated
 
@@ -63,6 +63,6 @@ Rebuild cost is O(total events per aggregate) with no snapshot shortcut (CHE-003
 
 **Central checkpoint file** — A single workspace-wide checkpoint file keyed by (aggregate_id, projection_name) becomes a write-contention point across all projection writers, violating the per-aggregate concurrency model from CHE-0035:R2.
 
-**object_store backend** — Forbidden until EVAL-GATE per mission boundaries and CHE-0044.
+**object_store backend** — Rejected; Apache Arrow object_store backend was never implemented; pardosa .pgno substrate (CHE-0072, CHE-0074) is the multi-backend path.
 
 **Early multi-projection registry** — The composition decision (builder + type-state) belongs to WU-5 cherry-pit-app. Choosing a registry shape now would pre-commit an unresolved decision and risk violating CHE-0005:R1's prohibition on dynamic dispatch by requiring some form of heterogeneous projection collection.
