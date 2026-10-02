@@ -27,7 +27,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: install pinned wasm tools
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.68.75
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.68.75
         with:
           tool: wasm-bindgen-cli@0.2.128,wasm-tools
       - name: precompile host contract library under job deadline
@@ -249,7 +249,7 @@ jobs:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: install cargo-audit and cargo-deny
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.68.75
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.68.75
         with:
           tool: cargo-audit,cargo-deny
       - name: cargo audit (RST-0004:R3)
