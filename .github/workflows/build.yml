@@ -79,9 +79,36 @@ jobs:
           cache-from: type=gha,scope=docker-build
           cache-to: type=gha,mode=max,scope=docker-build
 
+  sbom:
+    name: Generate & Upload SBOM
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          format: 'cyclonedx-json'
+          output-file: 'bom.json'
+
+      - name: Deliver SBOM to Dependency-Track
+        uses: DependencyTrack/gh-upload-sbom@d8935b70f527d6aca6bbef5ab02db3933c9a8626 # v4.2.0
+        with:
+          server-hostname: 'api.dtrack.mattilsynet.io'
+          api-key: ${{ secrets.DTRACK_API_KEY }}
+          project-name: ${{ github.event.repository.name }}
+          project-version: ${{ github.ref_name }}
+          bom-filename: 'bom.json'
+          auto-create: true
+
   deploy:
     name: Deploy to Cloud Run
-    needs: build
+    needs: [build, sbom]
     runs-on: ubuntu-latest
 
     permissions:
