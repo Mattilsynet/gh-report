@@ -14,8 +14,7 @@ target/
 .ooda/*
 !.ooda/.gitkeep
 
-# graphify knowledge graph output (per-developer; rebuildable via
-# `graphify extract .` or the `graphify hook install` post-commit hook).
+# graphify knowledge graph output (per-developer; native workflow in README.md).
 graphify-out/
 
 # adr-srv runtime event store (per-developer; rebuildable from corpus)

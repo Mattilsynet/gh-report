@@ -977,4 +977,4 @@ At startup, gh-report creates its per-organization JetStream stream at runtime: 
 
 ## See also
 
-- [Substrate recovery runbooks](../cherry-pit-gateway/RUNBOOKS.md) — substrate-side recovery procedures (CHE-0047 R1–R6) for gateway-backed services. `gh-report`'s own durable domain event log defaults to pardosa `.pgno`, with NATS JetStream in production; the scheduler and sweep-timeout streams are in-process ephemeral (CHE-0099) and carry no durable recovery procedure by design.
+- [Substrate recovery runbooks](https://github.com/acje/cherry-pit/blob/1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e/crates/cherry-pit-gateway/RUNBOOKS.md) — substrate-side recovery procedures (CHE-0047 R1–R6) for gateway-backed services. `gh-report`'s own durable domain event log defaults to pardosa `.pgno`, with NATS JetStream in production; the scheduler and sweep-timeout streams are in-process ephemeral (CHE-0099) and carry no durable recovery procedure by design.
