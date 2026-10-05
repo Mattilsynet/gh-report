@@ -931,28 +931,19 @@ fn log_initial_collection_failure(error: &AppError) {
     error!(error = %error, "initial collection failed — will retry");
 }
 
-/// Spawn the team-refresh collector loop: a periodic tick, decoupled
-/// from [`spawn_collection_loop`]'s repo collect-cycle timer, that
-/// persists `TeamStateCaptured` events on its own cadence
-/// ([`crate::config::TEAM_REFRESH_INTERVAL_SECS`]). This severs the
-/// repo-snapshot↔roster-fetch coupling that was the raciness root
-/// (ghr-3fda2878, roadmap ghr-b562fe02 §E Phase 3).
+/// Spawn team refresh, persisting `TeamStateCaptured` on its independent
+/// [`crate::config::TEAM_REFRESH_INTERVAL_SECS`] cadence, decoupled from
+/// [`spawn_collection_loop`] (ghr-3fda2878, ghr-b562fe02 §E Phase 3).
 ///
 /// Reuses the same cooperative cancellation signal as the collection
 /// loop; the wait between ticks observes cancellation immediately.
 ///
-/// Ticks wait for the GitHub client rather than skipping when it is
-/// absent: it is created lazily on the first repo collection, so a tick
-/// racing that initialisation must block on it. Skipping instead would
-/// forfeit a full [`crate::config::TEAM_REFRESH_INTERVAL_SECS`] of
-/// roster data — 24 hours after every Cloud Run revision.
+/// Ticks wait for the lazily-created GitHub client; skipping would forfeit
+/// 24 hours of roster data after each Cloud Run revision.
 ///
-/// A refresh runs at STARTUP, before the first interval wait, so a
-/// freshly-started revision reaches a populated roster in seconds
-/// rather than a day. The wait is deliberately on client availability
-/// rather than on the initial collection's completion: taking a
-/// completion signal from [`spawn_collection_loop`] would reintroduce
-/// the repo-collect-cycle coupling CHE-0089:R5 severs.
+/// STARTUP refresh precedes the first interval wait, populating rosters in
+/// seconds rather than a day. Wait for client availability, NOT collection
+/// completion: the latter reintroduces the coupling CHE-0089:R5 severs.
 fn spawn_team_refresh_loop(
     config: &RuntimeConfig,
     state: Arc<AppState>,

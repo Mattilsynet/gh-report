@@ -410,14 +410,9 @@ const REPO_STATUS_DOT_CONTROLS: &[ControlKey] = &[
 /// The 6 of the 7 per-owner Team Health controls whose rates are READ from
 /// [`OwnerMetrics::per_control_coverage`].
 ///
-/// The seventh control, [`NON_ORPHANED_CONTROL`], is deliberately absent from
-/// this list and is never a key of that map. It is computed by
-/// [`AttributedOwner`] from render-time orphan attribution, which both
-/// [`build_owners_view_model`] and [`build_owner_detail_view_models`]
-/// structurally require by accepting only that type. Absence from a
-/// string-keyed map is therefore not a representable state for the seventh
-/// control, and no caller can silently fall back to a six-control Team
-/// Health score.
+/// Seventh [`NON_ORPHANED_CONTROL`] is never a map key: [`AttributedOwner`]
+/// derives render-time attribution, required by [`build_owners_view_model`]
+/// and [`build_owner_detail_view_models`]. No missing-key six-control fallback.
 ///
 /// Excludes `codeowners` — it is tautological at the per-owner level because
 /// repos are associated with owners via CODEOWNERS parsing, so every owner's
@@ -1111,16 +1106,11 @@ fn build_top_security_teams(owners: &OwnersViewModel) -> Vec<TopSecurityTeam> {
 /// One owner's [`OwnerMetrics`] joined, at render time, to the orphan
 /// attribution that backs the seventh Team Health control.
 ///
-/// This is the render-ready owner type: it is the ONLY input accepted by
-/// [`build_owners_view_model`] and [`build_owner_detail_view_models`], and
-/// it can only be built through [`AttributedOwner::attribute_all`], which
-/// requires the orphan attribution alongside the metrics. `non_orphaned` is
-/// therefore a required field rather than a fallible lookup, so a
-/// six-control Team Health score is not a representable state and no caller
-/// can silently produce one while the copy promises seven controls. The
-/// field's [`NonOrphanedControl`] type keeps "attribution ran and found no
-/// orphans" distinct from "attribution could not be run"; only the latter
-/// legitimately drops out of the score.
+/// ONLY input to [`build_owners_view_model`]/[`build_owner_detail_view_models`],
+/// built only through [`AttributedOwner::attribute_all`] requiring attribution.
+/// Required `non_orphaned`, not a fallible lookup, prevents silent six-control
+/// scores. [`NonOrphanedControl`] distinguishes measured no-orphans from
+/// unavailable attribution; only unavailable attribution drops out.
 ///
 /// Borrowing `metrics` keeps the persisted
 /// [`crate::domain::evidence::Evidence`] unmutated (CHE-0089:R4); the joined
@@ -1174,25 +1164,17 @@ impl NonOrphanedControl {
 impl<'a> AttributedOwner<'a> {
     /// Join every owner to its render-time orphan attribution.
     ///
-    /// `non_orphaned` is `owned / (owned + attributed)`, where `owned` is the
-    /// count of repos the owner owns through CODEOWNERS
-    /// ([`OwnerMetrics::total_repos`]) and `attributed` is the count of orphan
-    /// repos — repos with no CODEOWNERS owner at all — that the render-time
-    /// last-committer/roster join attributed to that owner. The rate RISES as
-    /// an owner's repos gain real CODEOWNERS ownership, which is what makes it
-    /// a valid higher-is-better control alongside [`SEC_SCORE_MAP_CONTROLS`].
+    /// `non_orphaned = owned / (owned + attributed)`: CODEOWNERS-owned
+    /// [`OwnerMetrics::total_repos`] versus ownerless repos attributed by
+    /// render-time last-committer/roster join. Gaining real ownership raises
+    /// this higher-is-better rate alongside [`SEC_SCORE_MAP_CONTROLS`].
     ///
-    /// An owner with no attributed orphans scores 1.0 — a measured full
-    /// rate, not a missing control. An owner for which attribution could not
-    /// be RUN at all is different: a team-shaped owner whose entry in
-    /// `team_rosters` is absent, or present in any status other than
-    /// [`TeamRosterStatus::Complete`], has no trustworthy member set, so no
-    /// orphan could be attributed to it on evidence and its rate would be a
-    /// vacuous 1.0 rather than a measurement. Every such case yields
-    /// [`NonOrphanedControl::Unresolved`] and drops out of the Team Health
-    /// geometric mean, matching the roster-unresolved banner gate on the
-    /// owner-detail page. The status match is exhaustive by construction, so
-    /// a new [`TeamRosterStatus`] variant cannot silently reach `Measured`.
+    /// No attributed orphans means measured 1.0. Missing or non-
+    /// [`TeamRosterStatus::Complete`] team rosters lack trustworthy members:
+    /// attribution cannot run, so [`NonOrphanedControl::Unresolved`] excludes
+    /// vacuous 1.0 from Team Health's geometric mean, matching owner-detail's
+    /// unresolved banner. Exhaustive status matching prevents new variants
+    /// silently reaching `Measured`.
     ///
     /// [`OwnerMetrics::total_repos`]: crate::domain::metrics::OwnerMetrics::total_repos
     fn attribute_all(
@@ -2148,25 +2130,15 @@ fn build_orphaned_by_team(rows: &[OrphanedRepoRow]) -> Vec<OrphanedTeamGroup> {
 /// Build the deleted-repositories-and-acknowledged-owner-anomalies page
 /// view model (CHE-0093:R5).
 ///
-/// `rows` (deleted repos) comes from the persisted, event-sourced
-/// [`crate::projection::DeletedRepoRecord`] set. `ghost_teams` and
-/// `wildcard_owners` are the opposite: render-time-only (oracle
-/// ghr-893fde5c), rebuilt fresh every call from `team_rosters` and
-/// `repositories` — never persisted. A CODEOWNERS-referenced team whose
-/// roster fetch classified `Deleted` (404) is a `GhostTeam` anomaly, joined
-/// to its referencing repos via [`crate::domain::metrics::build_owner_repo_map`],
-/// keyed by the team's full lowercased canonical owner (`@org/slug`), not its
-/// bare GitHub API slug — the two are different strings and only the
-/// canonical form is a valid map key. A `Deleted` roster only renders as a
-/// `GhostTeam` when its `canonical_owner` is still present in
-/// `owner_repo_map` (CHE-0093:R4, oracle ghr-d9878e7d): CODEOWNERS-reference
-/// is definitional for the anomaly, so a since-de-referenced team is not a
-/// ghost and drops out of every render once its CODEOWNERS reference is
-/// removed, closing the GC gap flagged in ghr-726c35fd. A glob-shaped
-/// CODEOWNERS owner (e.g.
-/// `@org/*`) is a `WildcardOwner` anomaly, detected directly from
-/// `owner_repo_map` without needing a team-roster entry (it never derives a
-/// fiber, CHE-0093:R4).
+/// `rows` are persisted event-sourced [`crate::projection::DeletedRepoRecord`].
+/// `ghost_teams`/`wildcard_owners` are NEVER persisted: rebuilt every render
+/// from rosters/repos (oracle ghr-893fde5c). `Deleted` (404) rosters are
+/// `GhostTeam` only while CODEOWNERS-referenced in `owner_repo_map`
+/// (CHE-0093:R4, ghr-d9878e7d); de-reference removes them immediately,
+/// closing ghr-726c35fd. [`crate::domain::metrics::build_owner_repo_map`] joins
+/// referencing repos by full lowercased canonical `@org/slug`, NOT bare slug.
+/// Glob owners (e.g. `@org/*`) are `WildcardOwner` directly from that map:
+/// no roster entry or fiber (CHE-0093:R4).
 fn build_deleted_view_model(
     deleted: &[crate::projection::DeletedRepoRecord],
     organization: &str,

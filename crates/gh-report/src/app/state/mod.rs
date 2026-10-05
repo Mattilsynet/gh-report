@@ -1959,38 +1959,20 @@ impl AppState {
 
 impl AppState {
     /// Re-seed [`Self::event_store`], [`Self::org_event_store`], and
-    /// [`Self::team_event_store`] from a fresh authoritative read,
-    /// discarding each store's stale in-memory fence-sequence cache in
-    /// place.
-    ///
-    /// Design-Y consumer-owned re-arm (ghr-fea8b799): `PersistenceError::FencedConflict`
-    /// can originate from any of the three long-lived native stores —
-    /// `record_repo`/`remove_repo`, `record_org`, and `record_team` all map
-    /// through the same generic catch-all (`native_store_persistence`) —
-    /// so the daemon must re-seed all three before re-arming the collection
-    /// run, not just the repositories store. Resyncing a store that did not
-    /// actually fence is a harmless no-op fresh read; the alternative
-    /// (resyncing only one store) would leave the *other* two stores stale,
-    /// relocating rather than eliminating the R10-forbidden
-    /// patch-cached-seq-and-redrive shape.
-    ///
-    /// Each store re-reads through the backend handle it was opened with, so a
-    /// NATS-backed store always recovers from its configured NATS stream and a
-    /// `.pgno`-backed store from its own file. The caller cannot select the
-    /// recovery source; `_events_dir`, `_backend` and `_nats` are retained only
-    /// to keep the existing call shape.
+    /// [`Self::team_event_store`] authoritatively in place before re-arm
+    /// (Design-Y, ghr-fea8b799). Any store can fence through
+    /// `native_store_persistence`; refreshing an unfenced store is harmless.
+    /// Refresh ALL three, never patch cached sequences and redrive (R10).
+    /// Backend handles select configured NATS streams or `.pgno` files;
+    /// `_events_dir`, `_backend`, `_nats` preserve call shape, not source selection.
     ///
     /// # Errors
     ///
-    /// Returns [`std::io::Error`] when a store cannot be re-read, decoded, or
-    /// schema-verified. Each store validates and decodes fully before it
-    /// replaces its own cache, so a failing store keeps its previous cache.
-    /// This is per-store preservation, not a three-store transaction: the
-    /// stores are refreshed in repo, org, team order, the first failure
-    /// returns immediately, and partial progress is permitted and expected —
-    /// stores already refreshed stay refreshed, and stores after the failing
-    /// one are never attempted. The caller must treat an `Err` as a failed
-    /// re-arm and must not resume useful work on it.
+    /// Returns [`std::io::Error`] on read/decode/schema failure. Full validation
+    /// precedes cache replacement; failure preserves that store's cache.
+    /// Repo/org/team refreshes are ordered, NOT transactional: first failure
+    /// returns; prior refreshes remain; later stores are unattempted.
+    /// `Err` means failed re-arm: caller MUST NOT resume useful work.
     pub(crate) async fn resync_event_store(
         &self,
         _events_dir: &Path,
@@ -2074,7 +2056,7 @@ impl AppState {
         apply_projection_event(&mut *guard, team_projection_event(detached, event));
     }
 
-    /// Record a freshly-fetched team roster on its own per-team fiber
+    /// Record a team roster on its per-team fiber
     /// (CHE-0089), keyed by `team_domain_key(org, team_slug)`. OCC fence
     /// mirrors [`Self::record_org`] (PGN-0016:R1/R2/R10): a fence conflict
     /// surfaces as [`PersistenceError::FencedConflict`] with no in-band
@@ -2083,12 +2065,9 @@ impl AppState {
     /// publish (CHE-0024:R1): the projection is folded only after the
     /// store append succeeds.
     ///
-    /// The two appends are ordered, not atomic (ghr-7qm12.16). A failed
-    /// primary append short-circuits: the dedicated append and the
-    /// projection fold are both skipped. A failed dedicated append is
-    /// returned to the caller with the already-durable primary append
-    /// retained — no rollback is performed or claimed — and no
-    /// projection fold.
+    /// Appends are ordered, not atomic (ghr-7qm12.16). Primary failure skips
+    /// dedicated append and fold. Dedicated failure returns, retaining the
+    /// durable primary append without rollback or projection fold.
     ///
     /// # Errors
     ///
@@ -2126,19 +2105,13 @@ impl AppState {
         })
     }
 
-    /// Soft-delete a team's fiber (detach) for a team that no longer
-    /// exists on GitHub, or no longer owns any repository via CODEOWNERS,
-    /// then fold the removal into the resident projection at runtime
-    /// (linus's P4 back-brief: detaching the store alone leaves the
-    /// projection stale until restart). Same OCC fence and
-    /// persist-then-publish ordering as [`Self::record_team`].
+    /// Detach a team absent from GitHub or CODEOWNERS ownership, then remove
+    /// its resident projection at runtime, not only restart (linus P4).
+    /// Same OCC fence and persist-then-publish ordering as [`Self::record_team`].
     ///
-    /// The two detaches are ordered, not atomic (ghr-7qm12.37). A failed
-    /// primary detach short-circuits: the dedicated detach and the
-    /// projection removal are both skipped. A failed dedicated detach is
-    /// returned to the caller with the already-durable primary detach
-    /// retained — no rollback is performed or claimed — and no projection
-    /// removal.
+    /// Detaches are ordered, not atomic (ghr-7qm12.37). Primary failure skips
+    /// dedicated detach and projection removal. Dedicated failure returns,
+    /// retaining durable primary detach without rollback or projection removal.
     ///
     /// # Errors
     ///

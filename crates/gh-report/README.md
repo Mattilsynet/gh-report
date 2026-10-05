@@ -26,7 +26,9 @@ resolve GitHub App → `GITHUB_TOKEN` → `gh auth token` (local fallback);
 there is no fixture or offline mode. See the workspace
 [`README.md`](../../README.md) for the full flag list; operational recovery
 procedures are substrate-scoped at
-[`crates/cherry-pit-gateway/RUNBOOKS.md`](../cherry-pit-gateway/RUNBOOKS.md).
+[`cherry-pit-gateway/RUNBOOKS.md`](https://github.com/acje/cherry-pit/blob/1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e/crates/cherry-pit-gateway/RUNBOOKS.md)
+in the canonical upstream; the current dependency revision is owned by the
+workspace `Cargo.toml` and `Cargo.lock`.
 
 ## Documentation pointers
 

@@ -56,7 +56,8 @@ High-assurance testing techniques—such as property-based testing (proptest), f
   - `adr-fmt` (ADR validator, read-only) from `Mattilsynet/adr-fmt`.
   - `comment-free` (doc-lint tool) from `acje/comment-free`.
   - `cherry-pit-*` — external event-sourcing substrate from `acje/cherry-pit`,
-    all eight crates pinned to canonical main `ffffa0ddae206a322da9b9b4a94a3ad5e191da6e`.
+    all eight crates use the exact revision declared in `Cargo.toml` and
+    resolved in `Cargo.lock`; those files own the current pin.
   - `pardosa*` — `.pgno` event-store substrate + a NATS/JetStream backend
     (`pardosa-nats`). External git dependencies from `acje/pardosa`.
 
@@ -155,15 +156,23 @@ comment-free --check-doc-budget --doc-advisory-words 80 --doc-max-words 120 --ma
 
 Requires comment-free 0.2.0 at the canonical revision below:
 ```sh
-cargo +1.98.0 install --git https://github.com/acje/comment-free --rev e45de7ef3b0fcd9a1ec299b9026b14fb5b0cf534 --locked comment-free
+cargo +1.98.0 install --git https://github.com/acje/comment-free --rev 09d2d79441ed9497af4fa92e4c2830a1a3e38048 --locked comment-free
 ```
 
 The read-only native gate recursively scans Rust sources under `.` with the
 tool's build/hidden pruning: 80 prose words is advisory; 120 is enforced.
 Fenced code is excluded by the tool. Summary-only output retains full totals
 while suppressing finding details; diagnostics remain visible.
-Native gate exits are 0 for pass, 1 for enforced breach, and 2 for
-unknown/error, including undecided payloads or empty scope. Policy and its
+CF-0008's bounded-source gate emits policy records version 2, with explicit
+coverage and actionable next steps. Contiguous literal macro doc blocks count
+once per source spelling, not per generated item or expansion repetition.
+Interleaved non-doc attributes can split blocks and under-count expanded prose;
+nonliteral macro docs and synthesized prose remain unevaluated. Macro coverage
+counts do not block this bounded verdict. Legacy lint/rewrite remain unchanged.
+Native gate exits are 0 for bounded pass, 1 for enforced breach, and 2 for
+unknown/error, including required nonmacro undecided payloads, processing/output/
+accounting faults or empty scope. Reject unsupported policy versions rather
+than interpreting version 2 as version 1. Policy and its
 implementation/tests/proofs belong upstream; repository checks establish
 integration only. No rewrite mode runs.
 Macro-generated docs without spelled `doc` tokens remain outside detection;
@@ -182,16 +191,17 @@ CI installs the consumer pin as a step in the `build-test-lint` job checksum-ver
 - `cargo deny check` and `cargo audit` run as supply-chain gates.
 
 ### Architecture Invariants
-- **Synchronous public facade.** No `async fn` on the public surface of
-  `pardosa::store` / `prelude` (PGN-0010:R5, PGN-0008, PGN-0015:R6). The
-  intentional sync-over-async bridge is `pardosa-nats/src/handle.rs::run_op`
-  (`block_on`); `std::sync::Mutex` behind the facade is deliberate.
+- **Pardosa ownership.** Synchronous facade and implementation policy are owned upstream,
+  not implemented or inventoried in this consumer repository. Consult the
+  verified upstream [Pardosa specification](https://github.com/acje/pardosa/blob/08fcd290694553baa7fd5c3408bc18e9bd5eafb5/docs/spec/pardosa-1.0.md)
+  for the public contract and the [`pardosa-nats` README](https://github.com/acje/pardosa/blob/08fcd290694553baa7fd5c3408bc18e9bd5eafb5/crates/pardosa-nats/README.md)
+  for backend ownership guidance. `Cargo.toml` and `Cargo.lock` own the consumer's
+  selected revisions; upstream source, dependency inventory and implementation
+  mechanisms remain upstream authority.
 - **Closed error enums are mandated (C4.5/C4.6):**
   Public error enums MUST NOT carry `#[non_exhaustive]`. Variant sets are
   complete within a major line, making unhandled error states
   unrepresentable at compile time. Enforced by `non-exhaustive-check`.
-- **Substrate ring purity:** `pardosa-nats` depends only on tokio, async-nats,
-  bytes, blake3, and futures-util.
 - **House style:** suppress lints with `#[expect(lint, reason = "…")]`.
 
 ### Rustling Review Examples & Construction-Path Inventory
@@ -221,7 +231,7 @@ software is easier to build than incorrect software.
   `adr-fmt --context <crate>`.
 
 ### Tooling Notes & Database Discovery
-- `graphify-out/graph.json` exists — use `graphify query/explain/affected` for structural questions.
+- Graphify policy and evidence: [sole authority](../sf-sdlc/docs/graphify-evidence.md). Shared adr-fmt skill: `~/.config/opencode/skills/adr-fmt/`.
 - `.beads/` contains tracked repository scaffold, while the database itself (`embeddeddolt/`) is ignored.
 - Pinned store discovery: Always run bd commands with `bd -C <repo-root>` (or set `BEADS_DIR`).
 - Strict fleet invariant: No HOME store at `~/.beads`.

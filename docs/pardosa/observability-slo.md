@@ -1,145 +1,42 @@
-# pardosa Phase-1 observability: backend + SLO/alerting bands
+# Pardosa observability: consumer advisory
 
-Status: advisory, in-repo contract (NOT a ratified ADR). Sequenced as
-`pacelc-exec` Seq 0 (mission `pacelc-exec-seq0`); roadmap source
-`bd show ghr-05367cd6` §B.0/B.1/B.4; ground-truth re-verification
-`bd show ghr-c3b60ff2`. Oracle disposition (`ghr-bb8b0a81` Q2a): this is
-an implementation choice under COM-0019 (GND-0002 intent≠mechanism) — no
-new ADR required for either the backend naming below or these bands, as
-long as the caveat in § Binding-caveat holds.
+Status: advisory, not a ratified ADR, deployed alerting configuration or SLO
+guarantee. This note retains consumer design targets from the Phase-1 roadmap;
+it does not own Pardosa implementation policy.
 
-## Backend: log-based-metric over `pardosa::jetstream::metrics` (B.0 option b)
+## Upstream ownership
 
-The named metrics backend is **option (b): a log-based-metric rule set**
-that lifts the already-emitted `pardosa::jetstream::metrics` `info!`
-events (`crates/pardosa/src/backend/jetstream.rs`, `record_metric`,
-target `pardosa::jetstream::metrics`) into aggregated time-series via a
-log-metrics pipeline (e.g. a Loki/promtail metric-rule, a Vector `log_to_metric`
-transform, or equivalent — the specific pipeline is an operational choice,
-not fixed here).
+The dependency revisions are owned by the workspace `Cargo.toml` and
+`Cargo.lock`. Normative storage and ownership requirements belong to the
+upstream [Pardosa specification](https://github.com/acje/pardosa/blob/08fcd290694553baa7fd5c3408bc18e9bd5eafb5/docs/spec/pardosa-1.0.md).
+Backend ownership guidance belongs to the upstream
+[`pardosa-nats` README](https://github.com/acje/pardosa/blob/08fcd290694553baa7fd5c3408bc18e9bd5eafb5/crates/pardosa-nats/README.md):
+one writer per artefact is externally enforced; metadata epoch and data CAS
+are separate, not atomic ownership-and-write fencing. Concurrent takeover
+requires external coordination. Consumer documentation must not substitute
+stronger ownership guarantees or local implementation paths.
 
-This is **zero new workspace dependency**: no Prometheus client crate, no
-OpenTelemetry SDK, no `metrics`/`metrics-exporter-*` crate is added to any
-`Cargo.toml`. The existing `tracing::info!` emission at `jetstream.rs` is
-the entire in-repo surface; aggregation and alerting live outside the
-workspace, in whatever log-metrics pipeline consumes the structured
-`info!` events. Rationale: most reversible option, respects substrate
-ring purity (COM-0019:R6 — no instrumentation dependency reaches
-`pardosa-nats`; PGN-0015 — instrumentation stays in the adapter ring, not
-the sync-facade substrate).
+## Emission is not detection
 
-### Emit-only vs detect (honesty caveat — roadmap B.0 item 1)
+Structured metric/log emission alone is **emit-only**, not **detect**.
+Detection requires a deployed aggregation rule, a tested alert condition and
+an on-call route. None is established by this document. A log-to-metric
+pipeline remains a reversible operational option; no instrumentation dependency
+or pipeline deployment is introduced here.
 
-**Until a log-based-metric aggregation rule set is actually deployed
-against the `pardosa::jetstream::metrics` `info!` stream, Phase-1 signals
-below are EMIT-ONLY, not DETECT.** A structured log line that nobody
-aggregates cannot page anyone. This document names the backend and the
-bands the aggregation rules must implement; it does not itself deploy
-those rules. Do not claim end-to-end DETECT coverage for any Phase-1
-signal until its aggregation rule is live and its alert condition is
-wired to an on-call path.
+## Suggested aggregation targets
 
-### Binding-caveat (COM-0035 ratchet boundary)
+| Signal | Advisory interpretation |
+|---|---|
+| Fence conflicts | Transient contention can mean fencing works; investigate spikes or unexpected multiple writers, not every conflict as bypass. |
+| Conflict surfaced to caller | Does not prove the caller failed to abort/re-drive; that stronger signal needs call-site instrumentation. |
+| Bridge duration / timeout | Compare latency and sustained timeouts with an explicitly chosen deployment budget. |
+| Replay lag | Investigate growing, non-converging read-side staleness. |
+| Dedup hits | Retry observability, not an independent duplicate-append correctness guarantee. |
 
-This contract is **advisory**, not binding. If the SLO / cardinality
-bands below are later promoted to a *binding* operational contract
-(e.g. gating deploys, feeding an SLA), that promotion is a COM-tier child
-ADR under the COM-0035 ratchet — out of scope for this document and for
-mission `pacelc-exec-seq0`. Until such an ADR lands, treat every band
-below as a design target for the aggregation rules, not a ratified
-guarantee.
-
-## SLO / alerting bands (roadmap B.1)
-
-Because pardosa/pardosa-nats are ratified PACELC PC/EC-always (§A,
-`ghr-05367cd6`), a deviation signal firing at all above its healthy
-floor is a **correctness incident**, not a latency-budget burn.
-
-| Signal (Phase-1 unless noted) | Healthy band | Alert condition (deviation) | Discriminates |
-|---|---|---|---|
-| `pardosa.occ.fence.conflict` (I1) counter by `err_code` 10071/10164 | non-zero but **bounded, transient** under contention — a fenced conflict is the fence *working* | conflict-rate **spike** OR any conflict on a subject with only one known writer | fence-working vs **fence-bypass suspicion** / unexpected multi-writer |
-| `pardosa.occ.conflict_unhandled` (I2) counter — `FencedConflict` returned to caller AND not followed by a clean abort/re-drive | **zero** | any non-zero, sustained | **non-convergence** (swallowed conflict → lost write). Post-amendment this replaces v1's "retry storm" discriminator |
-| `pardosa.occ.self_fence` (I2b) counter — intra-handle self-fence | **zero** (Semaphore(1) makes it impossible) | any non-zero | mis-built `append_gate` |
-| `pardosa.bridge.block_on.duration` (I5) histogram + `ack_timeout` counter | p99 under bridge budget | p99 breach / sustained ack-timeout | `block_on` stall → tail-latency cliff |
-| `pardosa.replay.lag` (I6) gauge | bounded, converging | monotonically growing | read-side staleness |
-| `pardosa.dedup.hit` + `pardosa.redelivery.observed` (I8) counters | **zero** redelivery; dedup-hits only from legitimate retries | any redelivery-driven append attempt; **any dedup-hit near/after the 2-min window boundary, co-moving with `fence.conflict` (I1)** | retries **escaping** the bounded dedup window and falling through to the OCC fence (PGN-0016:R11) — an observability signal, not a duplicate-append correctness residual: the fence, not dedup, prevents duplicate append |
-
-Note: v1's I2 "replay-retry storm → PC/EL livelock" alert is **retired** —
-the PGN-0016 amendment removed in-band retry, so intra-handle livelock is
-no longer a failure mode. The replaced discriminator is
-`conflict_unhandled` (swallowed conflict), the actual post-amendment
-non-convergence risk.
-
-## Cardinality (COM-0019:R6)
-
-Current registered metrics carry labels `op` (3 values) ×
-`terminal_category` (7 values, `fence_conflict` added Seq 1) for the
-two-label metrics (`OPERATION_TERMINAL_COUNTER`, `APPEND_LATENCY_HISTOGRAM`,
-`BRIDGE_DURATION_HISTOGRAM`) = 21 series/metric, plus three op-only-label
-metrics (`ACK_TIMEOUT_COUNTER`, `OCC_CONFLICT_UNHANDLED_COUNTER`,
-`OCC_SELF_FENCE_COUNTER`) at 3 series/metric. Total 72 series against the
-COM-0019:R6 bound of 500 (`ghr-c3b60ff2`). Ample headroom remains.
-
-## Scope note
-
-Naming the signals and their bands is Seq 0's job. Seq 1 implemented,
-in `crates/pardosa/src/backend/jetstream.rs`:
-
-- **I1** (`fence.conflict`): `ConcurrencyConflict` (mapped from
-  `JetStreamRuntimeError::WrongLastSequence`, `jetstream.rs:325-331`) now
-  gets its own `TerminalCategory::FenceConflict` / `"fence_conflict"`
-  label value, distinct from `TerminalCategory::Publish`. Previously it
-  was folded into `Publish` (ground-truth gap confirmed by
-  `ghr-c3b60ff2`).
-- **I2** (`conflict_unhandled`): a dedicated
-  `pardosa_jetstream_occ_conflict_unhandled_total` counter fires every
-  time a `ConcurrencyConflict` is returned to the caller. **Honest
-  boundary limit**: the adapter cannot observe whether the caller then
-  performs a clean abort/re-drive or silently drops the conflict — that
-  happens above this adapter's boundary. This counter is therefore
-  scoped to *conflict-surfaced-to-caller*, which is the adapter's whole
-  observable surface; a genuinely tighter "conflict THEN no abort"
-  signal would require call-site instrumentation outside
-  `crates/pardosa/src/backend/jetstream.rs`, out of scope for Seq 1.
-- **I2b** (`self_fence`): `pardosa_jetstream_occ_self_fence_total` is
-  registered with a healthy value of zero. `append_gate` is a
-  `Semaphore(1)` (`pardosa-nats/src/handle.rs:~203-208`), which makes
-  intra-handle self-fence structurally unreachable via any public entry
-  point today; the emitting function (`record_self_fence`) therefore has
-  no call site on the normal path (kept for defense-in-depth, marked
-  `#[expect(dead_code, ...)]`). A test pins that normal operation never
-  emits it.
-- **I5** (`block_on.duration` + `ack_timeout`): the append-only
-  `APPEND_LATENCY_HISTOGRAM` is kept unchanged (backward-compatible);
-  a new `pardosa_jetstream_bridge_duration_seconds` histogram now fires
-  for **every** op (append, sync, replay), closing the "only append"
-  gap. A new `pardosa_jetstream_ack_timeout_total` op-labelled counter
-  fires whenever `TerminalCategory::Timeout` is observed.
-- **I8** (`dedup.hit` + `redelivery.observed`) — **dedup-hit implemented
-  (Seq 2, bd ghr-2c33d49c); `redelivery.observed` remains unobservable
-  by design.** Per PGN-0016:R11's 4-layer composition rule (domain
-  idempotency → OCC fence → bounded dedup window → this counter),
-  `dedup_hit` is an observability signal only: it detects retries that
-  fall through the bounded `Nats-Msg-Id` window, not a correctness
-  residual — the fence, not dedup, prevents duplicate append.
-  `pardosa-nats::JetStreamHandle::append` /
-  `append_with_replay_tag` now return `JetStreamAppendAck { ack, duplicate }`
-  — an additive return-type extension (not a `JetStreamAckPosition` shape
-  change, preserving its `#[repr(transparent)]`) threading
-  `PublishAck.duplicate` (async-nats 0.49.1) across the crate boundary.
-  `pardosa::backend::jetstream::JetStreamBackendAdapter::append` emits the
-  bounded `pardosa_jetstream_dedup_hit_total` counter (op-only label, 3
-  values) when `duplicate == true`, recorded in the pardosa adapter ring —
-  `pardosa-nats` itself gains no metrics call (COM-0019:R6 / substrate ring
-  purity preserved). `redelivery.observed` stays **scoped out, confirmed
-  unobservable, not just deferred**: the replay consumer uses
-  `AckPolicy::None` (`pardosa-nats/src/handle.rs`, `build_replay_pull_config`),
-  so there is no ack-driven redelivery event on the current consumer path —
-  emitting a counter here would be vacuous by construction. A genuine
-  redelivery signal would require an `AckExplicit` consumer design, out of
-  scope for this sub-mission. I8's healthy-band row above is therefore
-  read as dedup-hit only until such a design lands.
-
-- **I6** (`replay.lag`) remains out of scope for Seq 1 per the roadmap
-  (unchanged from Seq 0 naming).
-
+Upstream source and tests own which signals exist and their boundary semantics;
+this note does not attest current emission, cardinality, self-fence
+unreachability or redelivery coverage. Before operational adoption, measure
+label cardinality and choose concrete budgets and alert windows. Promoting
+these suggestions to binding deploy gates or SLA guarantees needs a separate
+ratified operational decision, not a stronger reading of this advisory.

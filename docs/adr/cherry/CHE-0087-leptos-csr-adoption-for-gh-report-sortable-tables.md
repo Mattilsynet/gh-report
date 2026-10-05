@@ -1,7 +1,7 @@
 # CHE-0087. Leptos CSR Adoption for gh-report Sortable Tables
 
 Date: 2026-07-09
-Last-reviewed: 2026-08-31 — refined — R10 and Context pinned-channel numerals corrected to 1.98 to match rust-toolchain.toml/CI/AGENTS.md ground truth; reasoning unchanged (mission:ghr-508w6)
+Last-reviewed: 2026-10-04 — refined — align unsafe posture, host/wasm boundary, serving and configured CI with current source; dependency pins remain manifest-owned (mission:stale-doc-repair-20261004)
 Tier: B
 Status: Accepted
 Crates: gh-report, gh-report-web-client
@@ -12,48 +12,48 @@ References: CHE-0007, CHE-0086, RST-0005, SEC-0004, RST-0004, RST-0002, SEC-0009
 
 ## Context
 
-gh-report's HTML tables are server-rendered and static; users cannot re-sort a column without a full page reload and a server-side query change. Leptos 0.8.20 (Rust→WASM CSR) via wasm-bindgen 0.2.126 is MSRV-compatible with the pinned 1.98 toolchain (Leptos MSRV 1.88), needs no nightly, and sorts client-side with no server round-trip. The tension is RST-0005/CHE-0007's workspace `#![forbid(unsafe_code)]`: wasm-bindgen's FFI glue is generated `unsafe`. The current pins compile clean under `forbid`, but `forbid` cannot be `#[allow]`-overridden should a future wasm-bindgen emit `unsafe` the lint rejects — so this crate uses `#![deny(unsafe_code)]`, banning hand-authored `unsafe` while tolerating generated FFI glue across version drift. RST-0005 R2 and SEC-0004 R4 require a dedicated ADR before a crate omits the workspace default; this is that ADR.
+Server-rendered tables remain readable without the client; Leptos CSR progressively adds sorting without a server round-trip. Cargo.toml and Cargo.lock own dependency versions. The client root currently uses unconditional `#![forbid(unsafe_code)]`, consistent with RST-0005:R1 and CHE-0007; no deny-based exception is needed. This constrains the local crate, not unsafe inside dependencies. A future exception would require the dedicated justification and safety argument in RST-0005:R2 and SEC-0004:R4.
 
 ## Decision
 
-Adopt Leptos CSR (feature `csr`, no nightly) as gh-report's client-rendering stack for sortable tables, ship it in a new crate granted a scoped, documented exception to the workspace's forbid(unsafe_code) default, and serve the compiled bundle through the existing read-serve pipeline as a progressive enhancement.
+Use Leptos CSR (feature `csr`, no nightly) for sortable-table progressive enhancement, retain the workspace unsafe prohibition, and serve consumer-owned compiled assets through the existing read-serve pipeline.
 
-R1 [5]: Adopt Leptos 0.8.20 (feature = "csr" only, no "nightly") compiled via wasm-bindgen 0.2.126 to `wasm32-unknown-unknown` as the client-side rendering stack for gh-report's interactive sortable-table enhancement; this is the workspace's first client-render precedent.
+R1 [5]: Use Leptos with feature `csr`, defaults disabled and no `nightly`, compiled via wasm-bindgen to `wasm32-unknown-unknown` for sortable-table enhancement. Dependency versions are declared in Cargo.toml and resolved in Cargo.lock, not duplicated here.
 
-R2 [5]: `gh-report-web-client` omits `#![forbid(unsafe_code)]` and uses `#![deny(unsafe_code)]` instead: `deny` bans hand-authored `unsafe` while tolerating wasm-bindgen's generated FFI glue across version drift, whereas `forbid` cannot be `#[allow]`-overridden (per CHE-0007's Consequences). Upon acceptance this ADR amends CHE-0007's member list and RST-0005 R1 to exclude that one named crate, never workspace-wide.
+R2 [5]: `gh-report-web-client` retains `#![forbid(unsafe_code)]` at its crate root under RST-0005:R1. This ADR grants no unsafe exception and does not amend CHE-0007 or RST-0005 to exclude the client. Generated code rejected by that lint requires a separate architectural decision, not an inner `#[allow]`.
 
-R3 [5]: No hand-authored `unsafe` is permitted in `gh-report-web-client`; the only unsafe present originates from wasm-bindgen's macro-GENERATED FFI glue marshalling values across the JS/WASM boundary — the exact FFI case RST-0005 R2 anticipates — and `cargo-geiger` (SEC-0009 R3) characterizes that generated-plus-transitive surface as an ADR-cited artefact on each dependency review.
+R3 [5]: No hand-authored `unsafe` is permitted in `gh-report-web-client`. Dependency review characterizes generated and transitive unsafe exposure with `cargo-geiger` under SEC-0009:R3; the local lint is not a dependency-wide absence-of-unsafe proof. No executed audit or cargo-geiger CI gate is asserted here.
 
-R4 [5]: All Leptos/wasm-bindgen/web-sys/js-sys dependencies are declared in `[workspace.dependencies]` per RST-0004 R1, with `default-features = false` and only CSR-required features enabled (RST-0004 R2); the addition lands as its own dedicated, reviewable `Cargo.lock` diff PR per RST-0002 R2, and introduces no dependency edge into any `cherry-pit-*` crate.
+R4 [5]: Leptos/wasm-bindgen/web-sys/js-sys declarations remain in `[workspace.dependencies]` per RST-0004:R1, consumed as browser-target dependencies by the client. Minimize features per RST-0004:R2 and review dependency updates separately per RST-0002:R2; introduce no client dependency edge into any `cherry-pit-*` crate.
 
-R5 [9]: The `.wasm` binary and its JS glue are built out-of-band (`cargo build --target wasm32-unknown-unknown --release` + `wasm-bindgen --target web`), committed to the repository, and embedded into `gh-report` via `include_bytes!`/`include_str!` into `LazyLock<CachedPage>` statics mirroring the existing `style.css`/`ws.js` pattern (`crates/gh-report/src/app/state.rs`); regeneration is a Dockerfile/CI concern, never a host `build.rs`.
+R5 [9]: Build the WASM binary and JS glue out-of-band and commit the assets embedded by `include_bytes!`/`include_str!` into consumer-owned `LazyLock<CachedPage>` statics in `crates/gh-report/src/app/state/mod.rs`. Never regenerate them in a host `build.rs`. Docker copies committed assets and builds the host application; it does not regenerate WASM.
 
-R6 [9]: `gh-report-web-client` is excluded from the host workspace's default build set (`cargo build --workspace`) so the host toolchain never compiles wasm-only dependencies; `cargo build --workspace --all-features --locked` MUST stay green throughout, and the crate builds only under an explicit `--target wasm32-unknown-unknown` invocation or CI's dedicated wasm step.
+R6 [9]: The client is a workspace member but not a default-member: bare builds omit it, while `--workspace` includes its host-compatible pure sort module. Browser dependencies and DOM wiring are wasm-target-only. Host workspace builds must remain green. Configured CI job `build-test-lint` precompiles the host library and wasm tests, builds wasm release, and lints both targets.
 
-R7 [5]: The compiled bundle is served through gh-report's existing generic read-serve surface (CHE-0086) as an additional `CachedPage` value, the same already-sanctioned path serving `style.css`/`ws.js`; this is not a new arbitrary-static-file carve-out and CHE-0049:R8's exclusion remains otherwise intact.
+R7 [5]: Serve the compiled bundle as gh-report-owned `CachedPage` values through the generic read-serve transport (CHE-0086:R2/R4), like `style.css`/`ws.js`. Keep consumer asset policy outside `cherry-pit-web`; this grants no arbitrary-static-file hosting carve-out.
 
-R8 [5]: gh-report's own served Content-Security-Policy, set via `ServerConfig::builder().csp_override(...)` at its serve-construction sites, adds ONLY `'wasm-unsafe-eval'` to `script-src` versus the shared baseline, because that token is strictly narrower than `'unsafe-eval'` (WASM-compile only, required by `WebAssembly.instantiateStreaming`); `cherry-pit-web`'s shared `DEFAULT_CSP` (`serve/runtime.rs`) is unchanged.
+R8 [5]: gh-report's served Content-Security-Policy uses `ServeOptions::builder().csp_override(...)` in `crates/gh-report/src/server.rs`, adding only `'wasm-unsafe-eval'` to baseline `script-src`, not `'unsafe-eval'`. The shared `cherry-pit-web` default remains unchanged; the consumer owns this WASM-specific override.
 
 R9 [5]: Server-rendered HTML remains pre-sorted and fully readable with WASM absent, disabled, or failed to load; the Leptos client only progressively enhances already-correct markup and never becomes a rendering requirement.
 
-R10 [5]: Adding the `wasm32-unknown-unknown` compilation target is a target-add under RST-0001, not a toolchain channel bump; the pinned 1.98 channel and MSRV stay unchanged, since Leptos 0.8.20's own MSRV (1.88) already sits below that floor.
+R10 [5]: The `wasm32-unknown-unknown` target is a target addition under RST-0001, not a channel bump. `rust-toolchain.toml` and `[workspace.package].rust-version` own the toolchain and MSRV; this adoption does not change their floor.
 
 R11 [5]: Any no-mount CSR path in gh-report-web-client — i.e. progressive enhancement that never calls mount_to_body/mount_to (R9) — MUST, before constructing any Effect::new or other reactive primitive, establish (a) an initialized async executor via Executor::init_wasm_bindgen() and (b) a page-lifetime reactive Owner that is set as the current owner and retained for the document lifetime (let owner = Owner::new(); owner.set(); std::mem::forget(owner);), mirroring Leptos's own hydrate_islands idiom. Without both, effects are constructed but never run (their driving future is never spawned and no owner context exists), so the enhancement silently no-ops while server HTML stays correct per R9. This is an ADDED runtime-init obligation created by the no-mount choice, consistent with and not a reversal of R9.
 
-R12 [5]: Progressive-enhancement table sorting in `gh-report-web-client` must maintain deterministic semantic ordering across sort directions. Numeric sorting treats `N/A` and unparseable values as strictly less than 0 (`f64::NEG_INFINITY`) so that indeterminate evidence sorts to the bottom (below 0%) in descending sort and to the beginning in ascending sort, with tie-breaking via deterministic lexicographic ordering; status sorting pins indeterminate states (`unknown`, `permission-denied`, `pending`, `N/A`) at the end in both directions. Comments, docstrings, and tests must document this invariant to prevent regression.
+R12 [5]: Keep deterministic directed sorting: numeric `N/A`/empty values map to `f64::NEG_INFINITY`, while generic parse failures remain `None`; indeterminate numeric evidence precedes zero ascending and follows it descending, with lexical ties among indeterminate values. Status indeterminates remain last in both directions. Preserve these semantics in the pure comparator, wasm caller and tests.
 
 ## Consequences
 
 + becomes easier: users sort large tables client-side with no page reload or extra query parameters; the read-serve pipeline gains a reusable pattern for client-rendered enhancements.
-− becomes harder: `gh-report-web-client` sits outside the workspace's uniform forbid(unsafe_code) guarantee, requiring cargo-geiger review each dependency bump (SEC-0009 R3); the build gains a wasm32 leg regenerated and re-committed on source changes; gh-report's CSP is no longer one shared constant; the no-mount progressive-enhancement path must manually bootstrap the reactive runtime (executor + retained owner) that mount_to_body would otherwise supply; omitting it makes effects silently inert (R11).
-risks/migration: this ADR amends CHE-0007's enumerated list and RST-0005 R1 only upon acceptance — no CHE-0007 file edit happens while Proposed, mirroring how CHE-0086 amends CHE-0049:R8 without editing CHE-0049. Release-profile (CHE-0026) bundle-size tuning is deferred to sub-mission 2; wasm-bindgen-cli/library version drift is an open operational risk.
+− becomes harder: dependency unsafe exposure still requires review; source changes require regenerating and committing the browser assets; the consumer owns a CSP override and must bootstrap the no-mount runtime (R11).
+risks/migration: CLI/library drift remains an operational risk; wasm tooling must match Cargo.lock. Configured `build-test-lint` runs status vocabulary, directed-sort compiler, headless Chrome and guard-regression checks plus committed import-key validation. These checks are not byte-freshness equivalence: `tools/verify_web_client.py` implements local bundle-byte comparison, not an enabled hosted byte-freshness gate. This source inspection establishes configured behavior, not successful CI, browser execution or bundle freshness.
 
 ## Rejected Alternatives
 
 **Server-side sorting via query parameters.** Rejected because it requires a full page reload per sort action and adds server-side query complexity for a purely presentational concern; the mission is interactive client rendering.
 
-**`#[allow(unsafe_code)]` inside a `#![forbid(unsafe_code)]` crate.** Rejected because `forbid` cannot be locally overridden by an inner `#[allow]` (CHE-0007 Consequences); the only mechanism is crate-level omission of `forbid`, scoped and documented here.
+**`#[allow(unsafe_code)]` inside a `#![forbid(unsafe_code)]` crate.** Rejected because `forbid` cannot be overridden by an inner `#[allow]` (CHE-0007 Consequences); this ADR grants no crate-level omission either.
 
-**Relaxing `forbid(unsafe_code)` workspace-wide.** Rejected outright — RST-0005/CHE-0007 stay in force for every other crate; this ADR's exception is scoped to exactly one named crate.
+**Relaxing `forbid(unsafe_code)`.** Rejected — RST-0005/CHE-0007 remain in force, including for the client; generated FFI does not justify an assumed exception.
 
 **A new static-asset-hosting ADR reversing CHE-0049:R8 wholesale.** Rejected because the compiled bundle fits inside CHE-0086's already-sanctioned `CachedPage` pattern; no fresh static-file carve-out is needed.

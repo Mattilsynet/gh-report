@@ -30,7 +30,7 @@ cargo run -p gh-report -- --dump-baseline --org <your-org> --store-dir ./store
 ```
 
 Operational recovery procedures live at
-[`cherry-pit-gateway/RUNBOOKS.md`](https://github.com/acje/cherry-pit/blob/bae8df87873c842e86113183ea892075c6debbab/crates/cherry-pit-gateway/RUNBOOKS.md).
+[`cherry-pit-gateway/RUNBOOKS.md`](https://github.com/acje/cherry-pit/blob/1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e/crates/cherry-pit-gateway/RUNBOOKS.md).
 
 ## Workspace and canonical dependencies
 
@@ -38,20 +38,24 @@ Operational recovery procedures live at
 gateway, projection, app, web, work-queue, storage primitives), with durable
 events persisted through the modern `pardosa` event-store library (version 0.5.5,
 consumed from [`https://github.com/acje/pardosa`](https://github.com/acje/pardosa)
-governed by `docs/spec/pardosa-1.0.md`). `adr-fmt` (consumed from canonical
+governed by the upstream [Pardosa specification](https://github.com/acje/pardosa/blob/08fcd290694553baa7fd5c3408bc18e9bd5eafb5/docs/spec/pardosa-1.0.md)). `adr-fmt` (consumed from canonical
 upstream, not a member here) keeps the ADR corpus this workspace is built
 against internally consistent;
-`comment-free` enforces the workspace's no-`//`-comments rule and is
-likewise consumed from canonical upstream rather than built here.
+`comment-free` is consumed from canonical upstream rather than built here.
+Its native bounded-source doc-budget gate runs locally and in CI; the exact
+installed revision, thresholds and coverage limitations live in `AGENTS.md`.
+The gate is read-only and does not establish absence of non-doc comments.
 Cherry is maintained in [`acje/cherry-pit`](https://github.com/acje/cherry-pit).
 All eight Cherry crates and the outer test bridge use the exact git revision
-`bae8df87873c842e86113183ea892075c6debbab` in `Cargo.toml` and `Cargo.lock`.
+declared in [`Cargo.toml`](Cargo.toml) and resolved in [`Cargo.lock`](Cargo.lock);
+those files are authoritative for the current pin.
 This workspace retains `gh-report`, `gh-report-web-client`, and
 `non-exhaustive-check`. GitHub policy and native application stores stay here.
 
-The former embedded library tests and fixtures live at that canonical revision;
+The former embedded library tests and fixtures live in the canonical upstream;
 Cargo does not execute dependency test targets in this consumer workspace.
-Canonical PR #5 passed all four Linux checks. Consumer verification exercises
+Historical canonical PR #5 passed all four Linux checks; that is not evidence
+for the current dependency revision. Consumer verification exercises
 the application and `canonical_cherry_bridge` persistence/type-identity test.
 
 - **`gh-report`** — the dashboard described above.
@@ -66,8 +70,8 @@ the application and `canonical_cherry_bridge` persistence/type-identity test.
   Consumed from canonical upstream
   [`Mattilsynet/adr-fmt`](https://github.com/Mattilsynet/adr-fmt); not a
   member of this workspace.
-- **`comment-free`** — doc-lint tool enforcing the fleet-wide
-  no-`//`-comments rule on Rust source. Consumed from canonical upstream
+- **`comment-free`** — doc-budget checker and separately authorized comment
+  rewrite tool. Consumed from canonical upstream
   [`acje/comment-free`](https://github.com/acje/comment-free) as an
   installed binary; not a member of this workspace.
 - **ADR corpus** at [`docs/adr/`](docs/adr/). Two domains are actively
@@ -80,9 +84,11 @@ This is a Rust workspace (edition 2024, MSRV 1.98).
 
 ## Canonical Cherry gate ownership
 
-The canonical pin is `bae8df87873c842e86113183ea892075c6debbab`.
-Producer evidence is [PR #5's completed CI run](https://github.com/acje/cherry-pit/actions/runs/35520271360)
+The current canonical pin is owned by `Cargo.toml` and `Cargo.lock`.
+Historical producer evidence for `bae8df87873c842e86113183ea892075c6debbab`
+is [PR #5's completed CI run](https://github.com/acje/cherry-pit/actions/runs/35520271360)
 and its [revision-qualified workflow](https://github.com/acje/cherry-pit/blob/bae8df87873c842e86113183ea892075c6debbab/.github/workflows/ci.yml).
+The producer job results below refer to that historical run, not current-pin CI.
 
 | Gate / tests | Consumer scope | Producer scope |
 |---|---|---|
@@ -122,6 +128,10 @@ adr-fmt --context cherry-pit-core
 Full rule taxonomy (T0xx template, L0xx links, S0xx lifecycle, P0xx
 parser) is in
 [`Mattilsynet/adr-fmt`](https://github.com/Mattilsynet/adr-fmt#readme).
+
+## Structural navigation
+
+Graphify policy and evidence: [sole authority](../sf-sdlc/docs/graphify-evidence.md).
 
 ## More
 

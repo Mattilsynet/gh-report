@@ -25,6 +25,10 @@ jobs:
           toolchain: 1.98.0
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
+      - name: install canonical comment-free
+        run: cargo +1.98.0 install --git https://github.com/acje/comment-free --rev 09d2d79441ed9497af4fa92e4c2830a1a3e38048 --locked comment-free
+      - name: bounded-source rustdoc budget (CF-0008)
+        run: comment-free --check-doc-budget --doc-advisory-words 80 --doc-max-words 120 --max-warning-files 0 .
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: install pinned wasm tools
         uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.68.75

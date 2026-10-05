@@ -36,37 +36,24 @@ pub struct TickFailure {
     pub context: WriteFailureContextOwned,
 }
 
-/// Run one team-refresh tick: fetch current rosters for every team the
-/// current repo projection references, persist each as a
-/// `TeamStateCaptured` event (OCC-fenced, persist-then-fold — see
-/// [`AppState::record_team`]), and detach any team the projection
-/// previously recorded that no longer owns any repository.
+/// Fetch projection-referenced team rosters; persist `TeamStateCaptured`
+/// OCC-fenced, persist-then-fold ([`AppState::record_team`]); detach previously
+/// recorded teams no longer owning repositories.
 ///
-/// Omission-based detach runs only when the org-team enumeration
+/// Omission detach requires org-team enumeration that
 /// [`authorizes_omission_detach`](team_membership::TeamDiscovery::authorizes_omission_detach):
-/// a failed, truncated or uninterpretable enumeration establishes no identity
-/// coverage, so a known team's absence from it is not an absence fact
-/// (CHE-0092:R4). The teams
-/// such an enumeration DID report are still fetched and recorded.
+/// failed/truncated/uninterpretable enumeration cannot prove absence
+/// (CHE-0092:R4); reported teams are still fetched/recorded.
 ///
-/// A freshly-fetched roster whose status is
-/// [`TeamRosterStatus::Deleted`] (the team itself no longer exists on
-/// GitHub) routes to [`AppState::detach_team`] instead of
-/// [`AppState::record_team`] even when it is still CODEOWNERS-referenced
-/// (CHE-0092:R1/R2) — a `Deleted` roster observation is a no-op-on-
-/// convergence signal, not a live upsert; re-recording it every tick is
-/// a wasteful OCC fence write with no projection effect once anti-
-/// downgrade guarding is in place.
+/// [`TeamRosterStatus::Deleted`] routes to [`AppState::detach_team`] even if
+/// CODEOWNERS-referenced (CHE-0092:R1/R2): convergence, not repeated live upserts.
 ///
 /// # Errors
 ///
-/// Returns the first fatal [`TickFailure`] — pairing the classified
-/// [`AppError`] (a single-writer fence conflict, a structural store
-/// invariant violation, or an unrecoverable store state) with the
-/// [`WriteFailureContext`] observed at the failing write — classified
-/// by the durable-write policy (CHE-0088). No in-band retry masks a
-/// conflict (PGN-0016:R1/R2/R10); the caller (the decoupled cadence
-/// loop) is responsible for logging and waiting for the next tick.
+/// Returns first fatal [`TickFailure`]: classified [`AppError`] (fence conflict,
+/// structural invariant violation, unrecoverable state) plus failing-write
+/// [`WriteFailureContext`] (CHE-0088). No conflict retry (PGN-0016:R1/R2/R10);
+/// caller logs and waits for its independent next tick.
 #[expect(
     clippy::result_large_err,
     reason = "TickFailure deliberately carries AppError plus the owned WriteFailureContext by value so the durable-write policy classification (CHE-0088) survives to the caller; boxing it is an error-taxonomy change (PGN-0006/CHE-0021), out of scope for a toolchain bump"

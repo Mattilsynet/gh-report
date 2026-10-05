@@ -549,15 +549,13 @@ async fn read_body_limited(
 /// GitHub REST API client with connection pooling, retry, memoization,
 /// and optional credential refresh for GitHub App tokens.
 ///
-/// All public methods take `&self`. Interior mutability is used for all
-/// mutable state, making this type safe for sharing via `Arc<GitHubClient>`:
+/// Public methods take `&self`; interior mutability permits `Arc<GitHubClient>` sharing:
 /// - `auth_header: ArcSwap<AuthHeader>` — lock-free per-request auth injection
 /// - `repo_detail_cache: scc::HashMap` — per-run memoization of repo detail responses
 /// - `last_response_etags: scc::HashMap` — side-channel for `ETag` capture by `request_single_inner`,
 ///   consumed by `repo_details` for conditional request support
-/// - `deleted_team_slugs: scc::HashMap` — process-lifetime (not per-run) record of team
-///   slugs observed 404 (deleted); survives `clear_run_cache` so a repeatedly-referenced
-///   dead CODEOWNERS team costs one API call per process, not one per collection tick
+/// - `deleted_team_slugs: scc::HashMap` — 404/deleted teams survive `clear_run_cache`;
+///   dead CODEOWNERS references cost one call/process, not one/tick
 /// - `rate_limit: RateLimitState` — atomics for rate limit tracking
 /// - `halted_until: AtomicU64` — time-bounded halt; auto-clears when rate-limit window passes
 /// - `credential: tokio::sync::Mutex` — serialized credential refresh
@@ -1445,16 +1443,12 @@ impl GitHubClient {
 
     /// Get cached or fresh repository details.
     ///
-    /// Only successful results are cached; transient failures are not,
-    /// to allow recovery on subsequent calls.
+    /// Cache successes only; transient failures allow subsequent recovery.
     ///
-    /// Stale cache entries (marked by `evict_stale_entries`) are
-    /// revalidated using `ETag` conditional requests to save bandwidth
-    /// when the response body hasn't changed.
+    /// `evict_stale_entries` marks entries for bandwidth-saving `ETag` revalidation.
     ///
-    /// The full request path uses `request()`, which provides retry
-    /// logic, exponential backoff, and stale-token recovery. `ETags`
-    /// are captured via a side-channel and read after the call.
+    /// `request()` provides retries, exponential backoff and stale-token recovery;
+    /// `ETags` are read after calls through a side-channel.
     ///
     /// # Budget note
     /// A successful `ETag` revalidation (304 Not Modified) refunds its
@@ -1982,32 +1976,16 @@ impl GitHubClient {
         }
     }
 
-    /// Probe GitHub API capabilities to determine which API families are accessible.
+    /// Probe org API families: optional checks degrade; mandatory capabilities
+    /// fail closed. `PrivateBranchProtectionRead` GETs one listing sample's legacy
+    /// `/branches/{default}/protection` before full inventory loads: non-admin
+    /// 404 is ambiguous; rulesets return 200 read-only and would fail open.
     ///
-    /// Makes lightweight test calls to key org-level endpoints and records
-    /// which are accessible. This allows the collector to degrade gracefully
-    /// for optional checks while failing closed on mandatory capabilities.
-    ///
-    /// `PrivateBranchProtectionRead` is probed against a single sample repo
-    /// drawn from the org repository listing response above — the full repo
-    /// inventory is not yet loaded at this point in startup — via a real GET
-    /// against that repo's legacy branch-protection endpoint
-    /// (`/branches/{default}/protection`). That endpoint is what the
-    /// capability's own contract claims to guard: it is the endpoint that
-    /// returns an ambiguous 404 for a non-admin token, so it must be the one
-    /// actually probed rather than the rulesets endpoint (which answers 200
-    /// under read-only access and would let the guard fail open).
-    ///
-    /// The sample is one repository, so the result is an org-level signal
-    /// about the credential and never a per-repository verdict. Admin rights
-    /// vary per repository, so a caller holding admin on the sampled repo and
-    /// on no other still yields `Available` here. Classification of an
-    /// individual repository's 404 is decided per repository from its own
-    /// observed authority signal (`AdminAccess`), never from this value.
-    ///
-    /// Other repo-level capabilities (contents, per-repo branch protection,
-    /// etc.) are not probed here — each collector independently calls the
-    /// relevant API and handles permission errors per-repo.
+    /// This credential-level org signal is NEVER a per-repo verdict: admin on
+    /// only the sample still yields `Available`. Each repo's 404 classification
+    /// uses its own observed `AdminAccess`, not this capability.
+    /// Other repo capabilities (contents/protection) are not probed here;
+    /// collectors call APIs and handle permission errors per repository.
     pub async fn probe_capabilities(&self) -> CapabilitySet {
         let repos_list_probe = self
             .request_single(

@@ -1,32 +1,20 @@
 //! GitHub replenish policy for the generic `BudgetGate` seam.
 //!
-//! Supplies the two GitHub-shaped decisions the generic
-//! [`cherry_pit_wq::BudgetGate`] deliberately does not own (COM-0012:R5,
-//! CHE-0102:R5): how long to wait for the upstream quota window to roll,
-//! and how large the next epoch's ceiling may be once it has.
+//! Owns reset waits and next-epoch ceilings outside generic
+//! [`cherry_pit_wq::BudgetGate`] (COM-0012:R5, CHE-0102:R5).
 //!
-//! The wait is derived from GitHub's own `x-ratelimit-reset` timestamp,
-//! already parsed by [`update_from_headers`](super::rate_limit::update_from_headers).
-//! Per CHE-0102:R3 a stated future reset is never shortened; a missing,
-//! already-elapsed, or implausibly distant timestamp is not authoritative
-//! and falls back to [`config::API_BUDGET_WAIT_SECS`], which is bounded
-//! and never shorter than GitHub's hourly window. [`wait_for_reset`]
-//! returns that decision as a [`ResetWait`], so the log can report which
-//! source the wait actually came from instead of merely whether a
-//! timestamp was present.
+//! [`update_from_headers`](super::rate_limit::update_from_headers) parses
+//! `x-ratelimit-reset`: never shorten authoritative future resets (CHE-0102:R3).
+//! Missing/elapsed/implausibly-distant timestamps use bounded
+//! [`config::API_BUDGET_WAIT_SECS`], at least an hourly window.
+//! [`wait_for_reset`] returns [`ResetWait`] identifying the actual logged source.
 //!
-//! The ceiling is re-derived from `x-ratelimit-limit` — the window's
-//! entitlement — and NOT from the pre-reset `remaining`, which is stale
-//! by construction at this point and is what wedged the epoch at a
-//! ceiling of 1 (bd ghr-jiq9z).
+//! Ceiling uses `x-ratelimit-limit` entitlement, NOT stale pre-reset `remaining`
+//! (ceiling-of-1 wedge, ghr-jiq9z).
 //!
-//! Having waited the window out, the policy records the roll with
-//! [`RateLimitState::note_window_rolled`], which carries no quota
-//! reading. It deliberately does NOT write a `remaining` count: no HTTP
-//! response supplied one, and synthesising the entitlement would turn a
-//! measured observer into an inferred one and let admission proceed on
-//! fabricated quota (bd ghr-8i060). The last real reading stays intact
-//! for telemetry; the next real response replaces it.
+//! [`RateLimitState::note_window_rolled`] records roll, NOT inferred quota:
+//! never fabricate `remaining` without HTTP evidence (ghr-8i060).
+//! Preserve last real telemetry reading until next response.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
