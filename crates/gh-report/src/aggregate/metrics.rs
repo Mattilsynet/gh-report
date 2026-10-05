@@ -77,30 +77,18 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 
 /// Aggregate security metrics across repository evidence.
 ///
-/// Aggregation semantics (this is the org-page half of the per-metric
-/// population matrix; the owner-page half lives on
-/// `build_per_control_coverage`'s doc comment — single source for both):
+/// Org-page populations; owner-page semantics live on `build_per_control_coverage`:
 ///
-/// - **Security policy**: counted over **all public** repositories,
-///   including archived, since archived public repos with a policy on
-///   file still reflect published policy surface. Denominator is total
-///   public repos (archived + active).
-/// - **Secret scanning**: counted over the observable subset of
-///   non-archived repos (pass + fail); repos excluded for a
-///   measurement-failure reason (`permission_denied`, `unknown`) feed the
-///   health-score floor, not this denominator.
-/// - **Dependabot, CODEOWNERS**: counted over the observable subset of
-///   non-archived repos (pass + fail); repos excluded for a
-///   measurement-failure reason feed the health-score floor, not this
-///   denominator.
-/// - **Branch protection**: counted over **all** non-archived repos;
-///   denominator is total active repos, so repos the token cannot read
-///   (`permission_denied`/`unknown`) count as not-covered rather than
-///   being dropped. This is the ratified population (bd `ghr-1e6b9b61`);
-///   branch protection is uniquely affected because a large private-repo
-///   fraction returns `permission_denied`.
-/// - **Open secret alert prevalence**: denominator is repos where secret
-///   scanning is enabled AND alerts are observable.
+/// - **Security policy**: all public repositories, archived included; denominator
+///   is total public repos, retaining their published policy surface.
+/// - **Secret scanning, Dependabot, CODEOWNERS**: observable non-archived repos
+///   (pass + fail). Measurement failures (`permission_denied`, `unknown`) feed
+///   the health-score floor, not the denominator.
+/// - **Branch protection**: all non-archived repos; unreadable repos count as
+///   not-covered, never dropped (ratified `ghr-1e6b9b61`). Many private repos
+///   return `permission_denied`.
+/// - **Open secret alert prevalence**: repos with scanning enabled AND
+///   observable alerts.
 #[must_use]
 pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetrics {
     let active: Vec<_> = repositories

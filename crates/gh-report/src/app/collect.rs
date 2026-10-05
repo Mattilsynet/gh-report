@@ -2161,22 +2161,14 @@ pub(crate) async fn render_and_cache_evidence(
 /// render, callers needing barrier-aligned visibility commit via
 /// [`commit_cached_pages`] after the barrier event publishes.
 ///
-/// Streams each rendered page directly into a `CachedPage` instead of
-/// materialising the full page set before compressing, so peak memory
-/// holds ~one raw page plus the accumulating compressed map. Runs via
-/// `block_in_place` (not `spawn_blocking`) so borrowed
-/// `evidence`/`config` never need cloning or `'static`; the loop is
-/// CPU-bound (Askama + zstd) throughout. Kept `async` (no `.await` in
-/// its body) to match the call-chain signature of
-/// [`render_and_cache_evidence`] / [`publish_evidence`];
-/// `block_in_place` needs an async multi-thread-runtime context,
-/// which the `#[allow]` below documents.
+/// Streams into `CachedPage`: peak memory is ~one raw page plus compressed map.
+/// CPU-bound Askama/zstd runs via `block_in_place`, not `spawn_blocking`, avoiding
+/// borrowed `evidence`/`config` cloning or `'static`. Kept `async` without `.await`
+/// for [`render_and_cache_evidence`]/[`publish_evidence`] signatures and the
+/// required async multi-thread-runtime context.
 ///
-/// `#[allow]` rather than `#[expect]`: whether `clippy::unused_async` fires
-/// on this body is unstable across build targets (fires for `--lib`, does
-/// not fire once a `--tests` compilation unit also calls this function),
-/// so `#[expect]` is unfulfilled under `--tests` per AGENTS.md's
-/// documented `#[expect]`-instability exception.
+/// `#[allow]` avoids an unfulfilled `#[expect]`: `clippy::unused_async` fires
+/// for `--lib`, not `--tests` callers (AGENTS.md's instability exception).
 #[allow(
     clippy::unused_async,
     reason = "block_in_place must run inside an async task on a multi-thread runtime; \
@@ -3028,14 +3020,11 @@ fn parked_deadline() -> tokio::time::Instant {
 
 /// Flush the terminal render, if the barrier decision requires one.
 ///
-/// After shutdown is OBSERVED the loop has already been left, and at most
-/// ONE flush render occurs here. Combined with the single uncancelled
-/// in-flight render described on [`transition`], the complete barrier is
-/// delayed by at most TWO render durations: one render that began before
-/// shutdown was observed and completed after shutdown was sent, plus this
-/// one terminal flush. It is NOT delayed by one render — that stronger
-/// claim is false, because the loop cannot atomically snapshot `stopping`
-/// and dispatch the render it authorises.
+/// After shutdown is observed, the loop has exited; at most ONE flush occurs.
+/// With [`transition`]'s uncancelled in-flight render, the barrier can take TWO
+/// render durations: one begun before shutdown observation and completed after
+/// shutdown was sent, plus this flush. A one-render bound is false: snapshotting
+/// `stopping` and dispatching its authorised render are not atomic.
 ///
 /// The barrier is NEVER delayed by the hold-down window. That is the
 /// obligation CHE-0068:R5 actually states, and it holds: the hold-down is

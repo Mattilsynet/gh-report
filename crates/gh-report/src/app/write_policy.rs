@@ -1,11 +1,8 @@
 //! Durable-write-failure response policy (CHE-0088).
 //!
-//! Classifies every [`PersistenceError`] into a closed
-//! [`WritePolicyCategory`] at exactly one conversion chokepoint, then
-//! dispatches each category to exactly one of three responses via an
-//! exhaustive match with no wildcard arm (CHE-0088:R7). This makes
-//! per-callsite silent-swallow of a durable-write failure
-//! non-representable rather than merely discouraged.
+//! Every [`PersistenceError`] becomes a closed [`WritePolicyCategory`] at one
+//! chokepoint; an exhaustive, wildcard-free match dispatches three responses
+//! (CHE-0088:R7), preventing per-callsite silent swallowing.
 //!
 //! ## Logging (SEC-0007:R1/R2)
 //!
@@ -311,21 +308,16 @@ fn classify_attempt(result: Result<(), PersistenceError>, attempt: u8) -> RetryS
     }
 }
 
-/// Attempt a durable write once, and on a `BoundedRetry`-classified
-/// failure, retry `op` up to [`BOUNDED_RETRY_ATTEMPTS`] more times with
-/// a fixed small delay between attempts (CHE-0046: explicit, bounded
-/// retry — never an unbounded loop).
+/// Write once; on `BoundedRetry`, retry `op` up to [`BOUNDED_RETRY_ATTEMPTS`]
+/// more times with fixed small delays (CHE-0046: bounded, never unbounded).
 ///
 /// EVERY observed failure is classified, including those observed on a
 /// retry attempt: a `Fatal`-routed failure returns immediately even when
 /// an earlier attempt was `Transient`, so a later success can never mask
 /// an intervening lost fence (PGN-0016:R2, CHE-0088:R3).
 ///
-/// Every category resolves to the same response at every call site
-/// (jxma5): this helper is shared by every durable-write caller, so a
-/// `Transient` failure retries identically whether encountered at
-/// startup, in the delivery loop, during sweep/reconcile, or in the
-/// webhook handler.
+/// Every durable-write caller shares identical category responses (jxma5):
+/// startup, delivery, sweep/reconcile and webhook `Transient` failures retry alike.
 ///
 /// Returns `Ok(())` once `op` succeeds, or the last classified failure
 /// once retries (if any) are exhausted.

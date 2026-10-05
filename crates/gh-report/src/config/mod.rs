@@ -109,25 +109,14 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 /// Fixed interval between collection runs (seconds). Timer starts after
 /// the previous collection completes.
 ///
-/// One hour, aligned to GitHub's hourly REST quota replenishment. A full
-/// refresh wave costs ~4,079 calls against ~5,000 replenished per hour.
-/// At the previous 900s cadence that demanded up to four waves per hour
-/// (~16,316 calls/h), 3.26x more than the quota supplies — so the
-/// collector necessarily exhausted its budget and stalled for
-/// [`API_BUDGET_WAIT_SECS`]; the observed exhaust-then-pause cycle was
-/// the arithmetic consequence of the cadence, not a fault. At 3600s one
-/// wave consumes 81.6% of an hour's quota, leaving ~921 calls of
-/// headroom.
+/// Hourly REST replenishment: ~4,079 calls/wave against ~5,000/hour.
+/// Previous 900s demanded ~16,316/hour (3.26x quota), exhausting budget and
+/// pausing for [`API_BUDGET_WAIT_SECS`]. Hourly waves use 81.6%, leaving ~921 calls.
 ///
-/// The cost of a longer period (FLO-0012:R1 — both sides, not one): peak
-/// staleness of a report rises from 15 to 60 minutes, and the
-/// `CollectionRunStale` red flag (derived as 2x this interval in
-/// `report::view_model`) now takes 2h rather than 30min to surface a
-/// wedged daemon. The cost of a shorter period is quota exhaustion and
-/// the stall above, which suppresses collection far more than the
-/// cadence nominally schedules. The observation that would shift this
-/// optimum is the per-wave call count: materially below ~2,500 calls
-/// would make a 1800s cadence affordable again.
+/// Trade-off (FLO-0012:R1): staleness rises 15→60 minutes; `CollectionRunStale`
+/// (2x interval, `report::view_model`) detects wedging at 2h, formerly 30min.
+/// Shorter periods cause longer quota stalls; materially below ~2,500 calls/wave
+/// would permit 1800s again.
 ///
 /// Frequency is cut, information is not: every repository, control and
 /// field is still collected on every tick.
@@ -140,84 +129,33 @@ pub const COLLECTION_INTERVAL_SECS: u64 = 3_600;
 /// `3_600 / 60 = 60`.
 pub const COLLECTION_RETRY_INTERVAL_SECS: u64 = 60;
 
-/// Maximum age (seconds) a baseline entry may be reused for, even when
-/// the repository's `updated_at` still matches the baseline's recorded
-/// value.
+/// Wall-clock baseline reuse bound, even with matching `updated_at`:
+/// protection/ruleset changes do not bump it (`infra::baseline::should_reuse`).
+/// Forces one evaluation/repo/window; accepted settings-only drift is ≤24h
+/// (ghr-4fabk); ghr-d1176f2a would decouple settings collection.
 ///
-/// GitHub does not bump a repository's `updated_at` when its
-/// branch-protection rules or rulesets change, so an `updated_at` match
-/// alone cannot prove a cached settings verdict is still correct
-/// (`infra::baseline::should_reuse`). This bound is the only thing that
-/// catches settings-only drift: it forces periodic re-collection
-/// regardless of `updated_at`, at the known cost of one extra
-/// evaluation per repository per window.
+/// Cost evidence (ghr-1lyih): 4,079 calls/744 pending repos, 81.6% hourly quota;
+/// ~4,854 is a shared epoch, NOT run cost; 771 org repos is environmental.
+/// 24h reduces forced waves 6/day→1/day versus 4h; evaluation fan-out follows
+/// changed repos, but total cost does NOT: paginated inventory and org alerts
+/// precede filtering every tick. Scales with org size/scrape depth.
 ///
-/// The bound is wall-clock, not cycle-count: it caps how long a stale
-/// settings verdict may be served, independent of how often the
-/// collector ticks.
-///
-/// 24 hours is a cost-driven choice. The measured full-wave collection
-/// run spent 4,079 API calls — 81.6% of a single hourly quota — to
-/// re-evaluate 744 pending repositories, the same run-scoped figure
-/// [`COLLECTION_INTERVAL_SECS`] is tuned against. The larger ~4,854
-/// figure recorded alongside it is a shared gate-epoch counter spanning
-/// prior runs and the independent team-refresh loop, not one run's cost,
-/// and is deliberately not the number used here (ghr-1lyih, which also
-/// records the 771-repository org size as an environment-derived
-/// observation rather than a code-verifiable constant). A bound that
-/// forces such a wave every 4 hours spends six of them a day and does
-/// not scale with either org size or per-repo scrape depth. At 24h
-/// forced full rescans drop from 6/day to 1/day, and the pending
-/// per-repository evaluation fan-out becomes proportional to the
-/// repositories that changed rather than to the whole inventory. Total
-/// per-run cost is not O(repositories changed): the full paginated
-/// inventory fetch and org-alert collection run on every tick, before
-/// baseline filtering. Worst-case staleness stays bounded at 24 hours.
-///
-/// FLO-0002:R2 harmonicity holds: `86_400` / [`COLLECTION_INTERVAL_SECS`]
-/// = 24, an integer number of collection cycles. Retuning the collection
-/// cadence changes the cycle count but not this bound.
-///
-/// Residual risk is consciously accepted: settings-only drift can stay
-/// invisible to the `updated_at` signal for up to a day (ghr-4fabk).
-/// ghr-d1176f2a would decouple settings collection from this bound
-/// entirely and remove the trade-off rather than retune it.
+/// FLO-0002:R2: `86_400` / [`COLLECTION_INTERVAL_SECS`] = 24 cycles;
+/// cadence retuning changes cycles, not this wall-clock bound.
 pub const BASELINE_MAX_AGE_SECS: u64 = 86_400;
 
-/// Fixed interval between team-refresh collector ticks (seconds),
-/// deliberately decoupled from [`COLLECTION_INTERVAL_SECS`] (ghr-3fda2878,
-/// roadmap ghr-b562fe02 §E Phase 3 T1: decoupled/eventual default). This
-/// severs the repo-snapshot↔roster-fetch coupling that caused
-/// unresolved-by-timing raciness: the team-refresh writer persists
-/// `TeamStateCaptured` on its own cadence, independent of whether a repo
-/// collect cycle is in flight.
+/// Daily team-refresh interval, independent of repo cycles/raciness:
+/// `TeamStateCaptured` persists on its own cadence (ghr-3fda2878,
+/// ghr-b562fe02 §E Phase 3 T1). Membership follows hiring/offboarding, not CI;
+/// prior 1800s fetched `T + 1` sets 48/day against 81.6%-consumed quota.
+/// FLO-0002:R2: 86400/3600 = 24.
 ///
-/// 24 hours. Team membership changes on a human hiring/offboarding
-/// timescale, not a CI timescale, so a daily roster sweep is the
-/// business-appropriate period; the previous 1800s spent a full
-/// `T + 1` fetch set (T = CODEOWNERS-referenced teams) 48 times a day
-/// against a quota [`COLLECTION_INTERVAL_SECS`] already consumes 81.6%
-/// of. FLO-0002:R2 harmonicity holds: 86400/3600 = 24, an integer
-/// number of collection cycles.
-///
-/// A longer PERIOD must not become a LOSS OF INFORMATION. Two things
-/// keep it from being one, and both are load-bearing:
-///
-/// - Every tick still fetches every CODEOWNERS-referenced team's full
-///   roster and the same org-members cross-check. The per-team cost
-///   halved from two paginated fetch sets to `T` when the redundant
-///   `role=maintainer` fetch was deleted, but that removed a REQUEST,
-///   not a field: role now comes from the `role=all` response, which
-///   always carried it. Frequency is cut and cost is cut; coverage is
-///   not.
-/// - [`crate::app::daemon`] runs one refresh at STARTUP before entering
-///   this period. Without it a Cloud Run revision would serve an empty
-///   or rehydrated-only roster for a full 24 hours.
-///
-/// Per GND-0011:R6 a lag bound is not design intent unless it is
-/// observed and reported: the owner-detail page renders each team's
-/// roster age, derived at render time from the persisted
-/// `TeamStateCaptured.fetched_at`.
+/// Coverage unchanged: every CODEOWNERS team's full roster and org-members
+/// cross-check remain. Removing `role=maintainer` halved per-team requests to
+/// `T`, not fields: `role=all` supplies roles.
+/// [`crate::app::daemon`] refreshes at STARTUP, avoiding 24h empty/rehydrated-only
+/// rosters after Cloud Run revision. GND-0011:R6: owner-detail pages report
+/// roster age derived at render time from persisted `TeamStateCaptured.fetched_at`.
 pub const TEAM_REFRESH_INTERVAL_SECS: u64 = 86_400;
 
 /// Interval between polls for the lazily-initialised GitHub client while
@@ -245,18 +183,12 @@ pub const WORK_QUEUE_CAPACITY: usize = 10_000;
 /// Hold-down window the partial publisher observes after a render
 /// completes, before it will render again.
 ///
-/// This is the canonical location for the value (COM-0027:R1); the
-/// matching prose lives in CHE-0068:R3, amended from one second to ten
-/// in the same change set that introduced this constant (COM-0027:R3).
-/// There is no second hand-maintained representation, and no literal at
-/// the call site (COM-0027:R4).
+/// Canonical 120-second value (COM-0027:R1/R3/R4); CHE-0068:R3 owns matching
+/// semantics, not a second hand-maintained value or call-site literal.
 ///
-/// The render trigger is the budget-gate epoch-pause notification
-/// (`crate::app::collect` wires `set_budget_pause_notify`, fired by
-/// `cherry_pit_wq::budget`), not a `RepoEvaluated` event — there is no
-/// `RepoEvaluated` signal on this path. A pause follows a chunk of
-/// evaluated repositories, so it stands in for "new information landed"
-/// in effect, but the mechanism is the pause hook.
+/// Trigger: budget-gate epoch-pause hook, NOT `RepoEvaluated`;
+/// `crate::app::collect` wires `set_budget_pause_notify`, fired by
+/// `cherry_pit_wq::budget` after an evaluated chunk (new information).
 ///
 /// Semantics are leading-edge: a signal arriving while idle renders
 /// immediately, and the hold-down is measured from render COMPLETION,

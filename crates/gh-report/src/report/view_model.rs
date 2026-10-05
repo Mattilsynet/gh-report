@@ -3007,13 +3007,9 @@ const WIDTH_CLASSES: [&str; 21] = [
 /// "Org Governance" is the internal short name for the organization-wide
 /// score the dashboard labels "Overall Organization Governance Score".
 ///
-/// This function is arity-agnostic — it means the geometric mean over
-/// whatever rates the caller supplies. The two callers supply different
-/// sets: Org Governance passes seven org-level rates (Security Policy,
-/// Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival
-/// Coverage, Alert-Free Status); Team Health passes seven owner-level rates (Security Policy,
-/// Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free,
-/// Non-Orphaned). `None` (N/A) is excluded, not zeroed.
+/// Arity-agnostic. Org's seven rates: Security Policy, Secret Scanning,
+/// Dependabot, Branch Protection, CODEOWNERS, Archival Coverage, Alert-Free.
+/// Team's seven replace CODEOWNERS/Archival with Freshness/Non-Orphaned.
 ///
 /// Rates clamp to `[0.0, 100.0]`. A genuine `0.0` floors to `0.1` so
 /// one zero-rate control doesn't collapse the mean.
@@ -3023,11 +3019,9 @@ const WIDTH_CLASSES: [&str; 21] = [
 ///
 /// # Ratified rule
 ///
-/// - `None` excludes rather than coercing to `0.0`: coercing would
-///   zero the whole product regardless of other scores. `None` means
-///   *no applicable population*; an unmeasured-but-applicable
-///   control floors to a real failure upstream instead.
-/// - A genuine `0.0` floors for the same reason, reversed.
+/// `None` means no applicable population: exclude, never zero the product.
+/// Unmeasured-but-applicable controls floor to real failure upstream instead.
+/// Genuine zero floors to preserve the product.
 pub(crate) fn compute_health_score(rates: &[Option<f64>]) -> Option<f64> {
     let available: Vec<f64> = rates
         .iter()
