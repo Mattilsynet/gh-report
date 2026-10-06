@@ -465,13 +465,13 @@ impl RepoRecorder for AppState {
 /// loop that resent the same stale cached sequence every tick forever.
 /// Bounded by `max_attempts`; exhausting the cap surfaces a typed
 /// [`RearmError`] rather than looping forever.
-struct RearmPolicy {
+pub(crate) struct RearmPolicy {
     max_attempts: u32,
     backoff_base: Duration,
 }
 
 impl RearmPolicy {
-    const DEFAULT: Self = Self {
+    pub(crate) const DEFAULT: Self = Self {
         max_attempts: 3,
         backoff_base: Duration::from_secs(2),
     };
@@ -480,7 +480,7 @@ impl RearmPolicy {
 /// Terminal give-up surface for [`converge_on_fence`] / [`rearm_after_fenced_conflict`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-enum RearmError<E: std::error::Error + 'static> {
+pub(crate) enum RearmError<E: std::error::Error + 'static> {
     #[error("fence-conflict re-arm exhausted after {attempts} attempt(s): resync failed: {source}")]
     ResyncFailed {
         attempts: u32,
@@ -567,7 +567,7 @@ where
 /// `resync`, then retry via `run`, bounded by `policy`. Thin
 /// [`collect::CollectionOutcome`]-shaped wrapper over the shared
 /// [`converge_on_fence`] sink.
-async fn rearm_after_fenced_conflict<Resync, ResyncFut, Run, RunFut>(
+pub(crate) async fn rearm_after_fenced_conflict<Resync, ResyncFut, Run, RunFut>(
     policy: &RearmPolicy,
     resync: Resync,
     mut run: Run,

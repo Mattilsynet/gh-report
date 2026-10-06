@@ -677,8 +677,7 @@ roster. Neither run mutates source.
 Four-step enforcement proof (2026-09-18, toolchain 1.98.0): clean run exit 0;
 removed the `question_mark_used` allow entry from the root `Cargo.toml`
 → exit 1 with `FAIL excluded: clippy::question_mark_used fired but is
-allowed at priority 0`; reverted the manifest; clean run exit 0 again;
-`git diff --check` exit 0.
+allowed at priority 0`; reverted the manifest; clean run exit 0 again.
 
 Observed fail→clean transitions during construction (not a merge-gate proof):
 `struct_excessive_bools` fired on `RepositoryFlags`, the exclusion was added,
