@@ -3,8 +3,10 @@
 Mission: `ghr-x2dys` (fence-lifecycle-20261005), child `ghr-x2dys.1`.
 This document names lifecycle ownership and dispositions, distinguishing
 **observed** behavior from **Unknown** evidence. It is **not an ADR**: it
-ratifies no delegation (CHE-0088:R10 delegated semantics remain unratified,
-ghr-jj7eq GAP-4) and edits no binding rule. Binding ADRs are cited where a
+ratifies no delegation (CHE-0088 R9/R10 are accepted — sanctioned convergence
+sink and its CI tripwire, CHE-0088-*.md:40-42; in-append resync remains
+forbidden by PGN-0016:R10, PGN-0016-*.md:67-71; ghr-jj7eq GAP-4 marks a
+distinct still-unresolved delegation) and edits no binding rule. Binding ADRs are cited where a
 disposition is ADR-anchored; everything else is a code/test observation on
 HEAD `955d1f21`.
 
