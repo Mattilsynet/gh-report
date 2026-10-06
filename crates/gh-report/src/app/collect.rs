@@ -7875,6 +7875,400 @@ mod tests {
         let _delivery_result = delivery.await;
     }
 
+    struct CommittedThenFencingRecorder {
+        state: Arc<AppState>,
+        allow: std::sync::atomic::AtomicBool,
+        repo1_attempts: std::sync::atomic::AtomicUsize,
+        repo2_attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::app::daemon::RepoRecorder for CommittedThenFencingRecorder {
+        fn record_repo(
+            &self,
+            domain_key: &str,
+            evidence: RepositoryEvidence,
+            repo_name: &str,
+            timestamp: &str,
+        ) -> Result<(), WriteFailure> {
+            if domain_key == "id-repo-1" {
+                self.repo1_attempts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return crate::app::daemon::RepoRecorder::record_repo(
+                    &*self.state,
+                    domain_key,
+                    evidence,
+                    repo_name,
+                    timestamp,
+                );
+            }
+            self.repo2_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.allow.load(std::sync::atomic::Ordering::SeqCst) {
+                return crate::app::daemon::RepoRecorder::record_repo(
+                    &*self.state,
+                    domain_key,
+                    evidence,
+                    repo_name,
+                    timestamp,
+                );
+            }
+            Err(WriteFailure::classify(PersistenceError::FencedConflict {
+                expected_seq: Some(8901),
+                actual_seq: Some(8902),
+                source: Box::new(std::io::Error::other("wrong last sequence")),
+            }))
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the two-stage deterministic interrupted-run fixture spans two full collection runs and their assertions; splitting it would duplicate run-1 state construction across sibling tests"
+    )]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn committed_before_rejected_history_survives_and_recollection_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+
+        let fresh = "2026-04-10T00:00:00Z";
+
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![
+                arc_repo_with_updated_at("repo-1", Some(fresh)),
+                arc_repo_with_updated_at("repo-2", Some(fresh)),
+            ],
+            true,
+        );
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            move |repo: &Repository, _ts: &str| {
+                let mut evidence = crate::test_fixtures::all_passing_evidence(&repo.name);
+                evidence.repository.updated_at = crate::domain::repository::UpdatedAt::new(fresh);
+                Ok(evidence)
+            },
+        )));
+
+        let recorder = Arc::new(CommittedThenFencingRecorder {
+            state: Arc::clone(&state),
+            allow: std::sync::atomic::AtomicBool::new(false),
+            repo1_attempts: std::sync::atomic::AtomicUsize::new(0),
+            repo2_attempts: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (pool, delivery) = start_test_worker_pool_with_recorder(
+            &state,
+            Arc::clone(&evaluator),
+            1,
+            Arc::clone(&recorder),
+        );
+
+        let run = test_run_meta_at("2026-04-09T12:00:05+00:00");
+        let mut saga = make_test_saga(&config, &run);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run_collection_inner_with_pipeline(&cancel, async {
+                saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+                    .await
+                    .map(|()| 0)
+            }),
+        )
+        .await
+        .expect("the interrupted run must reach the collection boundary")
+        .expect("the fenced run aborts through the collection boundary");
+
+        assert_eq!(
+            outcome,
+            CollectionOutcome::FencedConflict,
+            "repo-2's fence must abort the run (PGN-0016:R2), not report Completed"
+        );
+        assert!(
+            state.projection_contains("id-repo-1"),
+            "the record committed before the fence must survive the aborted run"
+        );
+        assert!(
+            !state.projection_contains("id-repo-2"),
+            "the fenced record must not be committed"
+        );
+        assert!(
+            !state.run_is_fenced(),
+            "the latched fence is consumed at the run boundary, not leaked into the next run"
+        );
+        assert_eq!(
+            recorder
+                .repo1_attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "repo-1's committed write is attempted exactly once"
+        );
+        assert_eq!(
+            recorder
+                .repo2_attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "repo-2's superseded write is attempted once and rejected"
+        );
+
+        recorder
+            .allow
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let run2 = test_run_meta_at("2026-04-09T12:00:05+00:00");
+        let nats = crate::config::runtime::NatsStoreConfig::for_org("TestOrg", "nats://loopback")
+            .expect("test org store config");
+        let cancel2 = tokio_util::sync::CancellationToken::new();
+        let outcome2 = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            crate::app::daemon::rearm_after_fenced_conflict(
+                &crate::app::daemon::RearmPolicy::DEFAULT,
+                || {
+                    state.resync_event_store(
+                        std::path::Path::new(""),
+                        crate::config::runtime::PardosaBackend::Pgno,
+                        nats.clone(),
+                    )
+                },
+                || {
+                    let config_ref = &config;
+                    let run2_ref = &run2;
+                    let inventory_ref = &inventory;
+                    let ctx_ref = &ctx;
+                    let state_ref = &state;
+                    let cancel2_ref = &cancel2;
+                    async move {
+                        let mut saga = make_test_saga(config_ref, run2_ref);
+                        saga_run_resume_and_baseline(
+                            &mut saga,
+                            inventory_ref,
+                            config_ref,
+                            run2_ref,
+                            state_ref,
+                        );
+                        run_collection_inner_with_pipeline(cancel2_ref, async {
+                            saga_step_enqueue_and_await(
+                                &mut saga,
+                                config_ref,
+                                run2_ref,
+                                ctx_ref,
+                                inventory_ref,
+                                state_ref,
+                            )
+                            .await
+                            .map(|()| 0)
+                        })
+                        .await
+                    }
+                },
+            ),
+        )
+        .await
+        .expect("the rearm must reach the collection boundary");
+
+        assert!(
+            matches!(outcome2, Ok(CollectionOutcome::Completed { .. })),
+            "the converged re-run completes, got {outcome2:?}"
+        );
+        assert!(
+            state.projection_contains("id-repo-2"),
+            "the previously discarded record is recollected on the cross-run reown (PGN-0016:R2)"
+        );
+        assert!(
+            !state.run_is_fenced(),
+            "the fence latch consumed at the run boundary is not restored by the rearm"
+        );
+        assert_eq!(
+            recorder
+                .repo1_attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "committed-before-rejected history is reused, not re-appended — idempotent recollection (CHE-0041)"
+        );
+        assert_eq!(
+            recorder
+                .repo2_attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the discarded record is re-collected exactly once more"
+        );
+        let rearmed = state.event_store.events_with_fibers().expect(
+            "the real event store replays committed history after the authoritative resync",
+        );
+        let appends_for = |key: &str| {
+            rearmed
+                .iter()
+                .filter(|(_, _, event)| {
+                    matches!(
+                        event,
+                        crate::event::DomainEvent::RepositoryStateCaptured { domain_key, .. }
+                            if domain_key.as_str() == key
+                    )
+                })
+                .count()
+        };
+        assert_eq!(
+            appends_for("id-repo-1"),
+            1,
+            "committed history after the authoritative resync contains repo-1 exactly once"
+        );
+        assert_eq!(
+            appends_for("id-repo-2"),
+            1,
+            "committed history after the authoritative resync contains repo-2 exactly once — the discarded attempt was never appended"
+        );
+
+        state.work_queue.close();
+        pool.abort();
+        delivery.abort();
+        let _pool_result = pool.await;
+        let _delivery_result = delivery.await;
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the deterministic cancellation schedule needs the same real interrupted-run setup as the sibling rearm test; extracting it would churn the approved fixture boundary"
+    )]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rearm_cancelled_after_fence_preserves_committed_history_and_reports_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+
+        let fresh = "2026-04-10T00:00:00Z";
+
+        let inventory = AdmittedInventory::from_test_repos(
+            vec![
+                arc_repo_with_updated_at("repo-1", Some(fresh)),
+                arc_repo_with_updated_at("repo-2", Some(fresh)),
+            ],
+            true,
+        );
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            move |repo: &Repository, _ts: &str| {
+                let mut evidence = crate::test_fixtures::all_passing_evidence(&repo.name);
+                evidence.repository.updated_at = crate::domain::repository::UpdatedAt::new(fresh);
+                Ok(evidence)
+            },
+        )));
+
+        let recorder = Arc::new(CommittedThenFencingRecorder {
+            state: Arc::clone(&state),
+            allow: std::sync::atomic::AtomicBool::new(false),
+            repo1_attempts: std::sync::atomic::AtomicUsize::new(0),
+            repo2_attempts: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (pool, delivery) = start_test_worker_pool_with_recorder(
+            &state,
+            Arc::clone(&evaluator),
+            1,
+            Arc::clone(&recorder),
+        );
+
+        let run = test_run_meta_at("2026-04-09T12:00:05+00:00");
+        let mut saga = make_test_saga(&config, &run);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run_collection_inner_with_pipeline(&cancel, async {
+                saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+                    .await
+                    .map(|()| 0)
+            }),
+        )
+        .await
+        .expect("the interrupted run must reach the collection boundary")
+        .expect("the fenced run aborts through the collection boundary");
+
+        assert_eq!(
+            outcome,
+            CollectionOutcome::FencedConflict,
+            "repo-2's fence must abort the run (PGN-0016:R2), not report Completed"
+        );
+        assert!(
+            state.projection_contains("id-repo-1"),
+            "the record committed before the fence must survive the aborted run"
+        );
+        assert!(
+            !state.projection_contains("id-repo-2"),
+            "the fenced record must not be committed"
+        );
+
+        recorder
+            .allow
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let cancel_at = tokio_util::sync::CancellationToken::new();
+        cancel_at.cancel();
+        let nats = crate::config::runtime::NatsStoreConfig::for_org("TestOrg", "nats://loopback")
+            .expect("test org store config");
+        let rearmed = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            crate::app::daemon::rearm_after_fenced_conflict(
+                &crate::app::daemon::RearmPolicy::DEFAULT,
+                || {
+                    state.resync_event_store(
+                        std::path::Path::new(""),
+                        crate::config::runtime::PardosaBackend::Pgno,
+                        nats.clone(),
+                    )
+                },
+                || {
+                    run_collection_inner_with_pipeline(
+                        &cancel_at,
+                        std::future::pending::<Result<usize, AppError>>(),
+                    )
+                },
+            ),
+        )
+        .await
+        .expect("the cancelled rearm must reach the collection boundary");
+
+        assert!(
+            matches!(rearmed, Ok(CollectionOutcome::Cancelled)),
+            "a cancelled rearm must surface CollectionOutcome::Cancelled (rearm_fenced_run logs 'aborted on shutdown'), got {rearmed:?}"
+        );
+        assert!(
+            state.projection_contains("id-repo-1"),
+            "the record committed before the fence is preserved across the cancelled rearm"
+        );
+        assert!(
+            !state.projection_contains("id-repo-2"),
+            "the fenced record is not committed by the cancelled rearm"
+        );
+        assert!(
+            !state.run_is_fenced(),
+            "the cancelled rearm does not restore or leak the fence latch"
+        );
+        let preserved = state.event_store.events_with_fibers().expect(
+            "the real event store replays committed history after the cancelled rearm's resync",
+        );
+        assert_eq!(
+            preserved
+                .iter()
+                .filter(|(_, _, event)| {
+                    matches!(
+                        event,
+                        crate::event::DomainEvent::RepositoryStateCaptured { domain_key, .. }
+                            if domain_key.as_str() == "id-repo-1"
+                    )
+                })
+                .count(),
+            1,
+            "committed history is preserved after the authoritative resync beneath the cancelled rearm"
+        );
+
+        state.work_queue.close();
+        pool.abort();
+        delivery.abort();
+        let _pool_result = pool.await;
+        let _delivery_result = delivery.await;
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn step_finalize_renders_from_native_projection() {
         let dir = tempfile::tempdir().unwrap();
