@@ -54,7 +54,7 @@ mod tests {
 
         assert!(cfg.team_access.contact.is_none());
         assert!(cfg.team_access.governance_model.is_none());
-        assert!(cfg.team_access.help_links.is_empty());
+        assert_eq!(cfg.team_access.help_links.len(), 0);
     }
 
     #[test]

@@ -1366,7 +1366,7 @@ mod tests {
             headers: None,
             truncated: false,
         };
-        assert!(evaluate_org_alert_outcome(&empty).unwrap().is_empty());
+        assert_eq!(evaluate_org_alert_outcome(&empty).unwrap().len(), 0);
     }
 
     fn sample_repo(id: &str, node_id: Option<&str>, name: &str) -> Arc<Repository> {

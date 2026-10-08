@@ -4733,7 +4733,7 @@ mod tests {
         let empty_val = ValidatedInventory::from_test_parts(vec![], true, None).unwrap();
         let empty = empty_val.admit(config::MaxRepos::new(10).unwrap());
         assert_eq!(empty.total_discovered(), 0);
-        assert!(empty.active_repos().is_empty());
+        assert_eq!(empty.active_repos().len(), 0);
         assert!(!empty.is_capped());
         assert!(empty.is_complete());
         assert!(empty.deletion_authority().is_none());
@@ -4833,7 +4833,7 @@ mod tests {
         .unwrap();
         let max = config::MaxRepos::default();
         let bounded = bound_active_repositories(&inventory, max);
-        assert!(bounded.active_repos().is_empty());
+        assert_eq!(bounded.active_repos().len(), 0);
         assert!(!bounded.is_capped());
         assert_eq!(bounded.total_discovered(), 0);
         assert!(bounded.is_complete());
@@ -5012,7 +5012,7 @@ mod tests {
         let current_meta = current.as_ref().as_ref().expect("current run present");
         assert_eq!(current_meta.coverage, run.coverage);
 
-        assert!(state.projection_deleted_snapshot().is_empty());
+        assert_eq!(state.projection_deleted_snapshot().len(), 0);
         for evidence in &repos {
             assert!(state.projection_contains(&evidence.repository.inventory_key));
         }
@@ -5101,7 +5101,7 @@ mod tests {
 
         let empty_val = ValidatedInventory::from_test_parts(vec![], true, None).unwrap();
         let empty = empty_val.admit(config::MaxRepos::new(10).unwrap());
-        assert!(empty.active_repos().is_empty());
+        assert_eq!(empty.active_repos().len(), 0);
         assert!(
             empty.deletion_authority().is_none(),
             "empty inventory must never authorize deletion"
@@ -8425,7 +8425,7 @@ mod tests {
             .expect("skip failed inventory");
 
         assert!(state.projection_contains(&domain_key));
-        assert!(state.projection_deleted_snapshot().is_empty());
+        assert_eq!(state.projection_deleted_snapshot().len(), 0);
     }
 
     #[tokio::test]
@@ -8459,7 +8459,7 @@ mod tests {
         for key in keys {
             assert!(state.projection_contains(&key));
         }
-        assert!(state.projection_deleted_snapshot().is_empty());
+        assert_eq!(state.projection_deleted_snapshot().len(), 0);
     }
 
     #[tokio::test]
@@ -8485,7 +8485,7 @@ mod tests {
             .expect("skip partial inventory");
 
         assert!(state.projection_contains(&key));
-        assert!(state.projection_deleted_snapshot().is_empty());
+        assert_eq!(state.projection_deleted_snapshot().len(), 0);
     }
 
     #[tokio::test]
@@ -8515,7 +8515,7 @@ mod tests {
             .expect("enqueue");
 
         assert!(state.projection_contains(&domain_key));
-        assert!(state.projection_deleted_snapshot().is_empty());
+        assert_eq!(state.projection_deleted_snapshot().len(), 0);
         state.work_queue.close();
     }
 

@@ -51,7 +51,7 @@ High-assurance testing techniques—such as property-based testing (proptest), f
 - Target class: `service-unattended` (as mapped in `sf-sdlc.toml`).
 - Real entrypoint: `gh-report` (GitHub org evidence collector + HTML reporter daemon).
 - Canonical verification entrypoint: `scripts/verify.sh`
-- Rust workspace (edition 2024, MSRV 1.98, resolver 3, 3 member crates) shipping one
+- Rust workspace (edition 2024, MSRV 1.99, resolver 3, 3 member crates) shipping one
   binary, web client and checker, consuming an external ADR-governed library family:
   - `adr-fmt` (ADR validator, read-only) from `Mattilsynet/adr-fmt`.
   - `comment-free` (doc-lint tool) from `acje/comment-free`.
@@ -81,7 +81,7 @@ must define and satisfy explicit resource bounds:
   All durable state written to disk must use the atomic sequence:
   `write temporary file` $\rightarrow$ `fsync file` $\rightarrow$ `atomic rename` $\rightarrow$ `fsync parent directory`.
 
-### Build / test / verify (local cadence; boundary mirrors CI)
+### Build / test / verify (three-tier local cadence; BOUNDARY is the local host owner)
 Three-tier verify cadence — INNER (per increment), MID (per sub-mission,
 ONCE), BOUNDARY (per epic, ONCE). The done-claim is **tier-scoped**: a claim
 is backed by the tier whose scope matches the claim's scope — a sub-mission
@@ -124,26 +124,29 @@ done-claim is backed by MID; the EPIC done-claim is backed by BOUNDARY.
   clippy`, one flag per name including `<changed-crate>` itself.
 
 - **BOUNDARY** (ONCE per EPIC, before the epic done-claim; full workspace;
-  exit-code criterion: all four commands below exit 0):
+  exit-code criterion: `scripts/verify.sh` exits 0 on the actual checkout):
   ```sh
-  cargo build --workspace --all-features --locked
-  timeout 900 cargo test --workspace --all-features --locked --no-fail-fast
-  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-  cargo fmt --all -- --check
   sh scripts/verify.sh
   ```
-  `timeout 900` is mandatory on the BOUNDARY test line.
+  `scripts/verify.sh` is the single local host BOUNDARY execution owner; its
+  executable command spelling and order are authoritative there and are not
+  restated here. It runs all nine tripwires first, then the workspace test
+  line once with `timeout 900` and `--no-fail-fast` mandatory (the `atest`
+  alias carries `--no-fail-fast`; the `aclippy` alias carries
+  `--message-format=short`), then workspace Clippy (all targets) and rustfmt,
+  stopping on the first stage failure (`set -eu`).
   **Exit 124 is `Outcome::Surprise`, NEVER a test failure.** Investigate the stall;
   do not fold it into a failure count.
-  `--no-fail-fast` is mandatory on the BOUNDARY test line.
-  Doctests ride the BOUNDARY `cargo test --workspace` line above.
+  Doctests ride the BOUNDARY test line inside `scripts/verify.sh`.
+  Browser/WASM checks, the comment-free doc budget, and the `cargo audit` /
+  `cargo deny` supply-chain gates are separate obligations outside this runner.
 
 - `clippy::pedantic` is the **standing bar**, not an elevation
   (`[workspace.lints.clippy] pedantic = warn` + CI `-D warnings`). New code must
   pass pedantic with zero warnings.
 - `rustfmt` runs on **stable defaults only** (RST-0003:R3); there is no custom
   `rustfmt.toml` style. Don't add format config.
-- `rust-toolchain.toml` pins channel 1.98 (clippy+rustfmt). Use it; don't bump.
+- `rust-toolchain.toml` pins channel 1.99 (clippy+rustfmt). Use it; don't bump.
 
 ### Supply Chain Gates
 `cargo deny check` and `cargo audit` are the supply-chain controls.

@@ -876,6 +876,7 @@ fn spawn_collection_loop(
                     warn!(
                         unscanned,
                         consecutive_retries,
+                        planned_retry_secs = collection_interval(consecutive_retries).as_secs(),
                         rss_kb = ?read_rss_kb(),
                         projection_repo_count = state.projection_len(),
                         projection_bytes_deep = ?state.projection_bytes_deep(),
@@ -913,17 +914,29 @@ fn spawn_collection_loop(
                         response = ?failure.response,
                         owner_id = %state.owner_id,
                         consecutive_retries,
+                        planned_retry_secs = collection_interval(consecutive_retries).as_secs(),
                         source_chain = source_chain(&failure.error).as_str(),
                         "collection skipped: lock held"
                     );
                 }
                 Err(e) => {
                     consecutive_retries = consecutive_retries.saturating_add(1);
-                    error!(error = %e, consecutive_retries, "scheduled collection failed");
+                    log_scheduled_collection_failure(&e, consecutive_retries);
                 }
             }
         }
     })
+}
+
+fn log_scheduled_collection_failure(error: &AppError, consecutive_retries: u32) {
+    let source_chain = source_chain(error);
+    error!(
+        error = %error,
+        consecutive_retries,
+        planned_retry_secs = collection_interval(consecutive_retries).as_secs(),
+        source_chain = source_chain.as_str(),
+        "scheduled collection failed"
+    );
 }
 
 fn log_initial_collection_failure(error: &AppError) {
@@ -1354,6 +1367,9 @@ fn log_job_persist_failure(
             repo = %repo_name,
             source = ?source,
             duration_ms = duration.as_millis(),
+            attempt = failure.attempt,
+            configured_retries_max = crate::app::write_policy::BOUNDED_RETRY_ATTEMPTS,
+            configured_retry_delay_ms = crate::app::write_policy::BOUNDED_RETRY_DELAY.as_millis(),
             persist_error_variant,
             category = ?category,
             response = ?response,
@@ -1366,6 +1382,9 @@ fn log_job_persist_failure(
             repo = %repo_name,
             source = ?source,
             duration_ms = duration.as_millis(),
+            attempt = failure.attempt,
+            configured_retries_max = crate::app::write_policy::BOUNDED_RETRY_ATTEMPTS,
+            configured_retry_delay_ms = crate::app::write_policy::BOUNDED_RETRY_DELAY.as_millis(),
             persist_error_variant,
             category = ?category,
             response = ?response,
@@ -1718,6 +1737,163 @@ mod tests {
             .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
             .expect("one log line");
         assert_eq!(event["level"].as_str(), Some("ERROR"));
+    }
+
+    #[test]
+    fn log_job_persist_failure_logs_actual_attempt_and_retry_budget_and_delay() {
+        let mut failure = WriteFailure::classify(PersistenceError::BackendUnavailable {
+            source: "backend down".into(),
+        });
+        failure.attempt = 4;
+        let output = capture_tracing(|| {
+            log_job_persist_failure(
+                &failure,
+                "acme/widgets",
+                "widgets",
+                &JobSource::InitialLoad,
+                Duration::from_millis(1),
+            );
+        });
+        let event = output
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .expect("one log line");
+        assert_eq!(
+            event["fields"]["attempt"].as_u64(),
+            Some(4),
+            "job persist failure log must carry the actual 1-based attempt count: {event}"
+        );
+        assert_eq!(
+            event["fields"]["configured_retries_max"].as_u64(),
+            Some(u64::from(crate::app::write_policy::BOUNDED_RETRY_ATTEMPTS)),
+            "job persist failure log must carry the configured retry budget: {event}"
+        );
+        let expected_retry_delay_ms = crate::app::write_policy::BOUNDED_RETRY_DELAY
+            .as_millis()
+            .to_string();
+        assert_eq!(
+            event["fields"]["configured_retry_delay_ms"].as_str(),
+            Some(expected_retry_delay_ms.as_str()),
+            "job persist failure log must carry the configured retry delay in milliseconds: {event}"
+        );
+    }
+
+    #[test]
+    fn scheduled_collection_failure_logs_planned_retry_secs() {
+        let app_error = nats_connect_app_error(std::io::Error::other("boom"));
+        let output = capture_tracing(|| log_scheduled_collection_failure(&app_error, 1));
+        let event = output
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .expect("one log line");
+        assert_eq!(
+            event["fields"]["consecutive_retries"].as_u64(),
+            Some(1),
+            "scheduled collection failure log must carry the consecutive-failure count: {event}"
+        );
+        assert_eq!(
+            event["fields"]["planned_retry_secs"].as_u64(),
+            Some(config::COLLECTION_RETRY_INTERVAL_SECS),
+            "scheduled collection failure log must carry the planned next retry delay in seconds: {event}"
+        );
+    }
+
+    #[test]
+    fn log_job_persist_failure_logs_fatal_event_retaining_existing_fields() {
+        let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            expected_seq: Some(7),
+            actual_seq: Some(9),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        });
+        let output = capture_tracing(|| {
+            log_job_persist_failure(
+                &failure,
+                "acme/widgets",
+                "widgets",
+                &JobSource::InitialLoad,
+                Duration::from_millis(1),
+            );
+        });
+        let event = output
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .expect("one log line");
+        assert_eq!(
+            event["fields"]["message"].as_str(),
+            Some("job outcome downgraded to failed: durable record write did not succeed"),
+            "existing message must be preserved on the fatal-enriched event: {event}"
+        );
+        assert_eq!(event["fields"]["category"].as_str(), Some("Conflict"));
+        assert_eq!(event["fields"]["response"].as_str(), Some("Fatal"));
+        assert_eq!(
+            event["fields"]["persist_error_variant"].as_str(),
+            Some("FencedConflict")
+        );
+        assert_eq!(
+            event["fields"]["attempt"].as_u64(),
+            Some(1),
+            "a Fatal-routed failure is written once: {event}"
+        );
+        assert!(
+            event["fields"]["source_chain"]
+                .as_str()
+                .is_some_and(|chain| chain.contains("wrong last sequence")),
+            "existing full error chain must be preserved on the fatal-enriched event: {event}"
+        );
+        assert_eq!(
+            event["fields"]["configured_retries_max"].as_u64(),
+            Some(u64::from(crate::app::write_policy::BOUNDED_RETRY_ATTEMPTS)),
+            "configured retry bound must be reported as configuration even on a Fatal event: {event}"
+        );
+        let expected_delay = crate::app::write_policy::BOUNDED_RETRY_DELAY
+            .as_millis()
+            .to_string();
+        assert_eq!(
+            event["fields"]["configured_retry_delay_ms"].as_str(),
+            Some(expected_delay.as_str()),
+            "configured retry delay must be reported as configuration even on a Fatal event: {event}"
+        );
+    }
+
+    #[test]
+    fn scheduled_collection_failure_logs_full_source_chain_and_planned_delay() {
+        let connect = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connect refused");
+        let app_error = nats_connect_app_error(connect);
+        let output = capture_tracing(|| log_scheduled_collection_failure(&app_error, 1));
+        let event = output
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .expect("one log line");
+        assert_eq!(
+            event["fields"]["consecutive_retries"].as_u64(),
+            Some(1),
+            "scheduled collection failure log must carry the consecutive-failure count: {event}"
+        );
+        assert_eq!(
+            event["fields"]["planned_retry_secs"].as_u64(),
+            Some(60),
+            "first scheduled retry must plan the declared 60s delay: {event}"
+        );
+        let source_chain = event["fields"]["source_chain"].as_str().unwrap_or_else(|| {
+            panic!("scheduled collection failure log must carry a full source chain: {event}")
+        });
+        assert!(
+            source_chain.contains(" <- "),
+            "scheduled collection failure source chain must be nested, not flattened: {source_chain}"
+        );
+        assert!(
+            source_chain.contains("refused"),
+            "scheduled collection failure source chain must include the underlying connect source: {source_chain}"
+        );
+        assert_eq!(
+            output.lines().count(),
+            1,
+            "the scheduled-failure helper must emit exactly one event: {output}"
+        );
     }
 
     #[test]
@@ -2398,7 +2574,7 @@ mod tests {
         assert_eq!(count, before + 1);
         assert!(state.ensure_write_admission().is_err());
         assert!(!state.run_is_fenced());
-        assert!(state.projection_team_rosters_snapshot().is_empty());
+        assert_eq!(state.projection_team_rosters_snapshot().len(), 0);
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(config::TEAM_REFRESH_INTERVAL_SECS)).await;
         assert_eq!(state.event_store.events().unwrap().len(), count);

@@ -694,7 +694,7 @@ mod tests {
 
         assert_eq!(rosters.len(), 1);
         assert_eq!(rosters[0].status, TeamRosterStatus::PermissionDenied);
-        assert!(rosters[0].members.is_empty());
+        assert_eq!(rosters[0].members.len(), 0);
     }
 
     /// An unreadable role degrades that member's ROLE only: the roster
@@ -1357,7 +1357,7 @@ mod tests {
         .await;
 
         assert_eq!(rosters[0].status, TeamRosterStatus::Complete);
-        assert!(rosters[0].members.is_empty());
+        assert_eq!(rosters[0].members.len(), 0);
     }
 
     #[tokio::test]

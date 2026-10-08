@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn parse_oauth_scopes_empty() {
         let scopes = parse_oauth_scopes("");
-        assert!(scopes.is_empty());
+        assert_eq!(scopes.len(), 0);
     }
 
     #[test]

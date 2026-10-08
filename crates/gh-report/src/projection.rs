@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn sorted_snapshot_of_empty_projection_is_empty() {
         let p = EvidenceProjection::default();
-        assert!(p.sorted_snapshot().is_empty());
+        assert_eq!(p.sorted_snapshot().len(), 0);
     }
 
     #[test]

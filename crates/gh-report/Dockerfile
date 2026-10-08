@@ -14,11 +14,11 @@
 #   podman run --rm -p 8080:8080 -e GITHUB_TOKEN=ghp_... -e BIND_ADDRESS=0.0.0.0 gh-report --org MyOrg
 
 # ── Stage 1: Base Chef ──────────────────────────────────────────
-FROM rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS chef
+FROM rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS chef
 
-COPY --from=lukemathwalker/cargo-chef:0.1.78-rust-1.98-bookworm /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
+COPY --from=lukemathwalker/cargo-chef:0.1.78-rust-1.99.0-bookworm@sha256:2ee6e8edf0b91b5a7295071299596601710bccb243bd9735e0b9abf6e114582b /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 WORKDIR /app
-ENV RUSTUP_TOOLCHAIN=1.98.0
+ENV RUSTUP_TOOLCHAIN=1.99.0
 
 # ── Stage 2: Recipe Planner ──────────────────────────────────────
 FROM chef AS planner
@@ -58,7 +58,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # distroless/cc: glibc + libgcc (required by Rust glibc-linked binaries).
 # :nonroot tag runs as uid 65532 — no shell, no package manager.
 # Pinned to digest for supply-chain integrity; update digest when upgrading.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:b0ae8e989418b458e0f25489bc3be523718938a2b70864cc0f6a00af1ddbd985
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 
 COPY --from=builder --chmod=0555 /usr/local/bin/gh-report /gh-report
 
