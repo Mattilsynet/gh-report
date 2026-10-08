@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn a_run_that_never_reaches_a_quarter_of_the_ceiling_emits_nothing() {
-        assert!(drive(249, CEILING).is_empty());
+        assert_eq!(drive(249, CEILING).len(), 0);
     }
 
     #[test]

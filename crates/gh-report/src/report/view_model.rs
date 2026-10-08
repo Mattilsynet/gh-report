@@ -3580,7 +3580,7 @@ mod tests {
 
         assert!(!diagnostics.has_technical_issues());
         assert_eq!(diagnostics.technical_issues_total, 0);
-        assert!(diagnostics.collection_health_sections.is_empty());
+        assert_eq!(diagnostics.collection_health_sections.len(), 0);
         assert!(!diagnostics.credentials.has_degraded_capabilities());
     }
 
@@ -3617,7 +3617,7 @@ mod tests {
 
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
 
-        assert!(vm.admin_diagnostics.red_flags.is_empty());
+        assert_eq!(vm.admin_diagnostics.red_flags.len(), 0);
     }
 
     fn flag_with_severity(severity: Severity) -> RedFlag {
@@ -3868,12 +3868,12 @@ mod tests {
     #[test]
     fn slug_unicode_owner_names() {
         let slug = generate_slug("@组织/团队");
-        assert!(slug.is_empty());
+        assert_eq!(slug, "");
     }
 
     #[test]
     fn slug_empty_after_sanitization_fallback() {
-        assert!(generate_slug("@///").is_empty());
+        assert_eq!(generate_slug("@///"), "");
     }
 
     #[test]
@@ -4502,7 +4502,7 @@ mod tests {
     #[test]
     fn build_red_flags_zero_flags_is_neutral() {
         let flags = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
-        assert!(flags.is_empty());
+        assert_eq!(flags.len(), 0);
     }
 
     #[test]

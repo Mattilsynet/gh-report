@@ -1,0 +1,43 @@
+# gh-report build-context isolation (supply-chain review F3).
+#
+# Docker .dockerignore semantics: each pattern is matched against the full
+# path relative to the build context root (build.yml context = "."), so a
+# bare `store` matches only the top-level `store`. Keep this file aligned
+# with the real Dockerfile inputs — Cargo.toml, Cargo.lock and the whole
+# crates/ tree are copied by the build (Dockerfile :26-27,:46-47) and must
+# never be excluded. In particular crates/gh-report/src/store is a source
+# module: do not add a `**/store` style rule.
+
+# Credentials — never send to the remote BuildKit backend
+# (google-github-actions/auth writes gha-creds-*.json at the workspace root).
+gha-creds-*.json
+.env
+.env.*
+
+# VCS and tooling state
+.git
+.gitignore
+.gitattributes
+.beads
+.beads.gate.lock
+.beads.backup-*
+.ooda
+.opencode
+.config
+
+# Local event stores and runtime state (top-level only)
+store
+embeddeddolt
+.ghr-store
+.adr-srv
+
+# Build and measurement artifacts
+target
+**/target
+dhat-heap.json
+rss.csv
+graphify-out
+guests
+
+# macOS noise
+.DS_Store

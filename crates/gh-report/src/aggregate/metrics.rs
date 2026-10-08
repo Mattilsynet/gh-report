@@ -1727,7 +1727,7 @@ mod tests {
     fn score_exclusion_counts_empty_when_no_exclusions() {
         let repos = vec![all_passing_evidence("clean")];
         let metrics = aggregate_metrics(&repos);
-        assert!(metrics.score_exclusion_counts.is_empty());
+        assert_eq!(metrics.score_exclusion_counts.len(), 0);
     }
 
     #[test]
@@ -2557,7 +2557,7 @@ mod tests {
     #[test]
     fn owner_metrics_empty_repos() {
         let result = build_owner_metrics(&[]);
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[test]
@@ -2575,7 +2575,7 @@ mod tests {
             ),
         )];
         let result = build_owner_metrics(&repos);
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[test]
@@ -2777,7 +2777,7 @@ mod tests {
             ),
         )];
         let result = build_owner_metrics(&repos);
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[test]
@@ -3828,7 +3828,7 @@ mod tests {
         let repos: Vec<RepositoryEvidence> = vec![];
         let mut owners = build_owner_metrics(&repos);
         enrich_owner_metrics_with_lifecycle(&mut owners, &repos, &make_timestamp());
-        assert!(owners.is_empty());
+        assert_eq!(owners.len(), 0);
     }
 
     #[test]

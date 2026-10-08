@@ -80,7 +80,7 @@ the application and `canonical_cherry_bridge` persistence/type-identity test.
   Foundation domains (`ground`, `common`, `rust`, `security`, `flow`)
   supply cross-cutting principles applied to all crates.
 
-This is a Rust workspace (edition 2024, MSRV 1.98).
+This is a Rust workspace (edition 2024, MSRV 1.99).
 
 ## Canonical Cherry gate ownership
 

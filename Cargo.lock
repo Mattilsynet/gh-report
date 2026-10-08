@@ -561,7 +561,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-app"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "cherry-pit-core",
  "cherry-pit-gateway",
@@ -576,7 +576,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-core"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "jiff",
  "serde",
@@ -586,7 +586,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-gateway"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "cherry-pit-core",
  "jiff",
@@ -599,7 +599,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-merger"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "cherry-pit-core",
  "tokio",
@@ -609,7 +609,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-projection"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "cherry-pit-core",
  "serde",
@@ -622,7 +622,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-storage"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "gethostname",
  "jiff",
@@ -638,7 +638,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-web"
 version = "0.1.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "arc-swap",
  "axum",
@@ -660,7 +660,7 @@ dependencies = [
 [[package]]
 name = "cherry-pit-wq"
 version = "0.2.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "cherry-pit-core",
  "futures-util",
@@ -1472,7 +1472,7 @@ dependencies = [
  "jiff",
  "jsonwebtoken",
  "moka",
- "pardosa 0.5.5 (git+https://github.com/acje/pardosa?rev=08fcd290694553baa7fd5c3408bc18e9bd5eafb5)",
+ "pardosa",
  "pardosa-cherry-pit-test-support",
  "pardosa-nats",
  "pem 4.0.0",
@@ -2503,33 +2503,22 @@ checksum = "8c04f5d74368e4d0dfe06c45c8627c81bd7c317d52762d118fb9b3076f6420fd"
 [[package]]
 name = "pardosa"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=08fcd290694553baa7fd5c3408bc18e9bd5eafb5#08fcd290694553baa7fd5c3408bc18e9bd5eafb5"
+source = "git+https://github.com/acje/pardosa?rev=52f9692fd3281edb4060383fe541f84210209cef#52f9692fd3281edb4060383fe541f84210209cef"
 dependencies = [
  "blake3",
  "crc32c",
- "pardosa-derive 0.5.5 (git+https://github.com/acje/pardosa?rev=08fcd290694553baa7fd5c3408bc18e9bd5eafb5)",
- "uuid",
-]
-
-[[package]]
-name = "pardosa"
-version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=d1b9ca45bb539db9c46330b40a636d97a5c7cf38#d1b9ca45bb539db9c46330b40a636d97a5c7cf38"
-dependencies = [
- "blake3",
- "crc32c",
- "pardosa-derive 0.5.5 (git+https://github.com/acje/pardosa?rev=d1b9ca45bb539db9c46330b40a636d97a5c7cf38)",
+ "pardosa-derive",
  "uuid",
 ]
 
 [[package]]
 name = "pardosa-cherry-pit-test-support"
 version = "0.0.0"
-source = "git+https://github.com/acje/cherry-pit?rev=1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e#1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e"
+source = "git+https://github.com/acje/cherry-pit?rev=2c3a922415a301fa1f88009fcb78e308338672bb#2c3a922415a301fa1f88009fcb78e308338672bb"
 dependencies = [
  "cherry-pit-core",
  "jiff",
- "pardosa 0.5.5 (git+https://github.com/acje/pardosa?rev=d1b9ca45bb539db9c46330b40a636d97a5c7cf38)",
+ "pardosa",
  "serde",
  "serde_json",
  "uuid",
@@ -2538,17 +2527,7 @@ dependencies = [
 [[package]]
 name = "pardosa-derive"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=08fcd290694553baa7fd5c3408bc18e9bd5eafb5#08fcd290694553baa7fd5c3408bc18e9bd5eafb5"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "pardosa-derive"
-version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=d1b9ca45bb539db9c46330b40a636d97a5c7cf38#d1b9ca45bb539db9c46330b40a636d97a5c7cf38"
+source = "git+https://github.com/acje/pardosa?rev=52f9692fd3281edb4060383fe541f84210209cef#52f9692fd3281edb4060383fe541f84210209cef"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2558,14 +2537,14 @@ dependencies = [
 [[package]]
 name = "pardosa-nats"
 version = "0.5.5"
-source = "git+https://github.com/acje/pardosa?rev=08fcd290694553baa7fd5c3408bc18e9bd5eafb5#08fcd290694553baa7fd5c3408bc18e9bd5eafb5"
+source = "git+https://github.com/acje/pardosa?rev=52f9692fd3281edb4060383fe541f84210209cef#52f9692fd3281edb4060383fe541f84210209cef"
 dependencies = [
  "async-nats",
  "blake3",
  "bytes",
  "crc32c",
  "futures-util",
- "pardosa 0.5.5 (git+https://github.com/acje/pardosa?rev=08fcd290694553baa7fd5c3408bc18e9bd5eafb5)",
+ "pardosa",
  "tempfile",
  "tokio",
 ]
@@ -3867,7 +3846,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

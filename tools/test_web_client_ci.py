@@ -38,7 +38,7 @@ def assert_gates(test, workflow):
     steps = job["steps"]
     test.assertFalse(any("verify_web_client.py bundle" in step.get("run", "") for step in steps))
     matches = [i for i, step in enumerate(steps)
-               if step.get("with", {}).get("toolchain") == "1.98.0"]
+               if step.get("with", {}).get("toolchain") == "1.99.0"]
     test.assertEqual(len(matches), 1, "toolchain setup")
     setup = matches[0]
     matches = [i for i, step in enumerate(steps) if is_install_step(step)]
@@ -123,7 +123,7 @@ class WorkflowGates(unittest.TestCase):
                 changed = copy.deepcopy(workflow)
                 steps = changed["jobs"]["build-test-lint"]["steps"]
                 matches = [step for step in steps
-                           if (step.get("with", {}).get("toolchain") == "1.98.0"
+                           if (step.get("with", {}).get("toolchain") == "1.99.0"
                                if anchor == "setup" else is_install_step(step))]
                 self.assertEqual(len(matches), 1, anchor)
                 if mutation == "remove":

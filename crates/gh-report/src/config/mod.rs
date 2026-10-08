@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn gh_report_version_is_non_empty() {
-        assert!(!env!("GH_REPORT_VERSION").is_empty());
+        assert_ne!(env!("GH_REPORT_VERSION"), "");
     }
 
     #[test]

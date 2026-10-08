@@ -757,6 +757,6 @@ mod tests {
         });
         let parsed = try_parse_content(&data, "test-repo");
         assert!(parsed.is_ok(), "empty content should still parse");
-        assert!(parsed.unwrap().entries.is_empty());
+        assert_eq!(parsed.unwrap().entries.len(), 0);
     }
 }

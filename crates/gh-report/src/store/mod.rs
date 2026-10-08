@@ -909,12 +909,13 @@ pub(crate) mod tests {
         assert!(store.record("repo", synthetic_domain_event(1)).is_err());
         assert!(store.detach("repo", synthetic_domain_event(2)).is_err());
         assert!(store.resync_pgno_from_authoritative(&path).is_err());
-        assert!(
+        assert_eq!(
             NativeStore::open_pgno(&path)
                 .unwrap()
                 .events()
                 .unwrap()
-                .is_empty()
+                .len(),
+            0
         );
     }
 
@@ -924,13 +925,14 @@ pub(crate) mod tests {
         let path = dir.path().join("noop.pgno");
         let store = NativeStore::create_pgno(&path).unwrap();
         store.detach("absent", synthetic_domain_event(1)).unwrap();
-        assert!(store.events().unwrap().is_empty());
-        assert!(
+        assert_eq!(store.events().unwrap().len(), 0);
+        assert_eq!(
             NativeStore::open_pgno(&path)
                 .unwrap()
                 .events()
                 .unwrap()
-                .is_empty()
+                .len(),
+            0
         );
     }
 

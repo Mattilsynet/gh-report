@@ -526,7 +526,7 @@ mod tests {
 
         assert_eq!(result.status(), SecurityPolicyStatus::NotApplicable);
         assert_eq!(result.evidence(), SecurityPolicyEvidence::NotApplicable);
-        assert!(requested_paths(&server).await.is_empty());
+        assert_eq!(requested_paths(&server).await.len(), 0);
     }
 
     #[tokio::test]

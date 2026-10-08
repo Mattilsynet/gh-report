@@ -118,7 +118,7 @@ impl ProjectionRenderSnapshot {
 
 fn next_render_capture(sequence: &std::sync::atomic::AtomicU64) -> Result<u64, std::io::Error> {
     sequence
-        .fetch_update(
+        .try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |previous| previous.checked_add(1),
@@ -4098,7 +4098,7 @@ accounts: {
             .event_store
             .latest_per_repo()
             .expect("latest after remove");
-        assert!(latest.is_empty());
+        assert_eq!(latest.len(), 0);
     }
 
     #[tokio::test]
@@ -4571,8 +4571,8 @@ accounts: {
                 "one policy attempt plus one explicitly rejected submission"
             );
             assert_eq!(state.event_store.events().unwrap().len(), before + 1);
-            assert!(state.projection_team_rosters_snapshot().is_empty());
-            assert!(state.projection_snapshot().is_empty());
+            assert_eq!(state.projection_team_rosters_snapshot().len(), 0);
+            assert_eq!(state.projection_snapshot().len(), 0);
             assert!(!state.run_is_fenced());
         }
     }
@@ -4636,7 +4636,7 @@ accounts: {
             state.record_org(org_snapshot_fixture()),
             Err(PersistenceError::Indeterminate(_))
         ));
-        assert!(state.event_store.events().unwrap().is_empty());
+        assert_eq!(state.event_store.events().unwrap().len(), 0);
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
             state.wait_for_reconciliation(),

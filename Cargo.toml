@@ -17,7 +17,7 @@ default-members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license = "Apache-2.0 OR MIT"
 homepage = "https://github.com/Mattilsynet/gh-report"
 repository = "https://github.com/Mattilsynet/gh-report"
@@ -100,17 +100,17 @@ clap = { version = "4", features = ["derive"] }
 ron = "0.12"
 
 # === Internal ===
-cherry-pit-core = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.1.0" }
-cherry-pit-gateway = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.1.0" }
-cherry-pit-projection = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.1.0" }
-cherry-pit-web = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.1.0" }
-cherry-pit-app = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.1.0" }
-cherry-pit-merger = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.1.0" }
-cherry-pit-wq = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.2.0" }
-cherry-pit-storage = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.1.0" }
-pardosa-cherry-pit-test-support = { git = "https://github.com/acje/cherry-pit", rev = "1ecc7b118bf5bf2ccb75c8d6a992fb65351d735e", version = "0.0.0" }
-pardosa = { git = "https://github.com/acje/pardosa", rev = "08fcd290694553baa7fd5c3408bc18e9bd5eafb5", version = "0.5.5" }
-pardosa-nats = { git = "https://github.com/acje/pardosa", rev = "08fcd290694553baa7fd5c3408bc18e9bd5eafb5", version = "0.5.5" }
+cherry-pit-core = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.1.0" }
+cherry-pit-gateway = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.1.0" }
+cherry-pit-projection = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.1.0" }
+cherry-pit-web = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.1.0" }
+cherry-pit-app = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.1.0" }
+cherry-pit-merger = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.1.0" }
+cherry-pit-wq = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.2.0" }
+cherry-pit-storage = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.1.0" }
+pardosa-cherry-pit-test-support = { git = "https://github.com/acje/cherry-pit", rev = "2c3a922415a301fa1f88009fcb78e308338672bb", version = "0.0.0" }
+pardosa = { git = "https://github.com/acje/pardosa", rev = "52f9692fd3281edb4060383fe541f84210209cef", version = "0.5.5" }
+pardosa-nats = { git = "https://github.com/acje/pardosa", rev = "52f9692fd3281edb4060383fe541f84210209cef", version = "0.5.5" }
 
 # === Pardosa workspace tier (mission pardosa-migration-1748376000) ===
 # Added when the active Pardosa crates were imported from rescue-pardosa.
@@ -156,7 +156,7 @@ moka = { version = "0.12", features = ["future"] }
 
 # === WASM client (item12-leptos-sort; CHE-0087) ===
 # csr only, no nightly feature (MSRV-verified bd-ghr-16858874: leptos 0.8.20
-# rust-version 1.88 < workspace 1.98 pin). wasm-bindgen pinned EXACTLY: the
+# rust-version 1.88 < workspace 1.99 pin). wasm-bindgen pinned EXACTLY: the
 # installed wasm-bindgen-cli must match this version bit-for-bit.
 leptos = { version = "0.8.20", default-features = false, features = ["csr"] }
 wasm-bindgen = "=0.2.128"

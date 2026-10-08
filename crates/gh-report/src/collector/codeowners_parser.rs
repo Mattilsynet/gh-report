@@ -117,15 +117,15 @@ mod tests {
     #[test]
     fn empty_file() {
         let result = parse_codeowners("");
-        assert!(result.entries.is_empty());
-        assert!(result.unique_owners.is_empty());
+        assert_eq!(result.entries.len(), 0);
+        assert_eq!(result.unique_owners.len(), 0);
     }
 
     #[test]
     fn comments_and_blanks_skipped() {
         let content = "# This is a comment\n\n# Another comment\n";
         let result = parse_codeowners(content);
-        assert!(result.entries.is_empty());
+        assert_eq!(result.entries.len(), 0);
     }
 
     #[test]
@@ -258,7 +258,7 @@ mod tests {
         let result = parse_codeowners(content);
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].pattern, "/orphan-dir/");
-        assert!(result.entries[0].owners.is_empty());
+        assert_eq!(result.entries[0].owners.len(), 0);
     }
 
     #[test]

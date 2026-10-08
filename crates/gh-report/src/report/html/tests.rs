@@ -2000,7 +2000,7 @@ fn detail_vm_carries_team_health_and_alert_free() {
     let (_, vm) = &detail_vms[0];
     assert!(vm.sec_score.is_some());
     assert!(vm.sec_score_formatted.contains('%'));
-    assert!(!vm.sec_score_width_class.is_empty());
+    assert_ne!(vm.sec_score_width_class, "");
     assert_eq!(vm.team_health_tooltip, team_health_tooltip());
     assert!(
         vm.alert_free_cell.rate_formatted().contains('%')
@@ -3206,7 +3206,7 @@ fn detail_vm_repo_row_metadata_defaults_when_no_data() {
     assert_eq!(row.pushed_at, "\u{2014}");
     assert_eq!(row.created_at, "\u{2014}");
     assert_eq!(row.last_committer_login, "\u{2014}");
-    assert!(row.last_committer_url.is_empty());
+    assert_eq!(row.last_committer_url, "");
     assert_eq!(row.last_commit_date, "\u{2014}");
     assert!(
         !row.last_committer_unregistered,
@@ -3332,7 +3332,7 @@ fn detail_vm_unregistered_committer_flagged_when_name_present_but_no_login_match
     let row = &vm.repo_rows[0];
 
     assert_eq!(row.last_committer_login, "Jane Doe");
-    assert!(row.last_committer_url.is_empty());
+    assert_eq!(row.last_committer_url, "");
     assert!(
         row.last_committer_unregistered,
         "a committer name with no matched GitHub login must be flagged unregistered"
@@ -3977,7 +3977,7 @@ fn build_orphaned_vm_flags_unregistered_committer_only_when_name_present_and_log
         .iter()
         .find(|r| r.repo_name == "unregistered-repo")
         .expect("unregistered-repo row present");
-    assert!(unregistered_row.last_committer_url.is_empty());
+    assert_eq!(unregistered_row.last_committer_url, "");
     assert!(
         unregistered_row.last_committer_unregistered,
         "committer name present with no matched login must be flagged unregistered"
@@ -5678,7 +5678,7 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
         "the owners-column cell must reuse the same non_stale RateMetric the detail card renders, not a recomputation"
     );
     assert_eq!(vm.control_columns.last().map(|c| c.name), Some("Ownership"));
-    assert!(!vm.control_columns.last().unwrap().tooltip.is_empty());
+    assert_ne!(vm.control_columns.last().unwrap().tooltip, "");
 }
 
 #[test]
