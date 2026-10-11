@@ -83,15 +83,12 @@ must define and satisfy explicit resource bounds:
 
 ### Build / test / verify (three-tier local cadence; BOUNDARY is the local host owner)
 Three-tier verify cadence — INNER (per increment), MID (per sub-mission,
-ONCE), BOUNDARY (per repository stable candidate, ONCE). Canonical
-approval repeats only per repository stable candidate; targeted falsifiers
-remain allowed against any candidate. The done-claim is **tier-scoped**: a
-claim is backed by the tier whose scope matches the claim's scope — a
-sub-mission done-claim is backed by MID; the EPIC done-claim is backed by
-BOUNDARY.
+ONCE), BOUNDARY (per epic, ONCE). The done-claim is **tier-scoped**: a claim
+is backed by the tier whose scope matches the claim's scope — a sub-mission
+done-claim is backed by MID; the EPIC done-claim is backed by BOUNDARY.
 
-- **INNER** (every hopper TDD increment AND targeted-reviewer falsifiers;
-  changed crate ONLY; exit-code criterion: test + clippy exit 0):
+- **INNER** (every hopper TDD increment AND every per-review-round
+  re-verification, changed crate ONLY; exit-code criterion: test + clippy exit 0):
   ```sh
   CARGO_TERM_PROGRESS_WHEN=never cargo test -p <crate> --message-format=short
   CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --all-targets --message-format=short -- -D warnings
@@ -126,9 +123,8 @@ BOUNDARY.
   Feed the resulting package names as `-p <name>` to `cargo test` / `cargo
   clippy`, one flag per name including `<changed-crate>` itself.
 
-- **BOUNDARY** (ONCE per repository stable candidate, before its done-claim;
-  full workspace; exit-code criterion: `scripts/verify.sh` exits 0 on the
-  actual checkout):
+- **BOUNDARY** (ONCE per EPIC, before the epic done-claim; full workspace;
+  exit-code criterion: `scripts/verify.sh` exits 0 on the actual checkout):
   ```sh
   sh scripts/verify.sh
   ```
@@ -163,7 +159,7 @@ comment-free --check-doc-budget --doc-advisory-words 80 --doc-max-words 120 --ma
 
 Requires comment-free 0.2.0 at the canonical revision below:
 ```sh
-cargo +1.99.0 install --git https://github.com/acje/comment-free --rev b4666626bbeee4e74ca41fd6ff1048b2f167dd27 --locked comment-free
+cargo +1.99.0 install --git https://github.com/acje/comment-free --rev 09d2d79441ed9497af4fa92e4c2830a1a3e38048 --locked comment-free
 ```
 
 The read-only native gate recursively scans Rust sources under `.` with the
@@ -187,25 +183,15 @@ this is not proof of semantic documentation coverage or process-memory bounds.
 
 ### Live-NATS Tests Need Pinned `nats-server`
 The consumer native-store harness checks `tools/.nats-server-version`, currently
-2.15.0, and prefers `tools/bin/nats-server` (local binary now v2.15.0 matching the pin).
+2.14.5, and prefers `tools/bin/nats-server` (verified v2.14.5 on 2026-09-21).
 CI installs the consumer pin as a step in the `build-test-lint` job checksum-verified.
 `async-nats` is pinned to the `server_2_14` feature to match.
 
 ### CI Specifics (`.github/workflows/ci.yml`)
-- `ci.yml` triggers on `pull_request` to `main` (no `push` trigger); `build.yml` triggers on `v*` tags; direct main pushes run neither. Third-party actions are **SHA-pinned**.
+- Triggers on push/PR to `main`. Third-party actions are **SHA-pinned**.
 - Merge gates (RST-0007) live in `.github/workflows/ci-reusable.yml` (called
   from `ci.yml`), invoked via `tools/tripwires.sh <check>`.
 - `cargo deny check` and `cargo audit` run as supply-chain gates.
-- Frontend operation ownership: `python3.12 -B tools/verify_web_client.py`
-  owns `status`/`native`/`prepare`/`wasm`/`browser`/`imports` locally and in
-  CI; `tools/test_web_client_ci.py` enforces a POSITIVE closed frontend step
-  segment between the pinned wasm-bindgen/wasm-tools install and the workspace
-  clippy sentinel — every executable step there must be exactly one of the
-  seven runner-owned commands, and any unaccounted step (raw frontend cargo in
-  any spelling) is rejected by construction. Cold `prepare`/`wasm` run under
-  the job's 30-minute deadline (1800s ceiling, COLD_JOB_BUDGET), warm checks
-  keep the 180s helper; `wasm`/`imports` steps are `if: always()`. Named
-  operation set is documented in the README.
 
 ### Architecture Invariants
 - **Pardosa ownership.** Synchronous facade and implementation policy are owned upstream,

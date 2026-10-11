@@ -52,39 +52,6 @@ those files are authoritative for the current pin.
 This workspace retains `gh-report`, `gh-report-web-client`, and
 `non-exhaustive-check`. GitHub policy and native application stores stay here.
 
-## Frontend operation ownership
-
-`python3.12 -B tools/verify_web_client.py` is the single local-and-CI owner of the named
-frontend operations. `tools/test_web_client_ci.py` enforces a POSITIVE closed
-frontend step segment in the workflow: between the pinned wasm-bindgen/wasm-tools
-install step and the workspace clippy sentinel, every step must be exactly one of
-the runner-owned commands below — any other executable step there (raw frontend
-cargo in any spelling, an action step, a renamed interpreter) is unaccounted and
-rejected by construction. Workspace cargo and the later tripwire steps outside
-the segment are legitimate:
-
-- `status` — source-level status vocabulary scan.
-- `native` (alias `compiler`) — host directed-sort compile contract; positive
-  probe, E0061 missing-direction rejection, E0432 wrong-import rejection.
-- `prepare` — cold precompile (host lib + wasm test `--no-run`) under the CI
-  job's 30-minute deadline (1800s ceiling), never the 180s warm helper.
-- `wasm` — wasm32 release compile + real-target clippy; both gates run even
-  when the build fails, each lane tagged Passed | Failed | Unavailable with
-  real-cause diagnostics retained; a known Failed → exit 1, all Unknown → 2,
-  no synthetic timeout (CHE-0087 R6).
-- `browser` — headless Chrome DOM, warm 180s helper deadline.
-- `imports` — committed glue/wasm import-key invariant; validates the EXACT
-  captured wasm-tools text with native `wasm-tools validate` before regex
-  extraction, so malformed capture is exit 2, never a false clean; 60s bound.
-- `artifacts` (alias `bundle`) — local committed byte comparison, held pending
-  hosted acceptance (ghr-6fg0y).
-
-Exit 0 = verified; 1 = mismatch/failure; 2 = unavailable (operational gaps and
-unparseable evidence are UNAVAILABLE, never FAILED). Tests in
-`tools/test_web_client_verify.py` are source-only recording-stub dispatches:
-they never run real cargo/rustc/browser. Actual native/WASM/browser acceptance
-remains a held semantic gate.
-
 The former embedded library tests and fixtures live in the canonical upstream;
 Cargo does not execute dependency test targets in this consumer workspace.
 Historical canonical PR #5 passed all four Linux checks; that is not evidence
@@ -136,7 +103,7 @@ Consumer boundary on 2026-09-20: 1,699 passed, zero failed/ignored
 9 checker). The earlier 1,650 run lacked all-features and the other members.
 Producer's previously recorded 947 tests are separate evidence, not added to
 consumer counts. Browser execution remains incomplete locally until matching
-wasm-bindgen 0.2.129 tooling and Chrome/chromedriver are available.
+wasm-bindgen 0.2.128 tooling and Chrome/chromedriver are available.
 
 ## Quickstart — adr-fmt
 
@@ -146,7 +113,7 @@ upstream. Install the pinned revision once:
 
 ```console
 cargo +1.99.0 install --git https://github.com/Mattilsynet/adr-fmt --locked \
-  --rev e3247faa4f5b39310490814e665185606e967de1 adr-fmt
+  --rev d27f8d4c2a02b2ff77f156783cc311ebfc081147 adr-fmt
 ```
 
 Then run it against this corpus:
