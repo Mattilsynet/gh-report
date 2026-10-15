@@ -35,8 +35,8 @@ impl RepositoryChecks {
     /// `run_timestamp` (see `collector::branch_protection`,
     /// `collector::security_policy`, `collector::dependabot`,
     /// `collector::codeowners`, and `app::collect::failure_evidence_with_reason`),
-    /// so any one field is representative; `branch_protection.timestamp`
-    /// is used here as the anchor.
+    /// so any one field is representative; `branch_protection` is used as
+    /// the anchor via `BranchProtectionResult::timestamp`.
     ///
     /// This is the correct basis for cache-reuse age (adr-fmt-glprg):
     /// GitHub's `Repository.updated_at` records the last repository
@@ -44,7 +44,7 @@ impl RepositoryChecks {
     /// branch-protection rules change.
     #[must_use]
     pub fn observed_at(&self) -> &str {
-        &self.branch_protection.timestamp
+        self.branch_protection.timestamp()
     }
 }
 
@@ -190,19 +190,6 @@ impl From<&SecurityPolicyResult> for ScoreCategory {
     }
 }
 
-/// Security policy status.
-///
-/// # Wire format
-///
-/// Variant discriminant is `u8` of declaration position (`Pass=0`, `Fail=1`,
-/// `Unknown=2`, `NotApplicable=3`). Reordering or inserting a variant is a
-/// wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must be
-/// appended.
-///
-/// ```
-/// use gh_report::domain::checks::SecurityPolicyStatus;
-/// assert_eq!(SecurityPolicyStatus::Fail as u8, 1);
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
@@ -213,19 +200,6 @@ pub enum SecurityPolicyStatus {
     NotApplicable = 3,
 }
 
-/// How the security policy check was determined.
-///
-/// # Wire format
-///
-/// Variant discriminant is `u8` of declaration position (`Setting=0`, `File=1`,
-/// `Absent=2`, `PermissionDenied=3`, `TransientError=4`, `CollectionError=5`,
-/// `NotApplicable=6`). Reorder or insert is a wire-format break (CHE-0022:R3 +
-/// PGN-0003 + PGN-0013:R8); new variants must append.
-///
-/// ```
-/// use gh_report::domain::checks::SecurityPolicyEvidence;
-/// assert_eq!(SecurityPolicyEvidence::File as u8, 1);
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
@@ -549,18 +523,6 @@ impl From<&SecretScanningResult> for ScoreCategory {
     }
 }
 
-/// Secret scanning status.
-///
-/// # Wire format
-///
-/// Variant discriminant is `u8` of declaration position (`Enabled=0`,
-/// `Disabled=1`, `PermissionDenied=2`, `Unknown=3`). Reorder or insert is a
-/// wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must append.
-///
-/// ```
-/// use gh_report::domain::checks::SecretScanningStatus;
-/// assert_eq!(SecretScanningStatus::Disabled as u8, 1);
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
@@ -632,107 +594,83 @@ impl std::fmt::Display for DependabotStatus {
     }
 }
 
-/// Branch protection evaluation outcome.
+/// History-protection gap observed on a readable default branch.
 ///
-/// # Wire format
-///
-/// Fields encode in declaration order via `Encode::encode`: `status`, `details`,
-/// `timestamp`. Field reorder is a wire-format break (CHE-0022:R3 + PGN-0003 +
-/// PGN-0013:R8); new fields must append.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BranchProtectionResult {
-    /// Overall branch protection status.
-    pub status: BranchProtectionStatus,
-    /// Detailed state of individual branch protection controls.
-    pub details: BranchProtectionDetails,
-    /// ISO 8601 timestamp of when the check was performed.
-    pub timestamp: String,
-}
-
-/// Branch protection status.
-///
-/// # Wire format
-///
-/// Variant discriminant is `u8` of declaration position (`Pass=0`, `Partial=1`,
-/// `Fail=2`, `Unknown=3`). Reorder or insert is a wire-format break
-/// (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must append.
-///
-/// ```
-/// use gh_report::domain::checks::BranchProtectionStatus;
-/// assert_eq!(BranchProtectionStatus::Partial as u8, 1);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[repr(u8)]
+/// `(force_push_blocked = true, deletion_blocked = true)` is
+/// unrepresentable here — that combination is
+/// [`BranchProtectionResult::Protected`] (CHE-0002); these variants only
+/// admit partial or absent integrity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BranchProtectionStatus {
-    Pass = 0,
-    Partial = 1,
-    Fail = 2,
-    Unknown = 3,
+pub enum HistoryProtectionGap {
+    /// No branch-protection controls were observed at all.
+    Absent {
+        /// Whether absence was confirmed by an authority signal
+        /// (admin-scoped 404) rather than merely not found.
+        confirmed_not_found: bool,
+        /// HTTP status that produced the absence evidence, if any.
+        http_status: Option<u16>,
+    },
+    /// Both force pushes and branch deletion are not blocked.
+    NeitherBlocked,
+    /// Force pushes are not blocked while branch deletion is.
+    ForcePushAllowed,
+    /// Branch deletion is not blocked while force pushes are.
+    DeletionAllowed,
 }
 
-/// Report-side tier for branch-protection scoring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum BranchProtectionTier {
-    /// Protection could not be read or scored.
-    Excluded = 0,
-    /// T0: no effective baseline protection detected.
-    BelowBaseline = 1,
-    /// T1: protected branch with baseline force-push/deletion integrity.
-    Minimal = 2,
-    /// T2: T1 plus pull request review enforcement.
-    AcceptBar = 3,
-    /// T3+: T2 plus additive hardening bonuses.
-    Bonus = 4,
-}
+impl HistoryProtectionGap {
+    /// Whether the gap is a confirmed absence of branch protection.
+    #[must_use]
+    pub const fn is_absent(&self) -> bool {
+        matches!(self, Self::Absent { .. })
+    }
 
-/// Report-side branch-protection regime: a combination-based refinement of
-/// [`BranchProtectionTier`] over the same seven persisted signals.
-///
-/// # Report-side only
-///
-/// NOT persisted on any evidence/wire/event type (CHE-0083:R7). Computed
-/// on demand from [`BranchProtectionDetails`], mirroring the non-persisted
-/// [`BranchProtectionTier`] model.
-///
-/// # Ordering
-///
-/// `BPR0` is the dedicated unmeasured band, off the strength axis. `BPR1`
-/// through `BPR5` form the measured weakest-to-strongest ladder. `BPR3`
-/// (`ReviewedWithBypass`) and `BPR4` (`ReviewedGated`) are the one place
-/// this regime splits [`BranchProtectionTier::AcceptBar`], surfacing the
-/// bypassable-vs-gated distinction the scalar tier collapses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum BranchProtectionRegime {
-    /// BPR0: status unmeasured or excluded for collection-health reasons.
-    Unmeasured = 0,
-    /// BPR1: no effective baseline protection detected.
-    Unprotected = 1,
-    /// BPR2: integrity floor held (force-push and deletion both blocked),
-    /// but no PR/review gate.
-    IntegrityOnly = 2,
-    /// BPR3: PR and review enforcement present, integrity floor held, but a
-    /// broad bypass actor punches through.
-    ReviewedWithBypass = 3,
-    /// BPR4: PR and review enforcement present, integrity floor held, no
-    /// broad bypass, but no required status checks.
-    ReviewedGated = 4,
-    /// BPR5: PR, review, integrity, and required status checks all held,
-    /// with no broad bypass.
-    Hardened = 5,
-}
-
-impl std::fmt::Display for BranchProtectionStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    /// HTTP status that produced the absence evidence, if any.
+    #[must_use]
+    pub const fn http_status(&self) -> Option<u16> {
         match self {
-            Self::Pass => write!(f, "pass"),
-            Self::Partial => write!(f, "partial"),
-            Self::Fail => write!(f, "fail"),
-            Self::Unknown => write!(f, "unknown"),
+            Self::Absent { http_status, .. } => *http_status,
+            Self::NeitherBlocked | Self::ForcePushAllowed | Self::DeletionAllowed => None,
         }
     }
+}
+
+/// Branch protection evaluation outcome on the default branch.
+///
+/// A closed algebraic sum (CHE-0002): every outcome is exactly one of a
+/// protected branch, an unprotected branch carrying a
+/// [`HistoryProtectionGap`], or an unobservable failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchProtectionResult {
+    /// Force pushes and branch deletion are both blocked.
+    Protected {
+        /// Name of the repository's default branch.
+        default_branch: String,
+        /// ISO 8601 timestamp of when the check was performed.
+        timestamp: String,
+    },
+    /// The default branch is readable but history protection is not held.
+    Unprotected {
+        /// Name of the repository's default branch.
+        default_branch: String,
+        /// The concrete history-protection gap observed.
+        gap: HistoryProtectionGap,
+        /// ISO 8601 timestamp of when the check was performed.
+        timestamp: String,
+    },
+    /// The default branch could not be read for a collection-health reason.
+    Unobservable {
+        /// Name of the repository's default branch.
+        default_branch: String,
+        /// Typed collection-health reason; never a compliance verdict.
+        reason: IndeterminateReason,
+        /// HTTP status that produced the failure, if any.
+        http_status: Option<u16>,
+        /// ISO 8601 timestamp of when the check was performed.
+        timestamp: String,
+    },
 }
 
 /// Typed collection-health reason for per-check observability.
@@ -754,28 +692,6 @@ pub enum CollectionFailureReason {
     Invalid = 5,
 }
 
-impl CollectionFailureReason {
-    /// Whether this reason makes the observation indeterminate rather than
-    /// a domain finding.
-    ///
-    /// This is the CHE-0090:R2 Excluded set. `NotFoundAbsent` is deliberately
-    /// outside it: under CHE-0082:R4/R5 a not-found carrying an observed
-    /// authority signal is genuine absence, which is a finding. Every other
-    /// reason describes a failure to observe, and a failure to observe must
-    /// never be scored as either protected or unprotected.
-    #[must_use]
-    pub const fn is_indeterminate(self) -> bool {
-        matches!(
-            self,
-            Self::PermissionDenied
-                | Self::PermissionSuspected
-                | Self::Transient
-                | Self::RateLimited
-                | Self::Invalid
-        )
-    }
-}
-
 impl std::fmt::Display for CollectionFailureReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -789,379 +705,168 @@ impl std::fmt::Display for CollectionFailureReason {
     }
 }
 
-/// Detailed branch protection controls state.
+/// History-protection signal pair merged across branch-protection sources.
 ///
-/// # Wire format
-///
-/// Fields encode in declaration order via `Encode::encode`: `default_branch`,
-/// `has_pr`, `required_reviewers`, `has_status_checks`, `admin_equivalent`,
-/// `has_broad_bypass`, `reason`, `reason_kind`, `http_status`,
-/// `force_push_blocked`, `deletion_blocked`. Field reorder is a wire-format
-/// break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields must append.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BranchProtectionDetails {
-    /// Name of the repository's default branch.
-    pub default_branch: String,
-    /// Whether pull requests are required before merging.
-    pub has_pr: Option<bool>,
-    /// Minimum number of required approving reviews, if configured.
-    pub required_reviewers: Option<u32>,
-    /// Whether required status checks are configured.
-    pub has_status_checks: Option<bool>,
-    /// Whether administrators are subject to the branch protection rules.
-    pub admin_equivalent: Option<bool>,
-    /// Whether a broad bypass actor weakens the protection guarantees.
-    pub has_broad_bypass: Option<bool>,
-    /// Human-readable reason for the current status.
-    pub reason: Option<String>,
-    /// Typed collection-health reason for aggregation and admin reporting.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason_kind: Option<CollectionFailureReason>,
-    /// HTTP status code that produced the collection-health reason, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http_status: Option<u16>,
-    /// Whether force pushes are blocked on the protected branch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+/// A private intermediate of the collector eval path; force-push and deletion
+/// blocking are the only signals governance evaluates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistorySignals {
+    /// Whether force pushes are blocked on the default branch, when observed.
     pub force_push_blocked: Option<bool>,
-    /// Whether branch deletion is blocked on the protected branch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Whether branch deletion is blocked on the default branch, when observed.
     pub deletion_blocked: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct BranchTierSignals {
-    status: BranchProtectionStatus,
-    reason_kind: Option<CollectionFailureReason>,
-    has_pr: Option<bool>,
-    required_reviewers: Option<u32>,
-    has_status_checks: Option<bool>,
-    admin_equivalent: Option<bool>,
-    has_broad_bypass: Option<bool>,
-    force_push_blocked: Option<bool>,
-    deletion_blocked: Option<bool>,
-}
-
-impl From<BranchProtectionRegime> for BranchProtectionTier {
-    fn from(regime: BranchProtectionRegime) -> Self {
-        match regime {
-            BranchProtectionRegime::Unmeasured => Self::Excluded,
-            BranchProtectionRegime::Unprotected => Self::BelowBaseline,
-            BranchProtectionRegime::IntegrityOnly => Self::Minimal,
-            BranchProtectionRegime::ReviewedWithBypass | BranchProtectionRegime::ReviewedGated => {
-                Self::AcceptBar
-            }
-            BranchProtectionRegime::Hardened => Self::Bonus,
-        }
-    }
-}
-
-fn classify_branch_protection_regime(signals: BranchTierSignals) -> BranchProtectionRegime {
-    if signals.status == BranchProtectionStatus::Unknown
-        || signals
-            .reason_kind
-            .is_some_and(CollectionFailureReason::is_indeterminate)
-    {
-        return BranchProtectionRegime::Unmeasured;
-    }
-
-    let protected = signals.has_pr == Some(true)
-        || signals.required_reviewers.is_some_and(|count| count > 0)
-        || signals.has_status_checks == Some(true)
-        || signals.admin_equivalent == Some(true)
-        || signals.force_push_blocked == Some(true)
-        || signals.deletion_blocked == Some(true);
-
-    if !protected {
-        return BranchProtectionRegime::Unprotected;
-    }
-
-    let integrity_blocked =
-        signals.force_push_blocked == Some(true) && signals.deletion_blocked == Some(true);
-
-    if !integrity_blocked {
-        return BranchProtectionRegime::Unprotected;
-    }
-
-    if signals.has_pr != Some(true) || signals.required_reviewers.unwrap_or(0) == 0 {
-        return BranchProtectionRegime::IntegrityOnly;
-    }
-
-    if signals.has_broad_bypass == Some(true) {
-        return BranchProtectionRegime::ReviewedWithBypass;
-    }
-
-    if signals.has_status_checks != Some(true) {
-        return BranchProtectionRegime::ReviewedGated;
-    }
-
-    BranchProtectionRegime::Hardened
-}
-
-impl BranchProtectionResult {
-    /// Compute the report-side branch-protection tier from raw details.
-    ///
-    /// Derived from [`Self::regime`] per COM-0027:R3 — the regime cascade is
-    /// the single canonical classifier; the tier is a total, lossy view over
-    /// it (see `impl From<BranchProtectionRegime> for BranchProtectionTier`).
+impl HistorySignals {
+    /// Merge multiple source signals, taking any block as definitive and any
+    /// observed unblock before an unobserved signal.
     #[must_use]
-    pub fn tier(&self) -> BranchProtectionTier {
-        BranchProtectionTier::from(self.regime())
-    }
-
-    /// Compute the report-side branch-protection regime (BPR0..BPR5) from
-    /// raw details. Report-side only; not persisted (CHE-0083:R7).
-    #[must_use]
-    pub fn regime(&self) -> BranchProtectionRegime {
-        classify_branch_protection_regime(BranchTierSignals {
-            status: self.status,
-            reason_kind: self.details.reason_kind,
-            has_pr: self.details.has_pr,
-            required_reviewers: self.details.required_reviewers,
-            has_status_checks: self.details.has_status_checks,
-            admin_equivalent: self.details.admin_equivalent,
-            has_broad_bypass: self.details.has_broad_bypass,
-            force_push_blocked: self.details.force_push_blocked,
-            deletion_blocked: self.details.deletion_blocked,
-        })
-    }
-
-    /// Map the report-side tier to score inclusion semantics.
-    #[must_use]
-    pub fn score_category(&self) -> ScoreCategory {
-        match self.tier() {
-            BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => ScoreCategory::Pass,
-            BranchProtectionTier::Minimal | BranchProtectionTier::BelowBaseline => {
-                ScoreCategory::Fail
-            }
-            BranchProtectionTier::Excluded => ScoreCategory::Excluded(
-                branch_protection_exclusion_reason(self.details.reason_kind),
-            ),
-        }
-    }
-}
-
-fn branch_protection_exclusion_reason(
-    reason_kind: Option<CollectionFailureReason>,
-) -> ExclusionReason {
-    match reason_kind {
-        Some(
-            CollectionFailureReason::PermissionDenied
-            | CollectionFailureReason::PermissionSuspected,
-        ) => ExclusionReason::PermissionDenied,
-        Some(
-            CollectionFailureReason::Transient
-            | CollectionFailureReason::RateLimited
-            | CollectionFailureReason::Invalid,
-        ) => ExclusionReason::Other,
-        Some(CollectionFailureReason::NotFoundAbsent) | None => ExclusionReason::Unknown,
-    }
-}
-
-/// Intermediate representation of merged branch protection controls.
-///
-/// Used during evaluation before mapping to a final status.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BranchRequirements {
-    /// Whether pull requests are required before merging.
-    pub has_pr: bool,
-    /// Whether required status checks are configured.
-    pub has_status_checks: bool,
-    /// Whether administrators are subject to enforcement.
-    pub admin_equivalent: bool,
-    /// Whether force pushes are blocked by branch protection controls.
-    pub force_push_blocked: Option<bool>,
-    /// Whether branch deletion is blocked by branch protection controls.
-    pub deletion_blocked: Option<bool>,
-}
-
-impl BranchRequirements {
-    /// Create the set of branch protection requirements.
-    #[must_use]
-    pub fn new(has_pr: bool, has_status_checks: bool, admin_equivalent: bool) -> Self {
-        Self {
-            has_pr,
-            has_status_checks,
-            admin_equivalent,
-            force_push_blocked: None,
-            deletion_blocked: None,
-        }
-    }
-
-    /// Attach force-push and deletion blocking signals.
-    #[must_use]
-    pub fn with_integrity_controls(
-        mut self,
-        force_push_blocked: Option<bool>,
-        deletion_blocked: Option<bool>,
-    ) -> Self {
-        self.force_push_blocked = force_push_blocked;
-        self.deletion_blocked = deletion_blocked;
-        self
-    }
-}
-
-/// Branch-control exceptions that weaken enforcement guarantees.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BranchExceptions {
-    /// Whether a broad bypass actor (e.g., `OrganizationAdmin`) is configured.
-    pub has_broad_bypass: bool,
-}
-
-/// Intermediate representation of merged branch protection controls.
-///
-/// Used during evaluation before mapping to a final status.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BranchControls {
-    /// Minimum number of required approving reviews across all sources.
-    pub reviewer_count: u32,
-    /// Merged branch protection requirements.
-    pub requirements: BranchRequirements,
-    /// Branch-control exceptions that weaken enforcement.
-    pub exceptions: BranchExceptions,
-}
-
-impl BranchControls {
-    /// Create a branch control set from the merged requirement signals.
-    #[must_use]
-    pub fn new(
-        requirements: BranchRequirements,
-        reviewer_count: u32,
-        has_broad_bypass: bool,
-    ) -> Self {
-        Self {
-            reviewer_count,
-            requirements,
-            exceptions: BranchExceptions { has_broad_bypass },
-        }
-    }
-
-    /// Whether pull requests are required on the protected branch.
-    #[must_use]
-    pub fn has_pr(&self) -> bool {
-        self.requirements.has_pr
-    }
-
-    /// Whether required status checks are configured.
-    #[must_use]
-    pub fn has_status_checks(&self) -> bool {
-        self.requirements.has_status_checks
-    }
-
-    /// Whether admin-equivalent enforcement is in effect.
-    #[must_use]
-    pub fn admin_equivalent(&self) -> bool {
-        self.requirements.admin_equivalent
-    }
-
-    /// Whether a broad bypass actor weakens the protection guarantees.
-    #[must_use]
-    pub fn has_broad_bypass(&self) -> bool {
-        self.exceptions.has_broad_bypass
-    }
-
-    /// Whether force pushes are blocked, or `None` when unreadable.
-    #[must_use]
-    pub fn force_push_blocked(&self) -> Option<bool> {
-        self.requirements.force_push_blocked
-    }
-
-    /// Whether branch deletion is blocked, or `None` when unreadable.
-    #[must_use]
-    pub fn deletion_blocked(&self) -> Option<bool> {
-        self.requirements.deletion_blocked
-    }
-
-    /// Derive the branch protection status from the current controls.
-    #[must_use]
-    pub fn status(&self) -> BranchProtectionStatus {
-        match self.tier() {
-            BranchProtectionTier::Excluded => BranchProtectionStatus::Unknown,
-            BranchProtectionTier::BelowBaseline => BranchProtectionStatus::Fail,
-            BranchProtectionTier::Minimal => BranchProtectionStatus::Partial,
-            BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => {
-                BranchProtectionStatus::Pass
-            }
-        }
-    }
-
-    /// Compute the report-side branch-protection tier from merged controls.
-    #[must_use]
-    pub fn tier(&self) -> BranchProtectionTier {
-        BranchProtectionTier::from(classify_branch_protection_regime(BranchTierSignals {
-            status: BranchProtectionStatus::Partial,
-            reason_kind: None,
-            has_pr: Some(self.has_pr()),
-            required_reviewers: Some(self.reviewer_count),
-            has_status_checks: Some(self.has_status_checks()),
-            admin_equivalent: Some(self.admin_equivalent()),
-            has_broad_bypass: Some(self.has_broad_bypass()),
-            force_push_blocked: self.force_push_blocked(),
-            deletion_blocked: self.deletion_blocked(),
-        }))
-    }
-
-    /// Merge multiple control sets, taking the strongest signal for each field.
-    ///
-    /// The `admin_equivalent` field is set to `true` only if:
-    /// 1. At least one control set has `admin_equivalent == true`, AND
-    /// 2. NO control set has `has_broad_bypass == true`.
-    ///
-    /// This means a broad bypass from ANY source (e.g., a single ruleset with
-    /// an org admin bypass) globally poisons the `admin_equivalent` signal across
-    /// all merged sources. This ensures that
-    /// broad bypass actors undermine administrative enforcement guarantees.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use gh_report::domain::checks::{BranchControls, BranchRequirements};
-    ///
-    /// let a = BranchControls::new(BranchRequirements::new(true, false, true), 1, false);
-    /// let b = BranchControls::new(BranchRequirements::new(false, true, false), 2, false);
-    /// let merged = BranchControls::merge(&[a, b]).unwrap();
-    /// assert!(merged.has_pr());
-    /// assert!(merged.has_status_checks());
-    /// ```
-    #[must_use]
-    pub fn merge(controls_list: &[BranchControls]) -> Option<BranchControls> {
-        if controls_list.is_empty() {
+    pub fn merge(signals: &[HistorySignals]) -> Option<HistorySignals> {
+        if signals.is_empty() {
             return None;
         }
-
-        Some(BranchControls::new(
-            BranchRequirements::new(
-                controls_list.iter().any(BranchControls::has_pr),
-                controls_list.iter().any(BranchControls::has_status_checks),
-                !controls_list.iter().any(BranchControls::has_broad_bypass)
-                    && controls_list.iter().any(BranchControls::admin_equivalent),
-            )
-            .with_integrity_controls(
-                merge_optional_blocking_signal(controls_list, BranchControls::force_push_blocked),
-                merge_optional_blocking_signal(controls_list, BranchControls::deletion_blocked),
-            ),
-            controls_list
-                .iter()
-                .map(|c| c.reviewer_count)
-                .max()
-                .unwrap_or(0),
-            controls_list.iter().any(BranchControls::has_broad_bypass),
-        ))
+        Some(HistorySignals {
+            force_push_blocked: merge_optional_blocking_signal(signals, |s| s.force_push_blocked),
+            deletion_blocked: merge_optional_blocking_signal(signals, |s| s.deletion_blocked),
+        })
     }
 }
 
 fn merge_optional_blocking_signal(
-    controls_list: &[BranchControls],
-    select: fn(&BranchControls) -> Option<bool>,
+    signals: &[HistorySignals],
+    select: fn(&HistorySignals) -> Option<bool>,
 ) -> Option<bool> {
     let mut saw_unblocked = false;
-    for controls in controls_list {
-        match select(controls) {
+    for signal in signals {
+        match select(signal) {
             Some(true) => return Some(true),
             Some(false) => saw_unblocked = true,
             None => {}
         }
     }
     if saw_unblocked { Some(false) } else { None }
+}
+
+impl BranchProtectionResult {
+    /// ISO 8601 timestamp of when the check was performed.
+    #[must_use]
+    pub fn timestamp(&self) -> &str {
+        match self {
+            Self::Protected { timestamp, .. }
+            | Self::Unprotected { timestamp, .. }
+            | Self::Unobservable { timestamp, .. } => timestamp,
+        }
+    }
+
+    /// Name of the repository's default branch.
+    #[must_use]
+    pub fn default_branch(&self) -> &str {
+        match self {
+            Self::Protected { default_branch, .. }
+            | Self::Unprotected { default_branch, .. }
+            | Self::Unobservable { default_branch, .. } => default_branch,
+        }
+    }
+
+    /// Whether history protection is fully held (force-push and deletion both
+    /// blocked).
+    #[must_use]
+    pub fn is_protected(&self) -> bool {
+        matches!(self, Self::Protected { .. })
+    }
+
+    /// Whether this is a definite observation rather than an
+    /// [`IndeterminateReason`]-carrying unmeasured outcome.
+    #[must_use]
+    pub fn is_observed(&self) -> bool {
+        !matches!(self, Self::Unobservable { .. })
+    }
+
+    /// Whether collection is pending (never observed).
+    #[must_use]
+    pub fn is_pending(&self) -> bool {
+        matches!(
+            self,
+            Self::Unobservable {
+                reason: IndeterminateReason::Pending,
+                ..
+            }
+        )
+    }
+
+    /// The history-protection gap when the result is [`Self::Unprotected`].
+    #[must_use]
+    pub fn gap(&self) -> Option<HistoryProtectionGap> {
+        match self {
+            Self::Unprotected { gap, .. } => Some(*gap),
+            Self::Protected { .. } | Self::Unobservable { .. } => None,
+        }
+    }
+
+    /// HTTP status that produced the outcome, when the evidence carried one.
+    #[must_use]
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Unobservable { http_status, .. } => *http_status,
+            Self::Unprotected { gap, .. } => gap.http_status(),
+            Self::Protected { .. } => None,
+        }
+    }
+
+    /// Map the outcome to score inclusion semantics.
+    #[must_use]
+    pub fn score_category(&self) -> ScoreCategory {
+        match self {
+            Self::Protected { .. } => ScoreCategory::Pass,
+            Self::Unprotected { .. } => ScoreCategory::Fail,
+            Self::Unobservable { reason, .. } => ScoreCategory::Excluded(match reason {
+                IndeterminateReason::PermissionDenied
+                | IndeterminateReason::PermissionSuspected => ExclusionReason::PermissionDenied,
+                IndeterminateReason::Transient
+                | IndeterminateReason::RateLimited
+                | IndeterminateReason::Invalid
+                | IndeterminateReason::Pending => ExclusionReason::Other,
+            }),
+        }
+    }
+
+    /// Classify observed history signals into an outcome.
+    ///
+    /// Both signals must be observed `true` for [`Self::Protected`]; `None`
+    /// (unreadable) never counts as blocked. Absent sources must be supplied
+    /// by the caller as an `Unprotected { gap: Absent }` variant directly.
+    #[must_use]
+    pub fn from_history_signals(
+        default_branch: &str,
+        force_push_blocked: Option<bool>,
+        deletion_blocked: Option<bool>,
+        timestamp: &str,
+    ) -> Self {
+        match (
+            force_push_blocked.unwrap_or(false),
+            deletion_blocked.unwrap_or(false),
+        ) {
+            (true, true) => Self::Protected {
+                default_branch: default_branch.to_string(),
+                timestamp: timestamp.to_string(),
+            },
+            (false, true) => Self::Unprotected {
+                default_branch: default_branch.to_string(),
+                gap: HistoryProtectionGap::ForcePushAllowed,
+                timestamp: timestamp.to_string(),
+            },
+            (true, false) => Self::Unprotected {
+                default_branch: default_branch.to_string(),
+                gap: HistoryProtectionGap::DeletionAllowed,
+                timestamp: timestamp.to_string(),
+            },
+            (false, false) => Self::Unprotected {
+                default_branch: default_branch.to_string(),
+                gap: HistoryProtectionGap::NeitherBlocked,
+                timestamp: timestamp.to_string(),
+            },
+        }
+    }
 }
 
 /// Content observed at a CODEOWNERS location.
@@ -1307,18 +1012,6 @@ impl From<&CodeownersResult> for ScoreCategory {
     }
 }
 
-/// CODEOWNERS status.
-///
-/// # Wire format
-///
-/// Variant discriminant is `u8` of declaration position (`Conforming=0`,
-/// `NonConforming=1`, `Absent=2`, `Unknown=3`). Reorder or insert is a
-/// wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must append.
-///
-/// ```
-/// use gh_report::domain::checks::CodeownersStatus;
-/// assert_eq!(CodeownersStatus::NonConforming as u8, 1);
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
@@ -1435,26 +1128,6 @@ impl From<DependabotStatus> for ScoreCategory {
     }
 }
 
-impl From<BranchProtectionStatus> for ScoreCategory {
-    fn from(s: BranchProtectionStatus) -> Self {
-        match s {
-            BranchProtectionStatus::Pass => Self::Pass,
-            BranchProtectionStatus::Partial | BranchProtectionStatus::Fail => Self::Fail,
-            BranchProtectionStatus::Unknown => Self::Excluded(ExclusionReason::Unknown),
-        }
-    }
-}
-
-impl From<BranchProtectionTier> for ScoreCategory {
-    fn from(tier: BranchProtectionTier) -> Self {
-        match tier {
-            BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => Self::Pass,
-            BranchProtectionTier::Minimal | BranchProtectionTier::BelowBaseline => Self::Fail,
-            BranchProtectionTier::Excluded => Self::Excluded(ExclusionReason::Unknown),
-        }
-    }
-}
-
 impl From<CodeownersStatus> for ScoreCategory {
     fn from(s: CodeownersStatus) -> Self {
         match s {
@@ -1555,291 +1228,196 @@ mod tests {
     }
 
     #[test]
-    fn branch_controls_pass_when_all_present() {
-        let controls = BranchControls::new(
-            BranchRequirements::new(true, true, true)
-                .with_integrity_controls(Some(true), Some(true)),
-            1,
-            false,
+    fn history_signals_classify_protected_only_when_both_observed_blocked() {
+        let protected = BranchProtectionResult::from_history_signals(
+            "main",
+            Some(true),
+            Some(true),
+            "2026-06-17T11:31:04Z",
         );
-        assert_eq!(controls.status(), BranchProtectionStatus::Pass);
+        assert!(protected.is_protected());
+        assert_eq!(protected.gap(), None);
+
+        let push_allowed = BranchProtectionResult::from_history_signals(
+            "main",
+            Some(false),
+            Some(true),
+            "2026-06-17T11:31:04Z",
+        );
+        assert!(!push_allowed.is_protected());
+        assert_eq!(
+            push_allowed.gap(),
+            Some(HistoryProtectionGap::ForcePushAllowed)
+        );
+
+        let deletion_allowed = BranchProtectionResult::from_history_signals(
+            "main",
+            Some(true),
+            Some(false),
+            "2026-06-17T11:31:04Z",
+        );
+        assert!(!deletion_allowed.is_protected());
+        assert_eq!(
+            deletion_allowed.gap(),
+            Some(HistoryProtectionGap::DeletionAllowed)
+        );
+
+        let neither = BranchProtectionResult::from_history_signals(
+            "main",
+            Some(false),
+            Some(false),
+            "2026-06-17T11:31:04Z",
+        );
+        assert!(!neither.is_protected());
+        assert_eq!(neither.gap(), Some(HistoryProtectionGap::NeitherBlocked));
     }
 
     #[test]
-    fn branch_controls_partial_when_some_present() {
-        let controls = BranchControls::new(
-            BranchRequirements::new(false, false, true)
-                .with_integrity_controls(Some(true), Some(true)),
-            0,
-            false,
+    fn unreadable_signal_never_counts_as_blocked() {
+        let unreadable_push = BranchProtectionResult::from_history_signals(
+            "main",
+            None,
+            Some(true),
+            "2026-06-17T11:31:04Z",
         );
-        assert_eq!(controls.status(), BranchProtectionStatus::Partial);
+        assert!(!unreadable_push.is_protected(), "None must not block");
+        assert_eq!(
+            unreadable_push.gap(),
+            Some(HistoryProtectionGap::ForcePushAllowed),
+            "an unreadable force-push signal plus an observed blocked deletion \
+             is ForcePushAllowed, not NeitherBlocked"
+        );
+
+        let unreadable_deletion = BranchProtectionResult::from_history_signals(
+            "main",
+            Some(true),
+            None,
+            "2026-06-17T11:31:04Z",
+        );
+        assert!(!unreadable_deletion.is_protected());
+        assert_eq!(
+            unreadable_deletion.gap(),
+            Some(HistoryProtectionGap::DeletionAllowed),
+            "an observed blocked force-push plus an unreadable deletion signal \
+             is DeletionAllowed, not NeitherBlocked"
+        );
+
+        let unobserved = BranchProtectionResult::from_history_signals(
+            "main",
+            None,
+            None,
+            "2026-06-17T11:31:04Z",
+        );
+        assert!(!unobserved.is_protected());
+        assert_eq!(unobserved.gap(), Some(HistoryProtectionGap::NeitherBlocked));
     }
 
     #[test]
-    fn branch_controls_fail_when_none_present() {
-        let controls = BranchControls::default();
-        assert_eq!(controls.status(), BranchProtectionStatus::Fail);
-    }
-
-    #[test]
-    fn branch_controls_broad_bypass_prevents_pass() {
-        let controls = BranchControls::new(
-            BranchRequirements::new(true, true, true)
-                .with_integrity_controls(Some(true), Some(true)),
-            2,
-            true,
-        );
-        assert_eq!(controls.tier(), BranchProtectionTier::AcceptBar);
-        assert_eq!(controls.status(), BranchProtectionStatus::Pass);
-    }
-
-    fn branch_details(
-        has_pr: Option<bool>,
-        required_reviewers: Option<u32>,
-        has_status_checks: Option<bool>,
-        admin_equivalent: Option<bool>,
-        has_broad_bypass: Option<bool>,
-        force_push_blocked: Option<bool>,
-        deletion_blocked: Option<bool>,
-    ) -> BranchProtectionDetails {
-        BranchProtectionDetails {
+    fn branch_result_accessors_cover_all_variants() {
+        let protected = BranchProtectionResult::Protected {
             default_branch: "main".to_string(),
-            has_pr,
-            required_reviewers,
-            has_status_checks,
-            admin_equivalent,
-            has_broad_bypass,
-            reason: None,
-            reason_kind: None,
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        assert!(protected.is_observed());
+        assert!(!protected.is_pending());
+        assert_eq!(protected.default_branch(), "main");
+        assert_eq!(protected.timestamp(), "2026-06-17T11:31:04Z");
+        assert_eq!(protected.http_status(), None);
+
+        let absent = BranchProtectionResult::Unprotected {
+            default_branch: "main".to_string(),
+            gap: HistoryProtectionGap::Absent {
+                confirmed_not_found: true,
+                http_status: Some(404),
+            },
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        assert!(absent.is_observed());
+        assert_eq!(absent.http_status(), Some(404));
+        assert!(absent.gap().is_some_and(|gap| gap.is_absent()));
+
+        let pending = BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: IndeterminateReason::Pending,
             http_status: None,
-            force_push_blocked,
-            deletion_blocked,
-        }
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        assert!(!pending.is_observed());
+        assert!(pending.is_pending());
     }
 
     #[test]
-    fn branch_tier_synthetic_force_push_deletion_boundaries() {
-        let minimal = BranchProtectionResult {
-            status: BranchProtectionStatus::Partial,
-            details: branch_details(
-                Some(false),
-                Some(0),
-                Some(false),
-                Some(false),
-                Some(false),
-                Some(true),
-                Some(true),
-            ),
-            timestamp: "2026-06-17T11:31:04Z".to_string(),
-        };
-        let accept = BranchProtectionResult {
-            details: branch_details(
-                Some(true),
-                Some(1),
-                Some(false),
-                Some(false),
-                Some(false),
-                Some(true),
-                Some(true),
-            ),
-            ..minimal.clone()
-        };
-        let bonus = BranchProtectionResult {
-            details: branch_details(
-                Some(true),
-                Some(1),
-                Some(true),
-                Some(true),
-                Some(false),
-                Some(true),
-                Some(true),
-            ),
-            ..minimal.clone()
-        };
-        let bypass_downgrade = BranchProtectionResult {
-            details: branch_details(
-                Some(true),
-                Some(1),
-                Some(true),
-                Some(true),
-                Some(true),
-                Some(true),
-                Some(true),
-            ),
-            ..minimal.clone()
-        };
-        let status_checks_without_pr = BranchProtectionResult {
-            details: branch_details(
-                Some(false),
-                Some(0),
-                Some(true),
-                Some(false),
-                Some(false),
-                Some(true),
-                Some(true),
-            ),
-            ..minimal.clone()
-        };
-
-        assert_eq!(minimal.tier(), BranchProtectionTier::Minimal);
-        assert_eq!(accept.tier(), BranchProtectionTier::AcceptBar);
-        assert_eq!(bonus.tier(), BranchProtectionTier::Bonus);
-        assert_eq!(bypass_downgrade.tier(), BranchProtectionTier::AcceptBar);
+    fn history_gap_http_status_only_on_absent() {
         assert_eq!(
-            status_checks_without_pr.tier(),
-            BranchProtectionTier::Minimal
+            HistoryProtectionGap::Absent {
+                confirmed_not_found: false,
+                http_status: Some(403),
+            }
+            .http_status(),
+            Some(403)
         );
-    }
-
-    #[test]
-    fn branch_tier_permission_suspected_is_excluded() {
-        let mut details = branch_details(None, None, None, None, None, None, None);
-        details.reason_kind = Some(CollectionFailureReason::PermissionSuspected);
-        details.http_status = Some(404);
-
-        let result = BranchProtectionResult {
-            status: BranchProtectionStatus::Unknown,
-            details,
-            timestamp: "2026-06-17T11:31:04Z".to_string(),
-        };
-
-        assert_eq!(result.tier(), BranchProtectionTier::Excluded);
-    }
-
-    #[test]
-    fn branch_tier_missing_h5_inputs_are_always_below_baseline() {
-        let legacy_pr = BranchProtectionResult {
-            status: BranchProtectionStatus::Partial,
-            details: branch_details(
-                Some(true),
-                Some(1),
-                Some(false),
-                Some(false),
-                Some(false),
-                None,
-                None,
-            ),
-            timestamp: "2026-06-17T11:31:04Z".to_string(),
-        };
-        let legacy_weak_ruleset = BranchProtectionResult {
-            status: BranchProtectionStatus::Partial,
-            details: branch_details(
-                Some(false),
-                Some(0),
-                Some(false),
-                Some(true),
-                Some(false),
-                None,
-                None,
-            ),
-            timestamp: "2026-06-17T11:31:04Z".to_string(),
-        };
-
-        assert_eq!(legacy_pr.tier(), BranchProtectionTier::BelowBaseline);
-        assert_eq!(
-            legacy_weak_ruleset.tier(),
-            BranchProtectionTier::BelowBaseline
+        assert_eq!(HistoryProtectionGap::NeitherBlocked.http_status(), None);
+        assert_eq!(HistoryProtectionGap::ForcePushAllowed.http_status(), None);
+        assert_eq!(HistoryProtectionGap::DeletionAllowed.http_status(), None);
+        assert!(
+            HistoryProtectionGap::Absent {
+                confirmed_not_found: false,
+                http_status: None,
+            }
+            .is_absent()
         );
-    }
-
-    #[test]
-    fn branch_tier_soak_public_fingerprints_collapse_without_h5_and_synthetic_h5_orders() {
-        let absent = BranchProtectionResult {
-            status: BranchProtectionStatus::Fail,
-            details: branch_details(None, None, None, None, None, None, None),
-            timestamp: "2026-06-17T11:31:04Z".to_string(),
-        };
-        let weak_ruleset_without_h5 = BranchProtectionResult {
-            status: BranchProtectionStatus::Partial,
-            details: branch_details(
-                Some(false),
-                Some(0),
-                Some(false),
-                Some(true),
-                Some(false),
-                None,
-                None,
-            ),
-            timestamp: "2026-06-17T11:31:04Z".to_string(),
-        };
-        let weak_ruleset_with_h5 = BranchProtectionResult {
-            details: branch_details(
-                Some(false),
-                Some(0),
-                Some(false),
-                Some(true),
-                Some(false),
-                Some(true),
-                Some(true),
-            ),
-            ..weak_ruleset_without_h5.clone()
-        };
-
-        let absent_count = (0..28)
-            .filter(|_| absent.tier() == BranchProtectionTier::BelowBaseline)
-            .count();
-        let weak_without_h5_count = (0..14)
-            .filter(|_| weak_ruleset_without_h5.tier() == BranchProtectionTier::BelowBaseline)
-            .count();
-        let weak_with_h5_count = (0..14)
-            .filter(|_| weak_ruleset_with_h5.tier() == BranchProtectionTier::Minimal)
-            .count();
-
-        assert_eq!(absent_count, 28);
-        assert_eq!(weak_without_h5_count, 14);
-        assert_eq!(weak_with_h5_count, 14);
-        assert_eq!(absent.tier(), weak_ruleset_without_h5.tier());
-        assert!(absent.tier() < weak_ruleset_with_h5.tier());
-        assert!(weak_ruleset_with_h5.tier() < BranchProtectionTier::AcceptBar);
     }
 
     #[test]
     fn merge_empty_returns_none() {
-        assert_eq!(BranchControls::merge(&[]), None);
+        assert_eq!(HistorySignals::merge(&[]), None);
     }
 
     #[test]
-    fn merge_takes_strongest_signals() {
-        let a = BranchControls::new(
-            BranchRequirements::new(true, false, true)
-                .with_integrity_controls(Some(true), Some(false)),
-            1,
-            false,
-        );
-        let b = BranchControls::new(
-            BranchRequirements::new(false, true, false)
-                .with_integrity_controls(Some(false), Some(true)),
-            2,
-            false,
-        );
-        let merged = BranchControls::merge(&[a, b]).unwrap();
-        assert!(merged.has_pr());
-        assert_eq!(merged.reviewer_count, 2);
-        assert!(merged.has_status_checks());
-        assert!(merged.admin_equivalent());
-        assert!(!merged.has_broad_bypass());
-        assert_eq!(merged.force_push_blocked(), Some(true));
-        assert_eq!(merged.deletion_blocked(), Some(true));
+    fn merge_takes_any_block_as_definitive() {
+        let a = HistorySignals {
+            force_push_blocked: Some(true),
+            deletion_blocked: Some(false),
+        };
+        let b = HistorySignals {
+            force_push_blocked: Some(false),
+            deletion_blocked: Some(true),
+        };
+        let merged = HistorySignals::merge(&[a, b]).unwrap();
+        assert_eq!(merged.force_push_blocked, Some(true));
+        assert_eq!(merged.deletion_blocked, Some(true));
     }
 
     #[test]
-    fn merge_broad_bypass_disables_admin_equivalent() {
-        let a = BranchControls::new(
-            BranchRequirements::new(true, true, true)
-                .with_integrity_controls(Some(true), Some(true)),
-            1,
-            false,
-        );
-        let b = BranchControls::new(
-            BranchRequirements::new(false, false, false)
-                .with_integrity_controls(Some(false), Some(false)),
-            0,
-            true,
-        );
-        let merged = BranchControls::merge(&[a, b]).unwrap();
-        assert!(!merged.admin_equivalent());
-        assert!(merged.has_broad_bypass());
+    fn merge_observed_unblock_beats_unobserved() {
+        let unobserved = HistorySignals {
+            force_push_blocked: None,
+            deletion_blocked: None,
+        };
+        let unblocked = HistorySignals {
+            force_push_blocked: Some(false),
+            deletion_blocked: Some(false),
+        };
+        let merged = HistorySignals::merge(&[unobserved, unblocked]).unwrap();
+        assert_eq!(merged.force_push_blocked, Some(false));
+        assert_eq!(merged.deletion_blocked, Some(false));
+    }
+
+    #[test]
+    fn merge_absent_signals_are_preserved() {
+        let merged = HistorySignals::merge(&[
+            HistorySignals {
+                force_push_blocked: None,
+                deletion_blocked: None,
+            },
+            HistorySignals {
+                force_push_blocked: None,
+                deletion_blocked: Some(false),
+            },
+        ])
+        .unwrap();
+        assert_eq!(merged.force_push_blocked, None);
+        assert_eq!(merged.deletion_blocked, Some(false));
     }
 
     #[test]
@@ -1886,26 +1464,48 @@ mod tests {
     }
 
     #[test]
-    fn branch_protection_details_round_trip_force_push_and_deletion_signals() {
-        let details = BranchProtectionDetails {
+    fn branch_result_serde_round_trip_all_variants() {
+        let protected = BranchProtectionResult::Protected {
             default_branch: "main".to_string(),
-            has_pr: Some(true),
-            required_reviewers: Some(1),
-            has_status_checks: Some(false),
-            admin_equivalent: Some(false),
-            has_broad_bypass: Some(false),
-            reason: None,
-            reason_kind: None,
-            http_status: None,
-            force_push_blocked: Some(true),
-            deletion_blocked: Some(false),
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        let unprotected = BranchProtectionResult::Unprotected {
+            default_branch: "main".to_string(),
+            gap: HistoryProtectionGap::Absent {
+                confirmed_not_found: true,
+                http_status: Some(404),
+            },
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        let unobservable = BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: IndeterminateReason::PermissionDenied,
+            http_status: Some(403),
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
         };
 
-        let json = serde_json::to_string(&details).unwrap();
-        let decoded: BranchProtectionDetails = serde_json::from_str(&json).unwrap();
+        for result in [protected, unprotected, unobservable] {
+            let json = serde_json::to_string(&result).unwrap();
+            let decoded: BranchProtectionResult = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, result);
+        }
+    }
 
-        assert_eq!(decoded.force_push_blocked, Some(true));
-        assert_eq!(decoded.deletion_blocked, Some(false));
+    #[test]
+    fn history_protection_gap_serde_round_trip() {
+        for gap in [
+            HistoryProtectionGap::Absent {
+                confirmed_not_found: true,
+                http_status: Some(404),
+            },
+            HistoryProtectionGap::NeitherBlocked,
+            HistoryProtectionGap::ForcePushAllowed,
+            HistoryProtectionGap::DeletionAllowed,
+        ] {
+            let json = serde_json::to_string(&gap).unwrap();
+            let decoded: HistoryProtectionGap = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, gap);
+        }
     }
 
     #[test]
@@ -1971,83 +1571,69 @@ mod tests {
     #[test]
     fn score_category_from_branch_protection() {
         assert_eq!(
-            ScoreCategory::from(BranchProtectionStatus::Pass),
+            BranchProtectionResult::Protected {
+                default_branch: "main".to_string(),
+                timestamp: "2026-06-17T11:31:04Z".to_string(),
+            }
+            .score_category(),
             ScoreCategory::Pass
         );
         assert_eq!(
-            ScoreCategory::from(BranchProtectionStatus::Partial),
+            BranchProtectionResult::Unprotected {
+                default_branch: "main".to_string(),
+                gap: HistoryProtectionGap::NeitherBlocked,
+                timestamp: "2026-06-17T11:31:04Z".to_string(),
+            }
+            .score_category(),
             ScoreCategory::Fail
         );
         assert_eq!(
-            ScoreCategory::from(BranchProtectionStatus::Fail),
-            ScoreCategory::Fail
-        );
-        assert_eq!(
-            ScoreCategory::from(BranchProtectionStatus::Unknown),
-            ScoreCategory::Excluded(ExclusionReason::Unknown)
-        );
-    }
-
-    #[test]
-    fn score_category_from_branch_protection_tier() {
-        assert_eq!(
-            ScoreCategory::from(BranchProtectionTier::AcceptBar),
-            ScoreCategory::Pass
-        );
-        assert_eq!(
-            ScoreCategory::from(BranchProtectionTier::Bonus),
-            ScoreCategory::Pass
-        );
-        assert_eq!(
-            ScoreCategory::from(BranchProtectionTier::Minimal),
-            ScoreCategory::Fail
-        );
-        assert_eq!(
-            ScoreCategory::from(BranchProtectionTier::BelowBaseline),
-            ScoreCategory::Fail
-        );
-        assert_eq!(
-            ScoreCategory::from(BranchProtectionTier::Excluded),
-            ScoreCategory::Excluded(ExclusionReason::Unknown)
+            BranchProtectionResult::Unobservable {
+                default_branch: "main".to_string(),
+                reason: IndeterminateReason::Invalid,
+                http_status: None,
+                timestamp: "2026-06-17T11:31:04Z".to_string(),
+            }
+            .score_category(),
+            ScoreCategory::Excluded(ExclusionReason::Other)
         );
     }
 
     #[test]
     fn branch_protection_score_category_carries_specific_reason() {
-        fn excluded_with(reason_kind: Option<CollectionFailureReason>) -> ScoreCategory {
-            let mut details = branch_details(None, None, None, None, None, None, None);
-            details.reason_kind = reason_kind;
-            BranchProtectionResult {
-                status: BranchProtectionStatus::Unknown,
-                details,
+        fn excluded_with(reason: IndeterminateReason) -> ScoreCategory {
+            BranchProtectionResult::Unobservable {
+                default_branch: "main".to_string(),
+                reason,
+                http_status: Some(403),
                 timestamp: "2026-06-17T11:31:04Z".to_string(),
             }
             .score_category()
         }
 
         assert_eq!(
-            excluded_with(Some(CollectionFailureReason::PermissionDenied)),
+            excluded_with(IndeterminateReason::PermissionDenied),
             ScoreCategory::Excluded(ExclusionReason::PermissionDenied)
         );
         assert_eq!(
-            excluded_with(Some(CollectionFailureReason::PermissionSuspected)),
+            excluded_with(IndeterminateReason::PermissionSuspected),
             ScoreCategory::Excluded(ExclusionReason::PermissionDenied)
         );
         assert_eq!(
-            excluded_with(Some(CollectionFailureReason::Transient)),
+            excluded_with(IndeterminateReason::Transient),
             ScoreCategory::Excluded(ExclusionReason::Other)
         );
         assert_eq!(
-            excluded_with(Some(CollectionFailureReason::RateLimited)),
+            excluded_with(IndeterminateReason::RateLimited),
             ScoreCategory::Excluded(ExclusionReason::Other)
         );
         assert_eq!(
-            excluded_with(Some(CollectionFailureReason::Invalid)),
+            excluded_with(IndeterminateReason::Invalid),
             ScoreCategory::Excluded(ExclusionReason::Other)
         );
         assert_eq!(
-            excluded_with(None),
-            ScoreCategory::Excluded(ExclusionReason::Unknown)
+            excluded_with(IndeterminateReason::Pending),
+            ScoreCategory::Excluded(ExclusionReason::Other)
         );
     }
 
@@ -2158,400 +1744,36 @@ mod tests {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "test-only public-boundary constructor mirroring BranchProtectionDetails's field count; fires only under --all-targets clippy, not the default lib build"
-    )]
-    fn bpr_result(
-        status: BranchProtectionStatus,
-        reason_kind: Option<CollectionFailureReason>,
-        has_pr: Option<bool>,
-        required_reviewers: Option<u32>,
-        has_status_checks: Option<bool>,
-        admin_equivalent: Option<bool>,
-        has_broad_bypass: Option<bool>,
-        force_push_blocked: Option<bool>,
-        deletion_blocked: Option<bool>,
-    ) -> BranchProtectionResult {
-        BranchProtectionResult {
-            status,
-            details: BranchProtectionDetails {
-                default_branch: "main".to_string(),
-                has_pr,
-                required_reviewers,
-                has_status_checks,
-                admin_equivalent,
-                has_broad_bypass,
-                reason: None,
-                reason_kind,
-                http_status: None,
-                force_push_blocked,
-                deletion_blocked,
-            },
-            timestamp: "2026-06-17T11:31:04Z".to_string(),
-        }
-    }
-
-    type BprFieldCase = (
-        &'static str,
-        fn(&mut BranchProtectionDetails),
-        BranchProtectionRegime,
-    );
-
-    fn bpr_hardened_baseline() -> BranchProtectionResult {
-        bpr_result(
-            BranchProtectionStatus::Pass,
-            None,
-            Some(true),
-            Some(2),
-            Some(true),
-            Some(true),
-            Some(false),
-            Some(true),
-            Some(true),
-        )
-    }
-
     #[test]
-    fn bpr_unmeasured_when_status_unknown() {
-        let result = bpr_result(
-            BranchProtectionStatus::Unknown,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::Unmeasured);
-    }
-
-    #[test]
-    fn bpr_unmeasured_when_reason_kind_excluded() {
-        let result = bpr_result(
-            BranchProtectionStatus::Partial,
-            Some(CollectionFailureReason::PermissionDenied),
-            Some(true),
-            Some(2),
-            Some(true),
-            Some(true),
-            Some(false),
-            Some(true),
-            Some(true),
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::Unmeasured);
-    }
-
-    #[test]
-    fn bpr_not_excluded_when_reason_kind_not_found_absent() {
-        let result = bpr_result(
-            BranchProtectionStatus::Fail,
-            Some(CollectionFailureReason::NotFoundAbsent),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::Unprotected);
-    }
-
-    #[test]
-    fn bpr_unprotected_when_nothing_configured() {
-        let result = bpr_result(
-            BranchProtectionStatus::Fail,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::Unprotected);
-    }
-
-    #[test]
-    fn bpr_unprotected_when_protected_but_integrity_not_held() {
-        let result = bpr_result(
-            BranchProtectionStatus::Partial,
-            None,
-            Some(true),
-            Some(1),
-            None,
-            None,
-            None,
-            Some(true),
-            Some(false),
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::Unprotected);
-    }
-
-    #[test]
-    fn bpr_integrity_only_when_no_review_gate() {
-        let result = bpr_result(
-            BranchProtectionStatus::Partial,
-            None,
-            Some(false),
-            Some(0),
-            None,
-            None,
-            None,
-            Some(true),
-            Some(true),
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::IntegrityOnly);
-    }
-
-    #[test]
-    fn bpr_reviewed_with_bypass_when_bypass_present() {
-        let result = bpr_result(
-            BranchProtectionStatus::Pass,
-            None,
-            Some(true),
-            Some(2),
-            Some(true),
-            Some(false),
-            Some(true),
-            Some(true),
-            Some(true),
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::ReviewedWithBypass);
-    }
-
-    #[test]
-    fn bpr_reviewed_gated_when_no_status_checks() {
-        let result = bpr_result(
-            BranchProtectionStatus::Pass,
-            None,
-            Some(true),
-            Some(2),
-            Some(false),
-            Some(false),
-            Some(false),
-            Some(true),
-            Some(true),
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::ReviewedGated);
-    }
-
-    #[test]
-    fn bpr_hardened_catch_all() {
-        assert_eq!(
-            bpr_hardened_baseline().regime(),
-            BranchProtectionRegime::Hardened
-        );
-    }
-
-    #[test]
-    fn bpr_public_fields_route_to_their_own_band_decision() {
-        let cases: [BprFieldCase; 6] = [
-            (
-                "has_status_checks",
-                |d| d.has_status_checks = Some(false),
-                BranchProtectionRegime::ReviewedGated,
-            ),
-            (
-                "has_broad_bypass",
-                |d| d.has_broad_bypass = Some(true),
-                BranchProtectionRegime::ReviewedWithBypass,
-            ),
-            (
-                "required_reviewers",
-                |d| d.required_reviewers = Some(0),
-                BranchProtectionRegime::IntegrityOnly,
-            ),
-            (
-                "has_pr",
-                |d| d.has_pr = Some(false),
-                BranchProtectionRegime::IntegrityOnly,
-            ),
-            (
-                "force_push_blocked",
-                |d| d.force_push_blocked = Some(false),
-                BranchProtectionRegime::Unprotected,
-            ),
-            (
-                "deletion_blocked",
-                |d| d.deletion_blocked = Some(false),
-                BranchProtectionRegime::Unprotected,
-            ),
-        ];
-        for (field, mutate, expected) in cases {
-            let mut result = bpr_hardened_baseline();
-            assert_eq!(
-                result.regime(),
-                BranchProtectionRegime::Hardened,
-                "baseline for {field}"
-            );
-            mutate(&mut result.details);
-            assert_eq!(result.regime(), expected, "public field {field} routing");
-        }
-    }
-
-    #[test]
-    fn bpr_unknown_status_outranks_every_configured_control() {
-        let mut result = bpr_hardened_baseline();
-        result.status = BranchProtectionStatus::Unknown;
-        assert_eq!(result.regime(), BranchProtectionRegime::Unmeasured);
-        assert_eq!(result.tier(), BranchProtectionTier::Excluded);
-    }
-
-    #[test]
-    fn bpr_all_none_controls_are_unprotected_not_unmeasured() {
-        let result = bpr_result(
-            BranchProtectionStatus::Partial,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(result.regime(), BranchProtectionRegime::Unprotected);
-        assert_eq!(result.tier(), BranchProtectionTier::BelowBaseline);
-    }
-
-    #[test]
-    fn bpr_max_required_reviewers_is_a_positive_review_gate() {
-        let mut gated = bpr_hardened_baseline();
-        gated.details.required_reviewers = Some(u32::MAX);
-        assert_eq!(gated.regime(), BranchProtectionRegime::Hardened);
-
-        let mut without_integrity = gated.clone();
-        without_integrity.details.force_push_blocked = Some(false);
-        assert_eq!(
-            without_integrity.regime(),
-            BranchProtectionRegime::Unprotected
-        );
-
-        let mut without_pr = gated;
-        without_pr.details.has_pr = Some(false);
-        assert_eq!(without_pr.regime(), BranchProtectionRegime::IntegrityOnly);
-    }
-
-    #[test]
-    fn tier_from_regime_derivation_is_total_over_all_bands() {
-        let cases = [
-            (
-                BranchProtectionRegime::Unmeasured,
-                BranchProtectionTier::Excluded,
-            ),
-            (
-                BranchProtectionRegime::Unprotected,
-                BranchProtectionTier::BelowBaseline,
-            ),
-            (
-                BranchProtectionRegime::IntegrityOnly,
-                BranchProtectionTier::Minimal,
-            ),
-            (
-                BranchProtectionRegime::ReviewedWithBypass,
-                BranchProtectionTier::AcceptBar,
-            ),
-            (
-                BranchProtectionRegime::ReviewedGated,
-                BranchProtectionTier::AcceptBar,
-            ),
-            (
-                BranchProtectionRegime::Hardened,
-                BranchProtectionTier::Bonus,
-            ),
-        ];
-        for (regime, expected_tier) in cases {
-            assert_eq!(BranchProtectionTier::from(regime), expected_tier);
-        }
-    }
-
-    proptest::proptest! {
-        #[test]
-        fn bpr_public_regime_matches_published_band_semantics(
-            status_idx in 0u8..4,
-            reason_kind_idx in 0u8..7,
-            has_pr in proptest::option::of(proptest::bool::ANY),
-            required_reviewers in proptest::option::of(
-                proptest::prop_oneof![0u32..3, proptest::strategy::Just(u32::MAX)]
-            ),
-            has_status_checks in proptest::option::of(proptest::bool::ANY),
-            admin_equivalent in proptest::option::of(proptest::bool::ANY),
-            has_broad_bypass in proptest::option::of(proptest::bool::ANY),
-            force_push_blocked in proptest::option::of(proptest::bool::ANY),
-            deletion_blocked in proptest::option::of(proptest::bool::ANY),
-        ) {
-            let status = match status_idx {
-                0 => BranchProtectionStatus::Pass,
-                1 => BranchProtectionStatus::Partial,
-                2 => BranchProtectionStatus::Fail,
-                _ => BranchProtectionStatus::Unknown,
-            };
-            let reason_kind = match reason_kind_idx {
-                0 => None,
-                1 => Some(CollectionFailureReason::PermissionDenied),
-                2 => Some(CollectionFailureReason::PermissionSuspected),
-                3 => Some(CollectionFailureReason::NotFoundAbsent),
-                4 => Some(CollectionFailureReason::Transient),
-                5 => Some(CollectionFailureReason::RateLimited),
-                _ => Some(CollectionFailureReason::Invalid),
-            };
-            let result = bpr_result(
-                status,
-                reason_kind,
-                has_pr,
-                required_reviewers,
-                has_status_checks,
-                admin_equivalent,
-                has_broad_bypass,
-                force_push_blocked,
-                deletion_blocked,
-            );
-
-            let regime = result.regime();
-
-            let measurable = status != BranchProtectionStatus::Unknown
-                && !matches!(
-                    reason_kind,
-                    Some(
-                        CollectionFailureReason::PermissionDenied
-                            | CollectionFailureReason::PermissionSuspected
-                            | CollectionFailureReason::Transient
-                            | CollectionFailureReason::RateLimited
-                            | CollectionFailureReason::Invalid
-                    )
+    fn from_history_signals_exhaustive_signal_grid() {
+        for fp in [None, Some(false), Some(true)] {
+            for del in [None, Some(false), Some(true)] {
+                let result = BranchProtectionResult::from_history_signals(
+                    "main",
+                    fp,
+                    del,
+                    "2026-06-17T11:31:04Z",
                 );
-            let integrity_floor =
-                force_push_blocked == Some(true) && deletion_blocked == Some(true);
-            let review_gate = has_pr == Some(true)
-                && required_reviewers.is_some_and(|count| count > 0);
-            let broad_bypass = has_broad_bypass == Some(true);
-            let status_checks = has_status_checks == Some(true);
-
-            let expected = match (
-                measurable,
-                integrity_floor,
-                review_gate,
-                broad_bypass,
-                status_checks,
-            ) {
-                (false, _, _, _, _) => BranchProtectionRegime::Unmeasured,
-                (true, false, _, _, _) => BranchProtectionRegime::Unprotected,
-                (true, true, false, _, _) => BranchProtectionRegime::IntegrityOnly,
-                (true, true, true, true, _) => BranchProtectionRegime::ReviewedWithBypass,
-                (true, true, true, false, false) => BranchProtectionRegime::ReviewedGated,
-                (true, true, true, false, true) => BranchProtectionRegime::Hardened,
-            };
-
-            proptest::prop_assert_eq!(regime, expected);
-            proptest::prop_assert_eq!(
-                result.tier(),
-                BranchProtectionTier::from(expected)
-            );
+                let expected_gap = match (fp.unwrap_or(false), del.unwrap_or(false)) {
+                    (true, true) => None,
+                    (false, true) => Some(HistoryProtectionGap::ForcePushAllowed),
+                    (true, false) => Some(HistoryProtectionGap::DeletionAllowed),
+                    (false, false) => Some(HistoryProtectionGap::NeitherBlocked),
+                };
+                assert_eq!(
+                    result.is_protected(),
+                    fp == Some(true) && del == Some(true),
+                    "signals ({fp:?}, {del:?})"
+                );
+                assert_eq!(result.gap(), expected_gap, "signals ({fp:?}, {del:?})");
+                if fp != Some(true) || del != Some(true) {
+                    assert_eq!(
+                        result.score_category(),
+                        ScoreCategory::Fail,
+                        "signals ({fp:?}, {del:?})"
+                    );
+                }
+            }
         }
     }
 }

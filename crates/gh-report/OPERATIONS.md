@@ -297,7 +297,7 @@ flowchart TB
 | 2 | Secret scanning enabled | `checks.secret_scanning.status` |
 | 3 | Alert-free status (0 open secret scanning alerts) | `checks.secret_scanning.has_open_alerts` |
 | 4 | Dependabot security updates enabled | `checks.dependabot_security_updates.status` |
-| 5 | Branch protection on default branch | `checks.branch_protection.status` |
+| 5 | Branch protection on default branch | `checks.branch_protection` |
 | 6 | CODEOWNERS present and conforming | `checks.codeowners.status` |
 
 All six controls carry equal weight within whichever score consumes them. There is no aggregation hierarchy and no weighted policy.
@@ -374,7 +374,7 @@ The owner/team detail page (`owners/<slug>.html`) surfaces the headline **Team H
 | **Security Policy** | Public repos with `SECURITY.md` or security-policy setting enabled | Security Policy |
 | **Secret Scanning** | Non-archived repos with secret scanning enabled | Secret Scanning |
 | **Dependabot Status** | Repos with Dependabot security updates enabled | Dependabot Security Updates |
-| **Branch Protection** | Observable repos with BPR2+ integrity rules on the default branch | Branch Protection |
+| **Branch Protection** | Observable repos with force-push and branch-deletion blocking on the default branch | Branch Protection |
 | **Alert-Free Status** | Observable repos with zero open secret-scanning alerts | Alert-Free |
 | **Lifecycle: Freshness** | `(total − stale) / total` for this owner's repos, as a percentage | Lifecycle: Freshness |
 | **Ownership** | `owned / (owned + attributed)` for this owner, as a percentage | Ownership |
@@ -445,9 +445,9 @@ Concrete remediation steps for each control, linked from the report's "Read more
 
 #### Branch Protection Coverage
 
-**What it means:** the default branch requires reviews and blocks force-push/deletion; see [Metric Caveats](report.html#metric-caveats) for the T0/T1/T2 tiers this feeds.
+**What it means:** the default branch blocks force pushes and branch deletion, protecting repository history from rewrite or deletion; see [Metric Caveats](report.html#metric-caveats).
 
-**How to fix:** add a branch protection **rule** on the default branch under **Settings → Branches** (classic model), or a **ruleset** under **Settings → Rules → Rulesets → New branch ruleset** (the newer model GitHub recommends). Require a pull request with review; leave **Allow force pushes** and **Allow deletions** unchecked; and enable **Do not allow bypassing the above settings** so administrators and broad bypass actors cannot defeat the protection.
+**How to fix:** add a branch protection **rule** on the default branch under **Settings → Branches** (classic model), or a **ruleset** under **Settings → Rules → Rulesets → New branch ruleset** (the newer model GitHub recommends). Leave **Allow force pushes** and **Allow deletions** unchecked so repository history cannot be rewritten or deleted.
 
 #### CODEOWNERS Coverage
 
@@ -505,7 +505,7 @@ Set `--force-refresh` (or `GH_REPORT_FORCE_REFRESH=true`) to bypass baseline reu
 | Constant | Current value | Stamped on | Validated against on load? |
 |----------|---------------|-----------|----------------------------|
 | `INVENTORY_SCHEMA_VERSION` | `1.0` | `InventoryPayload` (per-run inventory snapshot) | No — informational metadata for downstream consumers; never read back by the daemon. |
-| `EVIDENCE_SCHEMA_VERSION` | `23.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
+| `EVIDENCE_SCHEMA_VERSION` | `25.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
 
 Both constants live in `crates/gh-report/src/config/mod.rs`.
 
@@ -541,6 +541,8 @@ Version history is maintained forward-only from this point. Prior versions exist
 | `EVIDENCE_SCHEMA_VERSION = 21.0` | 2026-09-12 | Schema-major cutover to fresh stream generation for verified Pardosa 0.5.5 substrate deployment. Provisions fresh `-v21` streams (data, meta, org, team, checkpoints) with clean reseed from GitHub API, leaving `-v20` streams archived and untouched. |
 | `EVIDENCE_SCHEMA_VERSION = 22.0` | 2026-09-14 | Schema-major cutover to fresh stream generation v22. Persists exact UpdatedAt spellings and adds is_empty to event::Repository. NativeStore enforces fail-closed SchemaDescriptor identity verification on open/resync, rejecting unadmitted legacy stores or mismatched schemas. Provisions fresh `-v22` streams and leaves `-v21` streams archived and untouched. |
 | `EVIDENCE_SCHEMA_VERSION = 23.0` | 2026-09-16 | Schema-major cutover to fresh stream generation v23. Persists durable CollectionCoverage in AssessmentMetadata and OrgStateCaptured. Provisions fresh `-v23` streams and leaves `-v22` streams archived and untouched. Old incompatible stores refuse and documented rescrape required. |
+| `EVIDENCE_SCHEMA_VERSION = 24.0` | 2026-09-21 | Adopt canonical Cherry and Pardosa revisions with typed evidence across all 44 reviewed consumer paths (#112). Provisions fresh `-v24` streams and leaves `-v23` streams archived and untouched. |
+| `EVIDENCE_SCHEMA_VERSION = 25.0` | 2026-10-15 | Schema-major cutover to fresh stream generation v25. Branch-protection governance narrows to history-protection-only: `BranchProtectionResult` becomes a closed sum (`Protected` / `Unprotected` + `HistoryProtectionGap` / `Unobservable`), the legacy `partial` state is removed, and Branch Protection joins the CoverageControl denominator drill-down (CHE-0083). Provisions fresh `-v25` streams and leaves `-v24` streams archived and untouched. |
 | `INVENTORY_SCHEMA_VERSION = 1.0` | (current) | Initial published version. |
 
 When bumping, append a row with the new version, the date, and a one-line note describing what shape change drove the bump. The version of `EVIDENCE_SCHEMA_VERSION` is also surfaced in the report metadata so the projected baseline's version is observable via `gh-report --dump-baseline --org <org>`.

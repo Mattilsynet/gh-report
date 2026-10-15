@@ -82,10 +82,10 @@ pub fn secret_for_status(
 }
 use crate::domain::auth::{AuthMode, TokenTier};
 use crate::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersContent,
-    CodeownersNonConformingLocation, CodeownersResult, CodeownersStatus, DependabotResult,
-    DependabotStatus, IndeterminateReason, RepositoryChecks, SecretScanningResult,
-    SecretScanningStatus, SecurityPolicyPath, SecurityPolicyResult,
+    BranchProtectionResult, CodeownersContent, CodeownersNonConformingLocation, CodeownersResult,
+    CodeownersStatus, DependabotResult, DependabotStatus, HistoryProtectionGap,
+    IndeterminateReason, RepositoryChecks, SecretScanningResult, SecretScanningStatus,
+    SecurityPolicyPath, SecurityPolicyResult,
 };
 use crate::domain::codeowners::{CodeownersEntry, ParsedCodeowners};
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
@@ -177,21 +177,8 @@ pub fn evidence_from_repository(repo: &Repository, timestamp: &str) -> Repositor
                 reason: None,
                 timestamp: timestamp.to_string(),
             },
-            branch_protection: BranchProtectionResult {
-                status: BranchProtectionStatus::Pass,
-                details: BranchProtectionDetails {
-                    default_branch: repo.default_branch.clone(),
-                    has_pr: Some(true),
-                    required_reviewers: Some(1),
-                    has_status_checks: Some(true),
-                    admin_equivalent: Some(true),
-                    has_broad_bypass: Some(false),
-                    reason: None,
-                    reason_kind: None,
-                    http_status: None,
-                    force_push_blocked: Some(true),
-                    deletion_blocked: Some(true),
-                },
+            branch_protection: BranchProtectionResult::Protected {
+                default_branch: repo.default_branch.clone(),
                 timestamp: timestamp.to_string(),
             },
             codeowners: CodeownersResult::Conforming {
@@ -317,90 +304,53 @@ pub fn dependabot_unknown() -> DependabotResult {
     }
 }
 
-/// Branch protection result: all controls satisfied.
+/// Branch protection result: history protection fully held (force-push and
+/// branch deletion both blocked on the default branch).
 #[must_use]
 pub fn branch_pass() -> BranchProtectionResult {
-    BranchProtectionResult {
-        status: BranchProtectionStatus::Pass,
-        details: BranchProtectionDetails {
-            default_branch: "main".to_string(),
-            has_pr: Some(true),
-            required_reviewers: Some(1),
-            has_status_checks: Some(true),
-            admin_equivalent: Some(true),
-            has_broad_bypass: Some(false),
-            reason: None,
-            reason_kind: None,
-            http_status: None,
-            force_push_blocked: Some(true),
-            deletion_blocked: Some(true),
-        },
+    BranchProtectionResult::Protected {
+        default_branch: "main".to_string(),
         timestamp: make_timestamp(),
     }
 }
 
-/// Branch protection result: some controls satisfied.
+/// Branch protection result: unprotected with a caller-supplied gap.
 #[must_use]
-pub fn branch_partial() -> BranchProtectionResult {
-    BranchProtectionResult {
-        status: BranchProtectionStatus::Partial,
-        details: BranchProtectionDetails {
-            default_branch: "main".to_string(),
-            has_pr: Some(true),
-            required_reviewers: Some(0),
-            has_status_checks: Some(false),
-            admin_equivalent: Some(false),
-            has_broad_bypass: Some(false),
-            reason: None,
-            reason_kind: None,
-            http_status: None,
-            force_push_blocked: Some(true),
-            deletion_blocked: Some(true),
-        },
+pub fn branch_unprotected_with_gap(gap: HistoryProtectionGap) -> BranchProtectionResult {
+    BranchProtectionResult::Unprotected {
+        default_branch: "main".to_string(),
+        gap,
         timestamp: make_timestamp(),
     }
 }
 
-/// Branch protection result: no controls detected.
+/// Branch protection result: unprotected with no controls observed.
 #[must_use]
 pub fn branch_fail() -> BranchProtectionResult {
-    BranchProtectionResult {
-        status: BranchProtectionStatus::Fail,
-        details: BranchProtectionDetails {
-            default_branch: "main".to_string(),
-            has_pr: None,
-            required_reviewers: None,
-            has_status_checks: None,
-            admin_equivalent: None,
-            has_broad_bypass: None,
-            reason: None,
-            reason_kind: None,
-            http_status: None,
-            force_push_blocked: None,
-            deletion_blocked: None,
-        },
+    branch_unprotected_with_gap(HistoryProtectionGap::Absent {
+        confirmed_not_found: false,
+        http_status: None,
+    })
+}
+
+/// Branch protection result: unobservable for a caller-supplied reason.
+#[must_use]
+pub fn branch_unobservable(reason: IndeterminateReason) -> BranchProtectionResult {
+    BranchProtectionResult::Unobservable {
+        default_branch: "main".to_string(),
+        reason,
+        http_status: None,
         timestamp: make_timestamp(),
     }
 }
 
-/// Branch protection result: unknown (permission denied).
+/// Branch protection result: unobservable (permission denied).
 #[must_use]
 pub fn branch_unknown() -> BranchProtectionResult {
-    BranchProtectionResult {
-        status: BranchProtectionStatus::Unknown,
-        details: BranchProtectionDetails {
-            default_branch: "main".to_string(),
-            has_pr: None,
-            required_reviewers: None,
-            has_status_checks: None,
-            admin_equivalent: None,
-            has_broad_bypass: None,
-            reason: Some("permission_denied".to_string()),
-            reason_kind: Some(crate::domain::checks::CollectionFailureReason::PermissionDenied),
-            http_status: Some(403),
-            force_push_blocked: None,
-            deletion_blocked: None,
-        },
+    BranchProtectionResult::Unobservable {
+        default_branch: "main".to_string(),
+        reason: IndeterminateReason::PermissionDenied,
+        http_status: Some(403),
         timestamp: make_timestamp(),
     }
 }
@@ -579,7 +529,6 @@ pub fn make_minimal_metrics() -> AggregatedMetrics {
         branch_protection_coverage: RateMetric::new(1, 1),
         branch_protection_counts: BranchProtectionCounts {
             pass: 1,
-            partial: 0,
             fail: 0,
             unknown: 0,
         },

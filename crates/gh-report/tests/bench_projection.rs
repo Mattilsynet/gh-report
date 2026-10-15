@@ -1,8 +1,8 @@
 use cherry_pit_core::Projection;
 use gh_report::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersContent,
-    CodeownersResult, DependabotResult, DependabotStatus, EnabledProvenance, ProbeSource,
-    RepositoryChecks, SecretScanningAlerts, SecretScanningResult, SecurityPolicyResult,
+    BranchProtectionResult, CodeownersContent, CodeownersResult, DependabotResult,
+    DependabotStatus, EnabledProvenance, HistoryProtectionGap, ProbeSource, RepositoryChecks,
+    SecretScanningAlerts, SecretScanningResult, SecurityPolicyResult,
 };
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
@@ -113,26 +113,17 @@ fn generate_evidence(repo_idx: usize, seq: usize) -> RepositoryEvidence {
                 reason: None,
                 timestamp: ts.clone(),
             },
-            branch_protection: BranchProtectionResult {
-                status: if bp_pass {
-                    BranchProtectionStatus::Pass
-                } else {
-                    BranchProtectionStatus::Fail
-                },
-                details: BranchProtectionDetails {
+            branch_protection: if bp_pass {
+                BranchProtectionResult::Protected {
                     default_branch: "main".to_string(),
-                    has_pr: Some(true),
-                    required_reviewers: Some(1),
-                    has_status_checks: Some(true),
-                    admin_equivalent: Some(true),
-                    has_broad_bypass: Some(false),
-                    reason: None,
-                    reason_kind: None,
-                    http_status: None,
-                    force_push_blocked: Some(true),
-                    deletion_blocked: Some(true),
-                },
-                timestamp: ts.clone(),
+                    timestamp: ts.clone(),
+                }
+            } else {
+                BranchProtectionResult::Unprotected {
+                    default_branch: "main".to_string(),
+                    gap: HistoryProtectionGap::NeitherBlocked,
+                    timestamp: ts.clone(),
+                }
             },
             codeowners: CodeownersResult::Conforming {
                 content: CodeownersContent::Unparsed,
@@ -294,7 +285,7 @@ fn projection_digest(projection: &EvidenceProjection) -> u64 {
         item.repository.id.hash(&mut hasher);
         item.repository.name.hash(&mut hasher);
         (item.checks.security_policy.status() as u8).hash(&mut hasher);
-        (item.checks.branch_protection.status as u8).hash(&mut hasher);
+        u8::from(item.checks.branch_protection.is_protected()).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -371,8 +362,8 @@ fn assert_expected_latest_state(projection: &EvidenceProjection, total: usize, f
             "{name} security_policy status at seq {seq}"
         );
         assert_eq!(
-            format!("{:?}", actual.checks.branch_protection.status),
-            format!("{:?}", expected.checks.branch_protection.status),
+            format!("{:?}", actual.checks.branch_protection.is_protected()),
+            format!("{:?}", expected.checks.branch_protection.is_protected()),
             "{name} branch_protection status at seq {seq}"
         );
         assert_eq!(
@@ -386,7 +377,8 @@ fn assert_expected_latest_state(projection: &EvidenceProjection, total: usize, f
             "{name} latest codeowners observation at seq {seq}"
         );
         assert_eq!(
-            actual.checks.branch_protection.timestamp, expected.checks.branch_protection.timestamp,
+            actual.checks.branch_protection.timestamp(),
+            expected.checks.branch_protection.timestamp(),
             "{name} latest branch_protection observation at seq {seq}"
         );
         assert!(
@@ -532,7 +524,10 @@ fn generated_stream_covers_both_status_outcomes() {
         for seq in 0..total {
             let evidence = generate_evidence(seq % fibers, seq);
             security.insert(format!("{:?}", evidence.checks.security_policy.status()));
-            protection.insert(format!("{:?}", evidence.checks.branch_protection.status));
+            protection.insert(format!(
+                "{:?}",
+                evidence.checks.branch_protection.is_protected()
+            ));
             visibility.insert(format!("{:?}", evidence.repository.visibility));
         }
         assert_eq!(security.len(), 2, "stream security_policy mix at {total}");
@@ -549,7 +544,10 @@ fn generated_stream_covers_both_status_outcomes() {
             let seq = expected_latest_seq(total, fibers, repo_idx);
             let evidence = generate_evidence(repo_idx, seq);
             head_security.insert(format!("{:?}", evidence.checks.security_policy.status()));
-            head_protection.insert(format!("{:?}", evidence.checks.branch_protection.status));
+            head_protection.insert(format!(
+                "{:?}",
+                evidence.checks.branch_protection.is_protected()
+            ));
         }
         assert_eq!(head_security.len(), 2, "fiber-head security mix at {total}");
         assert_eq!(
@@ -572,7 +570,7 @@ fn generated_stream_covers_both_status_outcomes_at_tiny_scale() {
         .collect();
     let head_protection: HashSet<String> = heads
         .iter()
-        .map(|e| format!("{:?}", e.checks.branch_protection.status))
+        .map(|e| format!("{:?}", e.checks.branch_protection.is_protected()))
         .collect();
     assert_eq!(
         head_security,

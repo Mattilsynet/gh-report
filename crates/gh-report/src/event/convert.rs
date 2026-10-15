@@ -10,14 +10,12 @@ use super::limits::{
     MAX_TOKEN_SCOPES, MAX_TOPIC, MAX_URL,
 };
 use super::{
-    AssessmentMetadata, AuthMode, BranchProtectionDetails, BranchProtectionResult,
-    BranchProtectionStatus, Capability, CodeownersEntry, CodeownersResult, CodeownersStatus,
-    CodeownersTruncationReason, CollectionFailureReason, CollectionStatus, DependabotResult,
-    DependabotStatus, LastCommitInfo, OrgAlertSummary, OrgStateCaptured, ParsedCodeowners,
-    RepoAlertSummary, RepoAlertSummaryEntry, Repository, RepositoryChecks, RepositoryEvidence,
-    SecretScanningResult, SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult,
-    SecurityPolicyStatus, StringU64Entry, TeamMemberRoleEvent, TeamRosterStatusEvent,
-    TeamStateCaptured, TokenTier, Visibility,
+    AssessmentMetadata, AuthMode, BranchProtectionResult, Capability, CodeownersEntry,
+    CodeownersResult, CodeownersTruncationReason, CollectionStatus, DependabotResult,
+    DependabotStatus, HistoryProtectionGap, LastCommitInfo, OrgAlertSummary, OrgStateCaptured,
+    ParsedCodeowners, RepoAlertSummary, RepoAlertSummaryEntry, Repository, RepositoryChecks,
+    RepositoryEvidence, SecretScanningResult, SecurityPolicyResult, StringU64Entry,
+    TeamMemberRoleEvent, TeamRosterStatusEvent, TeamStateCaptured, TokenTier, Visibility,
 };
 use crate::domain::auth as sa;
 use crate::domain::checks as s;
@@ -169,57 +167,10 @@ macro_rules! conversion_pair {
 
 bijective_enum!(sr::Visibility <=> Visibility { Public, Internal, Private });
 
-bijective_enum!(s::SecurityPolicyStatus <=> SecurityPolicyStatus {
-    Pass,
-    Fail,
-    Unknown,
-    NotApplicable,
-});
-
-bijective_enum!(s::SecurityPolicyEvidence <=> SecurityPolicyEvidence {
-    Setting,
-    File,
-    Absent,
-    PermissionDenied,
-    TransientError,
-    CollectionError,
-    NotApplicable,
-});
-
-bijective_enum!(s::SecretScanningStatus <=> SecretScanningStatus {
-    Enabled,
-    Disabled,
-    PermissionDenied,
-    Unknown,
-});
-
 bijective_enum!(s::DependabotStatus <=> DependabotStatus {
     Enabled,
     Paused,
     Disabled,
-    Unknown,
-});
-
-bijective_enum!(s::BranchProtectionStatus <=> BranchProtectionStatus {
-    Pass,
-    Partial,
-    Fail,
-    Unknown,
-});
-
-bijective_enum!(s::CollectionFailureReason <=> CollectionFailureReason {
-    PermissionDenied,
-    PermissionSuspected,
-    NotFoundAbsent,
-    Transient,
-    RateLimited,
-    Invalid,
-});
-
-bijective_enum!(s::CodeownersStatus <=> CodeownersStatus {
-    Conforming,
-    NonConforming,
-    Absent,
     Unknown,
 });
 
@@ -454,50 +405,90 @@ conversion_pair!(s::DependabotResult => DependabotResult {
     }
 });
 
-conversion_pair!(s::BranchProtectionDetails => BranchProtectionDetails {
-    try_from(v) {
-        default_branch: to_nes::<MAX_BRANCH_NAME>(
-            "branch_protection.default_branch",
-            &v.default_branch,
-        )?,
-        has_pr: v.has_pr,
-        required_reviewers: v.required_reviewers,
-        has_status_checks: v.has_status_checks,
-        admin_equivalent: v.admin_equivalent,
-        has_broad_bypass: v.has_broad_bypass,
-        reason: to_es_opt::<MAX_REASON>("branch_protection.reason", v.reason)?,
-        reason_kind: v.reason_kind.map(Into::into),
-        http_status: v.http_status,
-        force_push_blocked: v.force_push_blocked,
-        deletion_blocked: v.deletion_blocked,
-    }
-    from(v) {
-        default_branch: v.default_branch.as_str().to_string(),
-        has_pr: v.has_pr,
-        required_reviewers: v.required_reviewers,
-        has_status_checks: v.has_status_checks,
-        admin_equivalent: v.admin_equivalent,
-        has_broad_bypass: v.has_broad_bypass,
-        reason: v.reason.map(|r| r.as_str().to_string()),
-        reason_kind: v.reason_kind.map(Into::into),
-        http_status: v.http_status,
-        force_push_blocked: v.force_push_blocked,
-        deletion_blocked: v.deletion_blocked,
-    }
+secret_conversion!(HistoryProtectionGap {
+    Absent { confirmed_not_found, http_status },
+    NeitherBlocked {},
+    ForcePushAllowed {},
+    DeletionAllowed {}
 });
 
-conversion_pair!(s::BranchProtectionResult => BranchProtectionResult {
-    try_from(v) {
-        status: v.status.into(),
-        details: BranchProtectionDetails::try_from(v.details)?,
-        timestamp: ts_required("branch_protection.timestamp", &v.timestamp)?,
+impl TryFrom<s::BranchProtectionResult> for BranchProtectionResult {
+    type Error = EventConversionError;
+    fn try_from(value: s::BranchProtectionResult) -> Conv<Self> {
+        match value {
+            s::BranchProtectionResult::Protected {
+                default_branch,
+                timestamp,
+            } => Ok(Self::Protected {
+                default_branch: to_nes::<MAX_BRANCH_NAME>(
+                    "branch_protection.default_branch",
+                    &default_branch,
+                )?,
+                timestamp: ts_required("branch_protection.timestamp", &timestamp)?,
+            }),
+            s::BranchProtectionResult::Unprotected {
+                default_branch,
+                gap,
+                timestamp,
+            } => Ok(Self::Unprotected {
+                default_branch: to_nes::<MAX_BRANCH_NAME>(
+                    "branch_protection.default_branch",
+                    &default_branch,
+                )?,
+                gap: gap.into(),
+                timestamp: ts_required("branch_protection.timestamp", &timestamp)?,
+            }),
+            s::BranchProtectionResult::Unobservable {
+                default_branch,
+                reason,
+                http_status,
+                timestamp,
+            } => Ok(Self::Unobservable {
+                default_branch: to_nes::<MAX_BRANCH_NAME>(
+                    "branch_protection.default_branch",
+                    &default_branch,
+                )?,
+                reason: reason.into(),
+                http_status,
+                timestamp: ts_required("branch_protection.timestamp", &timestamp)?,
+            }),
+        }
     }
-    from(v) {
-        status: v.status.into(),
-        details: v.details.into(),
-        timestamp: ts_to_string(v.timestamp),
+}
+
+impl From<BranchProtectionResult> for s::BranchProtectionResult {
+    fn from(value: BranchProtectionResult) -> Self {
+        match value {
+            BranchProtectionResult::Protected {
+                default_branch,
+                timestamp,
+            } => Self::Protected {
+                default_branch: default_branch.as_str().to_string(),
+                timestamp: ts_to_string(timestamp),
+            },
+            BranchProtectionResult::Unprotected {
+                default_branch,
+                gap,
+                timestamp,
+            } => Self::Unprotected {
+                default_branch: default_branch.as_str().to_string(),
+                gap: gap.into(),
+                timestamp: ts_to_string(timestamp),
+            },
+            BranchProtectionResult::Unobservable {
+                default_branch,
+                reason,
+                http_status,
+                timestamp,
+            } => Self::Unobservable {
+                default_branch: default_branch.as_str().to_string(),
+                reason: reason.into(),
+                http_status,
+                timestamp: ts_to_string(timestamp),
+            },
+        }
     }
-});
+}
 
 conversion_pair!(sc::CodeownersEntry => CodeownersEntry {
     try_from(v) {

@@ -23,9 +23,9 @@
 //! falsifies either regression.
 
 use gh_report::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersContent,
-    CodeownersResult, DependabotResult, DependabotStatus, EnabledProvenance, ProbeSource,
-    RepositoryChecks, SecretScanningAlerts, SecretScanningResult, SecurityPolicyResult,
+    BranchProtectionResult, CodeownersContent, CodeownersResult, DependabotResult,
+    DependabotStatus, EnabledProvenance, ProbeSource, RepositoryChecks, SecretScanningAlerts,
+    SecretScanningResult, SecurityPolicyResult,
 };
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
@@ -78,21 +78,8 @@ fn ev(inventory_key: &str, id: &str, name: &str) -> RepositoryEvidence {
                 reason: None,
                 timestamp: ts.to_string(),
             },
-            branch_protection: BranchProtectionResult {
-                status: BranchProtectionStatus::Pass,
-                details: BranchProtectionDetails {
-                    default_branch: "main".to_string(),
-                    has_pr: Some(true),
-                    required_reviewers: Some(1),
-                    has_status_checks: Some(true),
-                    admin_equivalent: Some(true),
-                    has_broad_bypass: Some(false),
-                    reason: None,
-                    reason_kind: None,
-                    http_status: None,
-                    force_push_blocked: Some(true),
-                    deletion_blocked: Some(true),
-                },
+            branch_protection: BranchProtectionResult::Protected {
+                default_branch: "main".to_string(),
                 timestamp: ts.to_string(),
             },
             codeowners: CodeownersResult::Conforming {

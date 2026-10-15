@@ -16,7 +16,7 @@ use crate::config::dashboard::CoverageTiers;
 use crate::config::org::{HelpLink, TeamAccessGuidance};
 use crate::domain::auth::{AuthMode, Capability, TokenTier};
 use crate::domain::checks::{
-    BranchProtectionRegime, CollectionFailureReason, SecretScanningStatus,
+    BranchProtectionResult, CollectionFailureReason, HistoryProtectionGap, SecretScanningStatus,
 };
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
@@ -195,7 +195,7 @@ macro_rules! drill_down_pages {
 }
 
 drill_down_pages! {
-    /// The Branch Protection Regime (BPR0..BPR5) drill-down page.
+    /// The Branch Protection coverage-denominator drill-down page.
     BranchProtection => "branch_protection.html",
     /// The Security Policy coverage-denominator drill-down page.
     SecurityPolicy => "security_policy.html",
@@ -896,31 +896,6 @@ pub struct OrphanedViewModel {
     pub by_team: Vec<OrphanedTeamGroup>,
 }
 
-/// A row in a Branch Protection Regime (BPR) group table.
-#[derive(Debug, Clone)]
-pub struct BprRepoRow {
-    /// Repository name.
-    pub repo_name: String,
-    /// URL to the repository on GitHub.
-    pub repo_url: String,
-    /// Repository visibility label (`"Public"`, `"Internal"`, or `"Private"`).
-    pub visibility: String,
-    /// Whether pull requests are required before merging.
-    pub has_pr: StatusDot,
-    /// Minimum number of required approving reviews, formatted (`"2"` or `"—"`).
-    pub required_reviewers_formatted: String,
-    /// Whether required status checks are configured.
-    pub has_status_checks: StatusDot,
-    /// Whether administrators are subject to the branch protection rules.
-    pub admin_equivalent: StatusDot,
-    /// Whether a broad bypass actor weakens the protection guarantees.
-    pub has_broad_bypass: StatusDot,
-    /// Whether force pushes are blocked on the protected branch.
-    pub force_push_blocked: StatusDot,
-    /// Whether branch deletion is blocked on the protected branch.
-    pub deletion_blocked: StatusDot,
-}
-
 /// One repository inside a control's coverage denominator.
 ///
 /// The verdict is carried as a [`ControlOutcome`] in a private field and the
@@ -1184,86 +1159,6 @@ impl LifecycleRetirementViewModel {
     }
 }
 
-/// One Branch Protection Regime band and its member repos.
-#[derive(Debug, Clone)]
-pub struct BprBandGroup {
-    /// Short band id (e.g. `"BPR0"`).
-    pub id: &'static str,
-    /// Human-readable band name (e.g. `"Unmeasured"`).
-    pub name: &'static str,
-    /// One-line description of what the band means.
-    pub description: &'static str,
-    /// CSS class for the band's section heading/badge.
-    pub css_class: &'static str,
-    /// Repos in this band, sorted by name.
-    pub repos: Vec<BprRepoRow>,
-}
-
-/// View model for the Branch Protection Regime drill-down page.
-///
-/// Report-side only (CHE-0083:R7): built fresh from
-/// [`crate::domain::checks::BranchProtectionResult::regime`] on every
-/// render, never persisted.
-#[derive(Debug, Clone)]
-pub struct BranchProtectionRegimeViewModel {
-    /// Organization name (for the page title).
-    pub organization: String,
-    /// Bands in BPR0..BPR5 order; every band appears even when empty, so the
-    /// page is a visible exhaustive partition, not a filtered subset.
-    pub bands: Vec<BprBandGroup>,
-    /// Total repos classified across all bands.
-    pub total_repos: u32,
-}
-
-/// Display metadata for a [`BranchProtectionRegime`] band: `(id, name,
-/// description, css_class)`.
-///
-/// Presentation-layer mapping, kept separate from the domain enum
-/// (COM-0009:R2 — mirrors [`CoverageTier`]'s own presentation split).
-#[must_use]
-pub fn bpr_band_metadata(
-    regime: BranchProtectionRegime,
-) -> (&'static str, &'static str, &'static str, &'static str) {
-    match regime {
-        BranchProtectionRegime::Unmeasured => (
-            "BPR0",
-            "Unmeasured",
-            "Protection status could not be read (permission-denied, transient, or unknown).",
-            "tier-na",
-        ),
-        BranchProtectionRegime::Unprotected => (
-            "BPR1",
-            "Unprotected",
-            "No effective baseline protection: unprotected, or force-push/deletion integrity not held.",
-            "tier-fail",
-        ),
-        BranchProtectionRegime::IntegrityOnly => (
-            "BPR2",
-            "Integrity Only",
-            "Force-push and deletion blocked, but no PR/review gate.",
-            "tier-warn",
-        ),
-        BranchProtectionRegime::ReviewedWithBypass => (
-            "BPR3",
-            "Reviewed, Bypassable",
-            "PR and review required, integrity held, but a broad bypass actor can skip the gate.",
-            "tier-warn",
-        ),
-        BranchProtectionRegime::ReviewedGated => (
-            "BPR4",
-            "Reviewed, Gated",
-            "PR and review required, integrity held, no bypass — but no required status checks.",
-            "tier-pass",
-        ),
-        BranchProtectionRegime::Hardened => (
-            "BPR5",
-            "Hardened",
-            "PR, review, integrity, and required status checks all held, with no broad bypass.",
-            "tier-pass",
-        ),
-    }
-}
-
 /// A row in the deleted repositories table.
 #[derive(Debug, Clone)]
 pub struct DeletedRepoRow {
@@ -1511,10 +1406,6 @@ pub enum RedFlagId {
     SecretScanningUnobservable,
     /// Branch protection confirmed absent on the default branch.
     BranchProtectionAbsent,
-    /// Branch protection has a broad bypass actor.
-    BroadBypassPresent,
-    /// Branch protection does not bind repository administrators.
-    AdminEnforcementNotEquivalent,
     /// Force pushes or branch deletion are not blocked on the default branch.
     IntegrityControlGap,
 }
@@ -1849,7 +1740,6 @@ pub struct ReportViewModel {
     pub secret_scanning_permission_denied: u32,
     pub secret_scanning_unknown: u32,
 
-    pub branch_protection_partial: u32,
     pub branch_protection_fail: u32,
     pub branch_protection_unknown: u32,
 
@@ -2296,7 +2186,6 @@ impl ReportViewModel {
             secret_scanning_disabled: m.secret_scanning_counts.disabled,
             secret_scanning_permission_denied: m.secret_scanning_counts.permission_denied,
             secret_scanning_unknown: m.secret_scanning_counts.unknown,
-            branch_protection_partial: m.branch_protection_counts.partial,
             branch_protection_fail: m.branch_protection_counts.fail,
             branch_protection_unknown: m.branch_protection_counts.unknown,
             codeowners_conforming: m.codeowners_counts.conforming,
@@ -2597,10 +2486,6 @@ pub fn build_red_flags(
     flags
 }
 
-fn repo_full_name(metadata: &AssessmentMetadata, repo: &RepositoryEvidence) -> String {
-    format!("{}/{}", metadata.organization, repo.repository.name)
-}
-
 fn sum_collection_health(
     counts: &[CollectionHealthCount],
     predicate: impl Fn(&CollectionHealthCount) -> bool,
@@ -2873,45 +2758,43 @@ fn push_secret_scanning_unobservable(flags: &mut Vec<RedFlag>, repos: &[Reposito
 
 struct PostureScanResults {
     absent: Vec<String>,
-    broad_bypass: Vec<String>,
-    admin_not_bound: Vec<String>,
     integrity_gap: Vec<String>,
+}
+
+fn repo_full_name(metadata: &AssessmentMetadata, repo: &RepositoryEvidence) -> String {
+    format!("{}/{}", metadata.organization, repo.repository.name)
 }
 
 fn scan_branch_protection_posture(
     metadata: &AssessmentMetadata,
     repos: &[RepositoryEvidence],
 ) -> PostureScanResults {
-    let mut results = PostureScanResults {
-        absent: Vec::new(),
-        broad_bypass: Vec::new(),
-        admin_not_bound: Vec::new(),
-        integrity_gap: Vec::new(),
-    };
+    let mut absent = Vec::new();
+    let mut integrity_gap = Vec::new();
 
     for repo in repos {
-        let details = &repo.checks.branch_protection.details;
+        let BranchProtectionResult::Unprotected { gap, .. } = &repo.checks.branch_protection else {
+            continue;
+        };
         let name = repo_full_name(metadata, repo);
-
-        if details.reason_kind == Some(CollectionFailureReason::NotFoundAbsent) {
-            results.absent.push(name.clone());
-        }
-        if details.has_broad_bypass == Some(true) {
-            results.broad_bypass.push(name.clone());
-        }
-        if details.admin_equivalent == Some(false) {
-            results.admin_not_bound.push(name.clone());
-        }
-        if details.force_push_blocked == Some(false) || details.deletion_blocked == Some(false) {
-            results.integrity_gap.push(name);
+        match gap {
+            HistoryProtectionGap::Absent {
+                confirmed_not_found: true,
+                ..
+            } => absent.push(name),
+            HistoryProtectionGap::Absent { .. }
+            | HistoryProtectionGap::NeitherBlocked
+            | HistoryProtectionGap::ForcePushAllowed
+            | HistoryProtectionGap::DeletionAllowed => integrity_gap.push(name),
         }
     }
 
-    results.absent.sort_unstable();
-    results.broad_bypass.sort_unstable();
-    results.admin_not_bound.sort_unstable();
-    results.integrity_gap.sort_unstable();
-    results
+    absent.sort_unstable();
+    integrity_gap.sort_unstable();
+    PostureScanResults {
+        absent,
+        integrity_gap,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -2956,29 +2839,7 @@ fn push_branch_protection_posture_flags(
             severity: Severity::High,
             title: "Branch protection is absent",
             detail: "GitHub confirms no branch protection is configured on the default branch — this is a definitive absence, not a permission-limited read.",
-            remedy_summary: "Configure branch protection on the default branch (required reviews, status checks, and push/deletion restrictions).",
-        },
-    );
-    push_posture_flag(
-        flags,
-        scan.broad_bypass,
-        PostureFlagSpec {
-            id: RedFlagId::BroadBypassPresent,
-            severity: Severity::High,
-            title: "Branch protection has a broad bypass actor",
-            detail: "A broad bypass actor, for example organization admins, can skip branch protection rules entirely on the default branch.",
-            remedy_summary: "Remove or narrow the bypass actor so branch protection cannot be broadly circumvented.",
-        },
-    );
-    push_posture_flag(
-        flags,
-        scan.admin_not_bound,
-        PostureFlagSpec {
-            id: RedFlagId::AdminEnforcementNotEquivalent,
-            severity: Severity::Medium,
-            title: "Administrators are exempt from branch protection",
-            detail: "Branch protection does not apply to repository administrators on the default branch.",
-            remedy_summary: "Enable enforcement for administrators on the default branch protection rule.",
+            remedy_summary: "Configure branch protection on the default branch to block force pushes and branch deletion.",
         },
     );
     push_posture_flag(
@@ -3076,7 +2937,7 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
             "Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.",
         ),
         "branch_protection" => Some(
-            "Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can't skip it.",
+            "Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: block force pushes and disallow branch deletion.",
         ),
         "codeowners" => Some(
             "Add .github/CODEOWNERS naming a GitHub team (not an individual) with write access to the repo, e.g. `*   @your-org/team-slug` — teams survive membership changes.",
@@ -3135,7 +2996,7 @@ pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str>
             "Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.",
         ),
         "branch_protection" => Some(
-            "Branch protection at the T2 accept-bar or better — pull request review required, on top of T1's force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.",
+            "Branch protection history integrity — force pushes and branch deletion blocked on the default branch. Same per-repo check behind both this column and the org-wide Branch Protection metric.",
         ),
         "non_stale" => Some(NON_STALE_TOOLTIP),
         "non_orphaned" => Some(NON_ORPHANED_TOOLTIP),
@@ -3251,16 +3112,12 @@ fn format_run_timestamp(ts: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::auth::{AuthMode, Capability, TokenTier};
-    use crate::domain::checks::{
-        BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
-        CollectionFailureReason, ExclusionReason,
-    };
+    use crate::domain::checks::{CollectionFailureReason, ExclusionReason};
     use crate::domain::metrics::{
         AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionHealthCheckKind,
         CollectionHealthCount, DependabotCounts, PolicyCounts, RateMetric, ScoreExclusionCount,
         SecretAlertCounts, SecretScanningCounts,
     };
-    use crate::domain::repository::Visibility;
     use crate::test_fixtures;
     use std::collections::HashMap;
 
@@ -3310,7 +3167,6 @@ mod tests {
                 .with_extra("observable_repositories", 9),
             branch_protection_counts: BranchProtectionCounts {
                 pass: 6,
-                partial: 2,
                 fail: 1,
                 unknown: 1,
             },
@@ -3991,7 +3847,7 @@ mod tests {
         assert_eq!(
             coverage_control_how_to_fix("branch_protection"),
             Some(
-                "Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can't skip it."
+                "Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: block force pushes and disallow branch deletion."
             )
         );
         assert_eq!(
@@ -4032,7 +3888,7 @@ mod tests {
         assert_eq!(
             coverage_control_column_tooltip("branch_protection"),
             Some(
-                "Branch protection at the T2 accept-bar or better — pull request review required, on top of T1's force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric."
+                "Branch protection history integrity — force pushes and branch deletion blocked on the default branch. Same per-repo check behind both this column and the org-wide Branch Protection metric."
             )
         );
         assert_eq!(
@@ -4455,39 +4311,10 @@ mod tests {
         vec![test_fixtures::all_passing_evidence("clean-repo")]
     }
 
-    fn branch_protection_with(
-        reason_kind: Option<CollectionFailureReason>,
-        has_broad_bypass: Option<bool>,
-        admin_equivalent: Option<bool>,
-        force_push_blocked: Option<bool>,
-        deletion_blocked: Option<bool>,
-    ) -> BranchProtectionResult {
-        BranchProtectionResult {
-            status: BranchProtectionStatus::Partial,
-            details: BranchProtectionDetails {
-                default_branch: "main".to_string(),
-                has_pr: Some(true),
-                required_reviewers: Some(1),
-                has_status_checks: Some(true),
-                admin_equivalent,
-                has_broad_bypass,
-                reason: None,
-                reason_kind,
-                http_status: None,
-                force_push_blocked,
-                deletion_blocked,
-            },
-            timestamp: test_fixtures::make_timestamp(),
-        }
-    }
-
-    fn repo_with_branch_protection(
-        name: &str,
-        branch: BranchProtectionResult,
-    ) -> RepositoryEvidence {
+    fn branch_protection_repo(name: &str, branch: BranchProtectionResult) -> RepositoryEvidence {
         test_fixtures::make_repository_evidence(
             name,
-            Visibility::Public,
+            crate::domain::repository::Visibility::Public,
             false,
             test_fixtures::make_checks(
                 test_fixtures::policy_pass_setting(),
@@ -4702,26 +4529,57 @@ mod tests {
     }
 
     #[test]
+    fn red_flag_integrity_control_gap_fires_and_absent() {
+        let repos = vec![branch_protection_repo(
+            "integrity-gap-repo",
+            BranchProtectionResult::Unprotected {
+                default_branch: "main".to_string(),
+                gap: HistoryProtectionGap::DeletionAllowed,
+                timestamp: "2026-06-17T11:31:04Z".to_string(),
+            },
+        )];
+        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::IntegrityControlGap)
+            .expect("flag should fire for a force-push-only partial gap");
+        assert_eq!(
+            flag.affected,
+            AffectedScope::Repos(vec!["TestOrg/integrity-gap-repo".to_string()])
+        );
+        assert_eq!(flag.severity, Severity::Medium);
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::IntegrityControlGap)
+        );
+    }
+
+    #[test]
     fn red_flag_branch_protection_absent_fires_and_absent() {
-        let repos = vec![repo_with_branch_protection(
+        let repos = vec![branch_protection_repo(
             "absent-bp-repo",
-            branch_protection_with(
-                Some(CollectionFailureReason::NotFoundAbsent),
-                Some(false),
-                Some(true),
-                Some(true),
-                Some(true),
-            ),
+            BranchProtectionResult::Unprotected {
+                default_branch: "main".to_string(),
+                gap: HistoryProtectionGap::Absent {
+                    confirmed_not_found: true,
+                    http_status: Some(404),
+                },
+                timestamp: "2026-06-17T11:31:04Z".to_string(),
+            },
         )];
         let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
         let flag = fired
             .iter()
             .find(|f| f.id == RedFlagId::BranchProtectionAbsent)
-            .expect("flag should fire");
+            .expect("flag should fire for confirmed absence");
         assert_eq!(
             flag.affected,
             AffectedScope::Repos(vec!["TestOrg/absent-bp-repo".to_string()])
         );
+        assert_eq!(flag.severity, Severity::High);
         assert_eq!(
             flag.remedy.fix_target,
             FixTarget::Repo("TestOrg/absent-bp-repo".to_string())
@@ -4732,74 +4590,6 @@ mod tests {
             !absent
                 .iter()
                 .any(|f| f.id == RedFlagId::BranchProtectionAbsent)
-        );
-    }
-
-    #[test]
-    fn red_flag_broad_bypass_fires_and_absent() {
-        let repos = vec![repo_with_branch_protection(
-            "broad-bypass-repo",
-            branch_protection_with(None, Some(true), Some(true), Some(true), Some(true)),
-        )];
-        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
-        let flag = fired
-            .iter()
-            .find(|f| f.id == RedFlagId::BroadBypassPresent)
-            .expect("flag should fire");
-        assert_eq!(
-            flag.affected,
-            AffectedScope::Repos(vec!["TestOrg/broad-bypass-repo".to_string()])
-        );
-
-        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
-        assert!(!absent.iter().any(|f| f.id == RedFlagId::BroadBypassPresent));
-    }
-
-    #[test]
-    fn red_flag_admin_enforcement_not_equivalent_fires_and_absent() {
-        let repos = vec![repo_with_branch_protection(
-            "admin-gap-repo",
-            branch_protection_with(None, Some(false), Some(false), Some(true), Some(true)),
-        )];
-        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
-        let flag = fired
-            .iter()
-            .find(|f| f.id == RedFlagId::AdminEnforcementNotEquivalent)
-            .expect("flag should fire");
-        assert_eq!(
-            flag.affected,
-            AffectedScope::Repos(vec!["TestOrg/admin-gap-repo".to_string()])
-        );
-
-        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
-        assert!(
-            !absent
-                .iter()
-                .any(|f| f.id == RedFlagId::AdminEnforcementNotEquivalent)
-        );
-    }
-
-    #[test]
-    fn red_flag_integrity_control_gap_fires_and_absent() {
-        let repos = vec![repo_with_branch_protection(
-            "integrity-gap-repo",
-            branch_protection_with(None, Some(false), Some(true), Some(false), Some(true)),
-        )];
-        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
-        let flag = fired
-            .iter()
-            .find(|f| f.id == RedFlagId::IntegrityControlGap)
-            .expect("flag should fire");
-        assert_eq!(
-            flag.affected,
-            AffectedScope::Repos(vec!["TestOrg/integrity-gap-repo".to_string()])
-        );
-
-        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
-        assert!(
-            !absent
-                .iter()
-                .any(|f| f.id == RedFlagId::IntegrityControlGap)
         );
     }
 
@@ -4816,12 +4606,7 @@ mod tests {
             count: 2,
         }];
 
-        let repos = vec![repo_with_branch_protection(
-            "posture-repo",
-            branch_protection_with(None, Some(false), Some(false), Some(true), Some(true)),
-        )];
-
-        let flags = build_red_flags(&metadata, &metrics, &repos);
+        let flags = build_red_flags(&metadata, &metrics, &neutral_repos());
 
         assert_eq!(
             flags.iter().map(|f| f.id).collect::<Vec<_>>(),
@@ -4829,7 +4614,6 @@ mod tests {
                 RedFlagId::TokenTierUnknown,
                 RedFlagId::CollectionRunStale,
                 RedFlagId::BranchProtectionPermissionSuspected,
-                RedFlagId::AdminEnforcementNotEquivalent,
             ]
         );
     }

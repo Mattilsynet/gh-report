@@ -64,8 +64,7 @@ fn sample_metrics() -> AggregatedMetrics {
             .with_extra("observable_repositories", 4),
         branch_protection_counts: BranchProtectionCounts {
             pass: 3,
-            partial: 1,
-            fail: 0,
+            fail: 1,
             unknown: 1,
         },
         codeowners_coverage: RateMetric::new(4, 5)
@@ -327,72 +326,32 @@ fn render_dashboard_branch_protection_snapshot() {
     });
 }
 
+/// The branch-protection page is a text verdict table, not a colour-only dot
+/// grid: every measured row must spell out "Met" or "Not met" (AGENTS.md
+/// code-quality rule 1 — never convey state by colour alone).
 #[test]
-fn render_dashboard_branch_protection_status_dots_have_non_colour_cue() {
-    let evidence = sample_evidence();
+fn render_dashboard_branch_protection_page_conveys_state_by_text_not_colour() {
+    let evidence = evidence_with_mixed_denominator_population();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let page = &pages["branch_protection.html"];
 
-    let dot_offsets: Vec<usize> = page
-        .match_indices("<span class=\"status-dot")
-        .map(|(offset, _)| offset)
-        .collect();
-    assert!(
-        !dot_offsets.is_empty(),
-        "expected at least one status-dot span"
-    );
-
-    for (index, &offset) in dot_offsets.iter().enumerate() {
-        let element = span_element_at(page, offset);
-        let Some(cue_start) = element.find("<span class=\"sr-only\">") else {
-            panic!(
-                "status-dot span {index} carries no sr-only accessible name of its own, so its \
-                 state is conveyed by colour alone: {element}"
-            )
-        };
-        let cue_body = &element[cue_start + "<span class=\"sr-only\">".len()..];
-        let Some(cue_end) = cue_body.find("</span>") else {
-            panic!("status-dot span {index} has an unterminated sr-only span")
-        };
-        let cue_text = &cue_body[..cue_end];
+    let mut rest: &str = page;
+    let mut rows = 0;
+    while let Some(at) = rest.find("<tr data-denominator-row") {
+        rest = &rest[at + "<tr data-denominator-row".len()..];
+        let row_end = rest.find("</tr>").unwrap_or(rest.len());
+        let row_slice = &rest[..row_end];
+        rows += 1;
         assert!(
-            !cue_text.trim().is_empty(),
-            "status-dot span {index} pairs with an empty sr-only span, which announces nothing"
+            row_slice.contains(">Met</td>") || row_slice.contains(">Not met</td>"),
+            "a measured row conveys its verdict by colour alone with no text label: {row_slice}"
         );
+        rest = &rest[row_end..];
     }
-}
-
-fn span_element_at(page: &str, start: usize) -> &str {
-    let mut depth = 0usize;
-    let mut cursor = start;
-    while cursor < page.len() {
-        let rest = &page[cursor..];
-        let open = rest.find("<span").map(|at| (at, true));
-        let close = rest.find("</span>").map(|at| (at, false));
-        let (at, is_open) = match (open, close) {
-            (Some(o), Some(c)) => {
-                if o.0 <= c.0 {
-                    o
-                } else {
-                    c
-                }
-            }
-            (Some(o), None) => o,
-            (None, Some(c)) => c,
-            (None, None) => break,
-        };
-        if is_open {
-            depth += 1;
-            cursor += at + "<span".len();
-            continue;
-        }
-        depth -= 1;
-        cursor += at + "</span>".len();
-        if depth == 0 {
-            return &page[start..cursor];
-        }
-    }
-    panic!("status-dot span starting at byte {start} is never closed")
+    assert!(
+        rows > 0,
+        "branch protection page must list measurable repositories"
+    );
 }
 
 #[test]
@@ -1052,68 +1011,42 @@ fn render_dashboard_index_escapes_org_name() {
 }
 
 use crate::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, CodeownersResult, CodeownersStatus,
-    DependabotResult, RepositoryChecks, SecretScanningResult, SecurityPolicyResult,
+    BranchProtectionResult, CodeownersResult, CodeownersStatus, DependabotResult,
+    IndeterminateReason, RepositoryChecks, SecretScanningResult, SecurityPolicyResult,
 };
+
+/// Test-driven branch-protection posture, mapped to the closed sum type.
+#[derive(Clone, Copy)]
+enum BranchFixture {
+    Protected,
+    Unprotected,
+    Unknown,
+}
 
 fn make_checks_with_statuses(
     policy: SecurityPolicyStatus,
     secret: SecretScanningStatus,
     dependabot: DependabotStatus,
-    branch: BranchProtectionStatus,
+    branch: BranchFixture,
 ) -> RepositoryChecks {
-    let branch_details = match branch {
-        BranchProtectionStatus::Pass => BranchProtectionDetails {
+    let branch_result = match branch {
+        BranchFixture::Protected => BranchProtectionResult::from_history_signals(
+            "main",
+            Some(true),
+            Some(true),
+            &test_fixtures::make_timestamp(),
+        ),
+        BranchFixture::Unprotected => BranchProtectionResult::from_history_signals(
+            "main",
+            Some(false),
+            Some(false),
+            &test_fixtures::make_timestamp(),
+        ),
+        BranchFixture::Unknown => BranchProtectionResult::Unobservable {
             default_branch: "main".to_string(),
-            has_pr: Some(true),
-            required_reviewers: Some(1),
-            has_status_checks: Some(false),
-            admin_equivalent: Some(false),
-            has_broad_bypass: Some(false),
-            reason: None,
-            reason_kind: None,
-            http_status: None,
-            force_push_blocked: Some(true),
-            deletion_blocked: Some(true),
-        },
-        BranchProtectionStatus::Partial => BranchProtectionDetails {
-            default_branch: "main".to_string(),
-            has_pr: Some(false),
-            required_reviewers: Some(0),
-            has_status_checks: Some(false),
-            admin_equivalent: Some(true),
-            has_broad_bypass: Some(false),
-            reason: None,
-            reason_kind: None,
-            http_status: None,
-            force_push_blocked: Some(true),
-            deletion_blocked: Some(true),
-        },
-        BranchProtectionStatus::Fail => BranchProtectionDetails {
-            default_branch: "main".to_string(),
-            has_pr: None,
-            required_reviewers: None,
-            has_status_checks: None,
-            admin_equivalent: None,
-            has_broad_bypass: None,
-            reason: None,
-            reason_kind: None,
-            http_status: None,
-            force_push_blocked: None,
-            deletion_blocked: None,
-        },
-        BranchProtectionStatus::Unknown => BranchProtectionDetails {
-            default_branch: "main".to_string(),
-            has_pr: None,
-            required_reviewers: None,
-            has_status_checks: None,
-            admin_equivalent: None,
-            has_broad_bypass: None,
-            reason: Some("permission_denied".to_string()),
-            reason_kind: Some(CollectionFailureReason::PermissionDenied),
+            reason: IndeterminateReason::PermissionDenied,
             http_status: Some(403),
-            force_push_blocked: None,
-            deletion_blocked: None,
+            timestamp: test_fixtures::make_timestamp(),
         },
     };
 
@@ -1132,11 +1065,7 @@ fn make_checks_with_statuses(
             reason: None,
             timestamp: test_fixtures::make_timestamp(),
         },
-        branch_protection: BranchProtectionResult {
-            status: branch,
-            details: branch_details,
-            timestamp: test_fixtures::make_timestamp(),
-        },
+        branch_protection: branch_result,
         codeowners: test_fixtures::codeowners_conforming(),
     }
 }
@@ -1146,7 +1075,7 @@ struct StatusDotsCase {
     policy: SecurityPolicyStatus,
     secret: SecretScanningStatus,
     dependabot: DependabotStatus,
-    branch: BranchProtectionStatus,
+    branch: BranchFixture,
     codeowners: CodeownersStatus,
     alerts_observable: bool,
     has_open_alerts: Option<bool>,
@@ -1166,7 +1095,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: CodeownersStatus::Conforming,
             alerts_observable: true,
             has_open_alerts: Some(false),
@@ -1177,7 +1106,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
                 ("status-pass", "enabled"),
                 ("status-pass", "alert-free"),
                 ("status-pass", "enabled"),
-                ("status-pass", "pass"),
+                ("status-pass", "protected"),
                 ("status-pass", "conforming"),
             ],
         },
@@ -1186,7 +1115,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             policy: SecurityPolicyStatus::Fail,
             secret: SecretScanningStatus::Disabled,
             dependabot: DependabotStatus::Disabled,
-            branch: BranchProtectionStatus::Fail,
+            branch: BranchFixture::Unprotected,
             codeowners: CodeownersStatus::Absent,
             alerts_observable: true,
             has_open_alerts: Some(true),
@@ -1197,7 +1126,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
                 ("status-fail", "disabled"),
                 ("status-na", "N/A"),
                 ("status-fail", "disabled"),
-                ("status-fail", "fail"),
+                ("status-fail", "unprotected"),
                 ("status-fail", "absent"),
             ],
         },
@@ -1206,7 +1135,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             policy: SecurityPolicyStatus::Unknown,
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Unknown,
-            branch: BranchProtectionStatus::Unknown,
+            branch: BranchFixture::Unknown,
             codeowners: CodeownersStatus::Unknown,
             alerts_observable: false,
             has_open_alerts: None,
@@ -1222,11 +1151,11 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             ],
         },
         StatusDotsCase {
-            name: "branch_partial",
+            name: "branch_unprotected",
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Partial,
+            branch: BranchFixture::Unprotected,
             codeowners: CodeownersStatus::Conforming,
             alerts_observable: true,
             has_open_alerts: Some(false),
@@ -1237,7 +1166,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
                 ("status-pass", "enabled"),
                 ("status-pass", "alert-free"),
                 ("status-pass", "enabled"),
-                ("status-warn", "partial"),
+                ("status-fail", "unprotected"),
                 ("status-pass", "conforming"),
             ],
         },
@@ -1246,7 +1175,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::PermissionDenied,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: CodeownersStatus::Conforming,
             alerts_observable: false,
             has_open_alerts: None,
@@ -1257,7 +1186,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
                 ("status-unknown", "permission denied"),
                 ("status-na", "N/A"),
                 ("status-pass", "enabled"),
-                ("status-pass", "pass"),
+                ("status-pass", "protected"),
                 ("status-pass", "conforming"),
             ],
         },
@@ -1266,7 +1195,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             policy: SecurityPolicyStatus::Unknown,
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Unknown,
-            branch: BranchProtectionStatus::Unknown,
+            branch: BranchFixture::Unknown,
             codeowners: CodeownersStatus::Unknown,
             alerts_observable: false,
             has_open_alerts: None,
@@ -1286,7 +1215,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             policy: SecurityPolicyStatus::NotApplicable,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: CodeownersStatus::Conforming,
             alerts_observable: false,
             has_open_alerts: None,
@@ -1297,7 +1226,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
                 ("status-pass", "enabled"),
                 ("status-na", "N/A"),
                 ("status-pass", "enabled"),
-                ("status-pass", "pass"),
+                ("status-pass", "protected"),
                 ("status-pass", "conforming"),
             ],
         },
@@ -1306,7 +1235,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: CodeownersStatus::NonConforming,
             alerts_observable: true,
             has_open_alerts: Some(false),
@@ -1317,7 +1246,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
                 ("status-pass", "enabled"),
                 ("status-pass", "alert-free"),
                 ("status-pass", "enabled"),
-                ("status-pass", "pass"),
+                ("status-pass", "protected"),
                 ("status-fail", "non-conforming"),
             ],
         },
@@ -1326,7 +1255,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: CodeownersStatus::Conforming,
             alerts_observable: true,
             has_open_alerts: Some(true),
@@ -1337,7 +1266,7 @@ fn status_dots_cases() -> [StatusDotsCase; 9] {
                 ("status-pass", "enabled"),
                 ("status-fail", "open alerts"),
                 ("status-pass", "enabled"),
-                ("status-pass", "pass"),
+                ("status-pass", "protected"),
                 ("status-pass", "conforming"),
             ],
         },
@@ -1362,7 +1291,12 @@ fn status_dots_match_expected_css_and_label_per_case() {
                 test_fixtures::make_timestamp(),
             );
             checks.dependabot_security_updates.reason = Some("pending".to_string());
-            checks.branch_protection.details.reason = Some("pending".to_string());
+            checks.branch_protection = BranchProtectionResult::Unobservable {
+                default_branch: "main".to_string(),
+                reason: IndeterminateReason::Pending,
+                http_status: None,
+                timestamp: test_fixtures::make_timestamp(),
+            };
         }
         if case.not_applicable_policy {
             checks.security_policy = SecurityPolicyResult::NotApplicable {
@@ -1413,7 +1347,7 @@ fn paused_dependabot_emits_partial_sort_key() {
         SecurityPolicyStatus::Pass,
         SecretScanningStatus::Enabled,
         DependabotStatus::Paused,
-        BranchProtectionStatus::Partial,
+        BranchFixture::Protected,
     );
     let dots = build_status_dots(&checks);
     assert_eq!(dots[3].sort_key(), "partial");
@@ -4716,7 +4650,7 @@ struct RepoScoreCase {
     policy: SecurityPolicyStatus,
     secret: SecretScanningStatus,
     dependabot: DependabotStatus,
-    branch: BranchProtectionStatus,
+    branch: BranchFixture,
     codeowners: Option<CodeownersStatus>,
     alerts_observable: bool,
     has_open_alerts: Option<bool>,
@@ -4738,7 +4672,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: None,
             alerts_observable: false,
             has_open_alerts: None,
@@ -4753,7 +4687,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Fail,
             secret: SecretScanningStatus::Disabled,
             dependabot: DependabotStatus::Disabled,
-            branch: BranchProtectionStatus::Fail,
+            branch: BranchFixture::Unprotected,
             codeowners: None,
             alerts_observable: false,
             has_open_alerts: None,
@@ -4768,7 +4702,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Unknown,
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Unknown,
-            branch: BranchProtectionStatus::Unknown,
+            branch: BranchFixture::Unknown,
             codeowners: Some(CodeownersStatus::Unknown),
             alerts_observable: false,
             has_open_alerts: None,
@@ -4783,7 +4717,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Disabled,
-            branch: BranchProtectionStatus::Unknown,
+            branch: BranchFixture::Unknown,
             codeowners: None,
             alerts_observable: false,
             has_open_alerts: None,
@@ -4794,11 +4728,11 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             expected_wc: None,
         },
         RepoScoreCase {
-            name: "paused_and_partial_count_as_fail",
+            name: "paused_and_branch_unprotected_count_as_fail",
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Paused,
-            branch: BranchProtectionStatus::Partial,
+            branch: BranchFixture::Unprotected,
             codeowners: None,
             alerts_observable: false,
             has_open_alerts: None,
@@ -4813,7 +4747,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::PermissionDenied,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: None,
             alerts_observable: false,
             has_open_alerts: None,
@@ -4828,7 +4762,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: Some(CodeownersStatus::NonConforming),
             alerts_observable: false,
             has_open_alerts: None,
@@ -4843,7 +4777,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: Some(CodeownersStatus::Absent),
             alerts_observable: false,
             has_open_alerts: None,
@@ -4858,7 +4792,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Fail,
             secret: SecretScanningStatus::Disabled,
             dependabot: DependabotStatus::Disabled,
-            branch: BranchProtectionStatus::Fail,
+            branch: BranchFixture::Unprotected,
             codeowners: Some(CodeownersStatus::Absent),
             alerts_observable: false,
             has_open_alerts: None,
@@ -4873,7 +4807,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Unknown,
-            branch: BranchProtectionStatus::Unknown,
+            branch: BranchFixture::Unknown,
             codeowners: Some(CodeownersStatus::Unknown),
             alerts_observable: false,
             has_open_alerts: None,
@@ -4888,7 +4822,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Unknown,
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Paused,
-            branch: BranchProtectionStatus::Unknown,
+            branch: BranchFixture::Unknown,
             codeowners: Some(CodeownersStatus::Unknown),
             alerts_observable: false,
             has_open_alerts: None,
@@ -4899,11 +4833,11 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             expected_wc: Some("w-0"),
         },
         RepoScoreCase {
-            name: "width_class_for_boundary_value_60",
+            name: "width_class_for_boundary_value_60_unprotected",
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Paused,
-            branch: BranchProtectionStatus::Partial,
+            branch: BranchFixture::Unprotected,
             codeowners: None,
             alerts_observable: false,
             has_open_alerts: None,
@@ -4918,7 +4852,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Fail,
             secret: SecretScanningStatus::Disabled,
             dependabot: DependabotStatus::Disabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: Some(CodeownersStatus::NonConforming),
             alerts_observable: false,
             has_open_alerts: None,
@@ -4933,7 +4867,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Unknown,
             dependabot: DependabotStatus::Disabled,
-            branch: BranchProtectionStatus::Unknown,
+            branch: BranchFixture::Unknown,
             codeowners: None,
             alerts_observable: false,
             has_open_alerts: None,
@@ -4948,7 +4882,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::NotApplicable,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: None,
             alerts_observable: false,
             has_open_alerts: None,
@@ -4963,7 +4897,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: Some(CodeownersStatus::Conforming),
             alerts_observable: true,
             has_open_alerts: Some(false),
@@ -4978,7 +4912,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Pass,
             secret: SecretScanningStatus::Enabled,
             dependabot: DependabotStatus::Enabled,
-            branch: BranchProtectionStatus::Pass,
+            branch: BranchFixture::Protected,
             codeowners: Some(CodeownersStatus::Conforming),
             alerts_observable: true,
             has_open_alerts: Some(true),
@@ -4993,7 +4927,7 @@ fn repo_score_cases() -> [RepoScoreCase; 18] {
             policy: SecurityPolicyStatus::Fail,
             secret: SecretScanningStatus::Disabled,
             dependabot: DependabotStatus::Disabled,
-            branch: BranchProtectionStatus::Fail,
+            branch: BranchFixture::Unprotected,
             codeowners: Some(CodeownersStatus::Absent),
             alerts_observable: true,
             has_open_alerts: Some(true),
@@ -5687,14 +5621,19 @@ fn is_pending_repo_positive() {
         SecurityPolicyStatus::Unknown,
         SecretScanningStatus::Unknown,
         DependabotStatus::Unknown,
-        BranchProtectionStatus::Unknown,
+        BranchFixture::Unknown,
     );
     checks.secret_scanning = SecretScanningResult::unobservable(
         crate::domain::checks::SecretScanningFailureReason::Pending,
         test_fixtures::make_timestamp(),
     );
     checks.dependabot_security_updates.reason = Some("pending".to_string());
-    checks.branch_protection.details.reason = Some("pending".to_string());
+    checks.branch_protection = BranchProtectionResult::Unobservable {
+        default_branch: "main".to_string(),
+        reason: IndeterminateReason::Pending,
+        http_status: None,
+        timestamp: test_fixtures::make_timestamp(),
+    };
     checks.codeowners = test_fixtures::codeowners_unknown();
     assert!(super::is_pending_repo(&checks));
 }
@@ -5705,7 +5644,7 @@ fn is_pending_repo_negative_collection_error() {
         SecurityPolicyStatus::Unknown,
         SecretScanningStatus::Unknown,
         DependabotStatus::Unknown,
-        BranchProtectionStatus::Unknown,
+        BranchFixture::Unknown,
     );
     checks.secret_scanning = SecretScanningResult::unobservable(
         crate::domain::checks::SecretScanningFailureReason::Invalid,
@@ -5720,7 +5659,7 @@ fn is_pending_repo_negative_none() {
         SecurityPolicyStatus::Unknown,
         SecretScanningStatus::Unknown,
         DependabotStatus::Unknown,
-        BranchProtectionStatus::Unknown,
+        BranchFixture::Unknown,
     );
     assert!(!super::is_pending_repo(&checks));
 }
@@ -6057,14 +5996,19 @@ fn make_pending_repo_evidence(name: &str) -> RepositoryEvidence {
         SecurityPolicyStatus::Unknown,
         SecretScanningStatus::Unknown,
         DependabotStatus::Unknown,
-        BranchProtectionStatus::Unknown,
+        BranchFixture::Unknown,
     );
     ev.checks.secret_scanning = SecretScanningResult::unobservable(
         crate::domain::checks::SecretScanningFailureReason::Pending,
         test_fixtures::make_timestamp(),
     );
     ev.checks.dependabot_security_updates.reason = Some("pending".to_string());
-    ev.checks.branch_protection.details.reason = Some("pending".to_string());
+    ev.checks.branch_protection = BranchProtectionResult::Unobservable {
+        default_branch: "main".to_string(),
+        reason: IndeterminateReason::Pending,
+        http_status: None,
+        timestamp: test_fixtures::make_timestamp(),
+    };
     ev.checks.codeowners = test_fixtures::codeowners_unknown();
     ev
 }
@@ -7392,18 +7336,13 @@ fn evidence_with_mixed_denominator_population() -> Evidence {
               policy,
               secret,
               dependabot,
+              branch,
               codeowners| {
         test_fixtures::make_repository_evidence(
             name,
             visibility,
             archived,
-            test_fixtures::make_checks(
-                policy,
-                secret,
-                dependabot,
-                test_fixtures::branch_pass(),
-                codeowners,
-            ),
+            test_fixtures::make_checks(policy, secret, dependabot, branch, codeowners),
         )
     };
 
@@ -7415,6 +7354,7 @@ fn evidence_with_mixed_denominator_population() -> Evidence {
             test_fixtures::policy_pass_setting(),
             test_fixtures::secret_enabled_observable(false),
             test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
             test_fixtures::codeowners_conforming(),
         ),
         mk(
@@ -7424,6 +7364,7 @@ fn evidence_with_mixed_denominator_population() -> Evidence {
             test_fixtures::policy_fail(),
             test_fixtures::secret_disabled(),
             test_fixtures::dependabot_disabled(),
+            test_fixtures::branch_pass(),
             test_fixtures::codeowners_absent(),
         ),
         mk(
@@ -7433,6 +7374,7 @@ fn evidence_with_mixed_denominator_population() -> Evidence {
             test_fixtures::policy_unknown(),
             test_fixtures::secret_permission_denied(),
             test_fixtures::dependabot_unknown(),
+            test_fixtures::branch_unknown(),
             test_fixtures::codeowners_unknown(),
         ),
         mk(
@@ -7442,6 +7384,7 @@ fn evidence_with_mixed_denominator_population() -> Evidence {
             test_fixtures::policy_pass_file(),
             test_fixtures::secret_unknown(),
             test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
             test_fixtures::codeowners_non_conforming(),
         ),
         mk(
@@ -7451,6 +7394,7 @@ fn evidence_with_mixed_denominator_population() -> Evidence {
             test_fixtures::policy_pass_setting(),
             test_fixtures::secret_disabled(),
             test_fixtures::dependabot_disabled(),
+            test_fixtures::branch_pass(),
             test_fixtures::codeowners_absent(),
         ),
         mk(
@@ -7460,6 +7404,7 @@ fn evidence_with_mixed_denominator_population() -> Evidence {
             test_fixtures::policy_fail(),
             test_fixtures::secret_permission_denied(),
             test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
             test_fixtures::codeowners_conforming(),
         ),
         mk(
@@ -7469,6 +7414,7 @@ fn evidence_with_mixed_denominator_population() -> Evidence {
             test_fixtures::policy_fail(),
             test_fixtures::secret_disabled(),
             test_fixtures::dependabot_unknown(),
+            test_fixtures::branch_pass(),
             test_fixtures::codeowners_unknown(),
         ),
     ];

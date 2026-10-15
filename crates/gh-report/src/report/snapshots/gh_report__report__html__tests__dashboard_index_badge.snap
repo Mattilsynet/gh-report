@@ -66,10 +66,10 @@ expression: "normalize_build_footer(&pages[\"index.html\"])"
                 </div>
                 <p class="card-detail">1 unmeasured (1 unknown)</p>
             </a>
-            <a href="branch_protection.html" class="card tier-warn" title="Percentage of observable repos at branch-protection BPR2 (IntegrityOnly) or higher. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as below-bar. Click through for the BPR0..BPR5 regime drill-down.">
-                <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ<span class="sr-only">Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.</span></span></p>
+            <a href="branch_protection.html" class="card tier-warn" title="Percentage of observable repos with force-push and branch-deletion blocking on the default branch. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as below-bar. Click through for the coverage-denominator drill-down.">
+                <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: block force pushes and disallow branch deletion.">ⓘ<span class="sr-only">Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: block force pushes and disallow branch deletion.</span></span></p>
                 <p class="card-value">60.0% (3/5)</p>
-                <p class="card-detail">BPR1 0 · 1 unmeasured (1 unknown)</p>
+                <p class="card-detail">Not protected 1 · 1 unmeasured (1 unknown)</p>
                 <div class="progress-bar">
                     <div
                         class="progress-fill tier-warn w-60">

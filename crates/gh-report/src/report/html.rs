@@ -18,8 +18,8 @@ use crate::aggregate::metrics::{
 use crate::config;
 use crate::config::dashboard::{CoverageTiers, DashboardConfig};
 use crate::domain::checks::{
-    BranchProtectionRegime, BranchProtectionStatus, CodeownersStatus, DependabotStatus,
-    ScoreCategory, SecretScanningStatus, SecurityPolicyStatus,
+    BranchProtectionResult, CodeownersStatus, DependabotStatus, ScoreCategory,
+    SecretScanningStatus, SecurityPolicyStatus,
 };
 use crate::domain::evidence::{Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
@@ -29,13 +29,12 @@ use crate::domain::metrics::{
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
-    BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
-    ControlDenominatorViewModel, ControlExclusion, CoverageNotice, CoverageTier, DashboardHref,
-    DeletedRepoRow, DeletedViewModel, DenominatorRepoRow, DotState, DrillDownPage, GhostTeamRow,
-    LifecycleRetirementViewModel, OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel,
-    OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel, ReportViewModel,
-    RosterFreshness, RosterSection, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
-    TopNav, TopSecurityTeam, UnmeasuredRepoRow, WildcardOwnerRow, bpr_band_metadata,
+    ControlCell, ControlColumn, ControlDenominatorViewModel, ControlExclusion, CoverageNotice,
+    CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel, DenominatorRepoRow, DotState,
+    DrillDownPage, GhostTeamRow, LifecycleRetirementViewModel, OrphanedRepoRow, OrphanedTeamGroup,
+    OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel,
+    ReportViewModel, RosterFreshness, RosterSection, StatusDot, SummaryCard, TeamMemberRow,
+    TeamRosterViewModel, TopNav, TopSecurityTeam, UnmeasuredRepoRow, WildcardOwnerRow,
     compute_health_score, coverage_control_column_tooltip, coverage_control_how_to_fix,
     format_exclusion, generate_slug, rate_to_width_class, strip_org_prefix,
 };
@@ -167,17 +166,6 @@ struct DeletedTemplate {
     warm_start: bool,
 }
 
-/// Askama template for the Branch Protection Regime drill-down page.
-#[derive(Template)]
-#[template(path = "branch_protection.html")]
-struct BranchProtectionTemplate {
-    vm: BranchProtectionRegimeViewModel,
-    nav: TopNav,
-    title: String,
-    /// When `true`, emits a `<meta http-equiv="refresh">` tag.
-    warm_start: bool,
-}
-
 /// Declare one coverage-denominator drill-down template.
 ///
 /// Askama binds a template path to a struct, so the four denominator pages
@@ -201,6 +189,10 @@ denominator_template!(SecurityPolicyDenominatorTemplate, "security_policy.html")
 denominator_template!(SecretScanningDenominatorTemplate, "secret_scanning.html");
 denominator_template!(DependabotDenominatorTemplate, "dependabot_status.html");
 denominator_template!(CodeownersDenominatorTemplate, "codeowners.html");
+denominator_template!(
+    BranchProtectionDenominatorTemplate,
+    "branch_protection.html"
+);
 denominator_template!(AlertFreeDenominatorTemplate, "alert_free.html");
 
 const fn show_archived_column(page: DrillDownPage) -> bool {
@@ -347,6 +339,11 @@ const DENOMINATOR_DRILL_DOWNS: &[DenominatorDrillDown] = &[
         control: CoverageControl::Codeowners,
         page: DrillDownPage::Codeowners,
         display_name: ControlKey::Codeowners.display_name(),
+    },
+    DenominatorDrillDown {
+        control: CoverageControl::BranchProtection,
+        page: DrillDownPage::BranchProtection,
+        display_name: ControlKey::BranchProtection.display_name(),
     },
 ];
 
@@ -705,18 +702,6 @@ fn render_secondary_pages(
     })?;
     sink("deleted.html".to_string(), deleted_html);
 
-    let bpr_vm = build_bpr_view_model(&evidence.repositories, org);
-    let bpr_html = render_template(&BranchProtectionTemplate {
-        title: format!("Branch Protection Regimes — {org}"),
-        vm: bpr_vm,
-        nav: nav.clone(),
-        warm_start,
-    })?;
-    sink(
-        DrillDownPage::BranchProtection.file_name().to_string(),
-        bpr_html,
-    );
-
     render_denominator_pages(evidence, nav, warm_start, sink)?;
 
     let alert_free_vm = build_alert_free_view_model(evidence)?;
@@ -798,6 +783,15 @@ fn render_denominator_pages(
                 warm_start,
                 show_archived_column,
             }),
+            CoverageControl::BranchProtection => {
+                render_template(&BranchProtectionDenominatorTemplate {
+                    vm,
+                    nav: nav.clone(),
+                    title,
+                    warm_start,
+                    show_archived_column,
+                })
+            }
         }?;
         sink(entry.page.file_name().to_string(), html);
     }
@@ -2294,11 +2288,10 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
         DependabotStatus::Unknown => unknown_or_pending_dot(pending),
     };
 
-    let branch_dot = match checks.branch_protection.status {
-        BranchProtectionStatus::Pass => StatusDot::new(DotState::Pass, "pass"),
-        BranchProtectionStatus::Partial => StatusDot::new(DotState::Partial, "partial"),
-        BranchProtectionStatus::Fail => StatusDot::new(DotState::Fail, "fail"),
-        BranchProtectionStatus::Unknown => unknown_or_pending_dot(pending),
+    let branch_dot = match &checks.branch_protection {
+        BranchProtectionResult::Protected { .. } => StatusDot::new(DotState::Pass, "protected"),
+        BranchProtectionResult::Unprotected { .. } => StatusDot::new(DotState::Fail, "unprotected"),
+        BranchProtectionResult::Unobservable { .. } => unknown_or_pending_dot(pending),
     };
 
     let codeowners_dot = match checks.codeowners.status() {
@@ -2316,87 +2309,6 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
         branch_dot,
         codeowners_dot,
     ]
-}
-
-/// Map an `Option<bool>` signal to a status dot: `Some(true)` pass,
-/// `Some(false)` fail, `None` unknown.
-fn option_bool_dot(value: Option<bool>) -> StatusDot {
-    match value {
-        Some(true) => StatusDot::new(DotState::Pass, "yes"),
-        Some(false) => StatusDot::new(DotState::Fail, "no"),
-        None => StatusDot::new(DotState::Unknown, "unknown"),
-    }
-}
-
-/// Build the Branch Protection Regime drill-down view model (BPR0..BPR5).
-///
-/// Report-side only (CHE-0083:R7): [`BranchProtectionRegime`] is computed
-/// fresh from each repo's [`crate::domain::checks::BranchProtectionResult::regime`]
-/// on every call, never read from a persisted field. Page-local view-model
-/// (COM-0027:R3/R4) — no `domain::metrics`/`aggregate::metrics` sibling.
-fn build_bpr_view_model(
-    repositories: &[RepositoryEvidence],
-    organization: &str,
-) -> BranchProtectionRegimeViewModel {
-    let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
-
-    let mut by_regime: HashMap<BranchProtectionRegime, Vec<BprRepoRow>> = HashMap::new();
-    for repo in repositories.iter().filter(|r| !r.repository.archived) {
-        let name_encoded = utf8_percent_encode(&repo.repository.name, PATH_SEGMENT);
-        let (repo_name, repo_url) = build_repo_display(repo, &org_encoded, &name_encoded);
-        let details = &repo.checks.branch_protection.details;
-        let regime = repo.checks.branch_protection.regime();
-
-        let row = BprRepoRow {
-            repo_name,
-            repo_url,
-            visibility: repo.repository.visibility.to_string(),
-            has_pr: option_bool_dot(details.has_pr),
-            required_reviewers_formatted: details
-                .required_reviewers
-                .map_or_else(|| EM_DASH.to_string(), |count| count.to_string()),
-            has_status_checks: option_bool_dot(details.has_status_checks),
-            admin_equivalent: option_bool_dot(details.admin_equivalent),
-            has_broad_bypass: option_bool_dot(details.has_broad_bypass),
-            force_push_blocked: option_bool_dot(details.force_push_blocked),
-            deletion_blocked: option_bool_dot(details.deletion_blocked),
-        };
-
-        by_regime.entry(regime).or_default().push(row);
-    }
-
-    let all_regimes = [
-        BranchProtectionRegime::Unmeasured,
-        BranchProtectionRegime::Unprotected,
-        BranchProtectionRegime::IntegrityOnly,
-        BranchProtectionRegime::ReviewedWithBypass,
-        BranchProtectionRegime::ReviewedGated,
-        BranchProtectionRegime::Hardened,
-    ];
-
-    let mut total_repos: u32 = 0;
-    let bands: Vec<BprBandGroup> = all_regimes
-        .into_iter()
-        .map(|regime| {
-            let (id, name, description, css_class) = bpr_band_metadata(regime);
-            let mut repos = by_regime.remove(&regime).unwrap_or_default();
-            repos.sort_by_key(|r| r.repo_name.to_lowercase());
-            total_repos += u32::try_from(repos.len()).unwrap_or(u32::MAX);
-            BprBandGroup {
-                id,
-                name,
-                description,
-                css_class,
-                repos,
-            }
-        })
-        .collect();
-
-    BranchProtectionRegimeViewModel {
-        organization: organization.to_string(),
-        bands,
-        total_repos,
-    }
 }
 
 #[cfg(test)]

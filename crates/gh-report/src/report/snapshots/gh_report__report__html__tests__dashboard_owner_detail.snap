@@ -95,7 +95,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         
         
         <a href="../branch_protection.html" class="card tier-warn">
-            <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ<span class="sr-only">Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.</span></span></p>
+            <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: block force pushes and disallow branch deletion.">ⓘ<span class="sr-only">Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: block force pushes and disallow branch deletion.</span></span></p>
             <p class="card-value">50.0% (1/2)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
@@ -144,7 +144,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                     
                     <th scope="col" class="text-center" data-sort-type="status">Dependabot Status <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.">ⓘ<span class="sr-only">Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.</span></span></th>
                     
-                    <th scope="col" class="text-center" data-sort-type="status">Branch Protection <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.">ⓘ<span class="sr-only">Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.</span></span></th>
+                    <th scope="col" class="text-center" data-sort-type="status">Branch Protection <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Branch protection history integrity — force pushes and branch deletion blocked on the default branch. Same per-repo check behind both this column and the org-wide Branch Protection metric.">ⓘ<span class="sr-only">Branch protection history integrity — force pushes and branch deletion blocked on the default branch. Same per-repo check behind both this column and the org-wide Branch Protection metric.</span></span></th>
                     
                     <th scope="col" class="text-center" data-sort-type="status">CODEOWNERS <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="CODEOWNERS presence — a CODEOWNERS file in a recognized location (.github/CODEOWNERS or CODEOWNERS) identifying responsible teams or individuals. Same per-repo check behind both this column and the org-wide CODEOWNERS Coverage metric.">ⓘ<span class="sr-only">CODEOWNERS presence — a CODEOWNERS file in a recognized location (.github/CODEOWNERS or CODEOWNERS) identifying responsible teams or individuals. Same per-repo check behind both this column and the org-wide CODEOWNERS Coverage metric.</span></span></th>
                     
@@ -185,7 +185,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                     <td class="text-center" data-sort-value="fail"><span class="status-dot status-fail" title="disabled"><span class="sr-only">disabled</span></span>
                     </td>
                     
-                    <td class="text-center" data-sort-value="fail"><span class="status-dot status-fail" title="fail"><span class="sr-only">fail</span></span>
+                    <td class="text-center" data-sort-value="fail"><span class="status-dot status-fail" title="unprotected"><span class="sr-only">unprotected</span></span>
                     </td>
                     
                     <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="conforming"><span class="sr-only">conforming</span></span>
@@ -226,7 +226,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                     <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="enabled"><span class="sr-only">enabled</span></span>
                     </td>
                     
-                    <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="pass"><span class="sr-only">pass</span></span>
+                    <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="protected"><span class="sr-only">protected</span></span>
                     </td>
                     
                     <td class="text-center" data-sort-value="pass"><span class="status-dot status-pass" title="conforming"><span class="sr-only">conforming</span></span>

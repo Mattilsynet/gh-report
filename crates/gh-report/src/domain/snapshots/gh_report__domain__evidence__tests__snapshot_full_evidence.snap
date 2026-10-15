@@ -6,7 +6,7 @@ expression: evidence
   "assessment_metadata": {
     "date": "2026-04-09",
     "organization": "TestOrg",
-    "schema_version": "24.0",
+    "schema_version": "25.0",
     "run_timestamp": "2026-04-09T12:00:00+00:00",
     "run_id": "test-run-id",
     "token_tier": "full",
@@ -77,7 +77,6 @@ expression: evidence
     },
     "branch_protection_counts": {
       "pass": 1,
-      "partial": 0,
       "fail": 0,
       "unknown": 0
     },
@@ -156,19 +155,10 @@ expression: evidence
           "timestamp": "2026-04-09T12:00:00+00:00"
         },
         "branch_protection": {
-          "status": "pass",
-          "details": {
+          "protected": {
             "default_branch": "main",
-            "has_pr": true,
-            "required_reviewers": 1,
-            "has_status_checks": true,
-            "admin_equivalent": true,
-            "has_broad_bypass": false,
-            "reason": null,
-            "force_push_blocked": true,
-            "deletion_blocked": true
-          },
-          "timestamp": "2026-04-09T12:00:00+00:00"
+            "timestamp": "2026-04-09T12:00:00+00:00"
+          }
         },
         "codeowners": {
           "conforming": {

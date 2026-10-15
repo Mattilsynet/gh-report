@@ -43,9 +43,8 @@ use crate::collector::{branch_protection, codeowners, dependabot, inventory, sec
 use crate::config;
 use crate::config::runtime::RuntimeConfig;
 use crate::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
-    DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
-    SecurityPolicyResult, SecurityPolicyStatus,
+    BranchProtectionResult, CodeownersResult, DependabotResult, DependabotStatus, RepositoryChecks,
+    SecretScanningResult, SecurityPolicyResult, SecurityPolicyStatus,
 };
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::OrgAlertSummary;
@@ -3258,21 +3257,14 @@ fn failure_evidence_with_reason(
                 reason: Some(reason.to_string()),
                 timestamp: run_timestamp.to_string(),
             },
-            branch_protection: BranchProtectionResult {
-                status: BranchProtectionStatus::Unknown,
-                details: BranchProtectionDetails {
-                    default_branch,
-                    has_pr: None,
-                    required_reviewers: None,
-                    has_status_checks: None,
-                    admin_equivalent: None,
-                    has_broad_bypass: None,
-                    reason: Some(reason.to_string()),
-                    reason_kind: Some(crate::domain::checks::CollectionFailureReason::Invalid),
-                    http_status: None,
-                    force_push_blocked: None,
-                    deletion_blocked: None,
+            branch_protection: BranchProtectionResult::Unobservable {
+                default_branch,
+                reason: if reason == "pending" {
+                    crate::domain::checks::IndeterminateReason::Pending
+                } else {
+                    crate::domain::checks::IndeterminateReason::Invalid
                 },
+                http_status: None,
                 timestamp: run_timestamp.to_string(),
             },
             codeowners: CodeownersResult::Unobservable {
@@ -4160,7 +4152,7 @@ mod tests {
     #[test]
     fn charge_of_classifies_all_six_evaluate_calls() {
         use crate::app::worker_pool::SettleOutcome;
-        use crate::domain::checks::{BranchProtectionStatus, DependabotStatus};
+        use crate::domain::checks::DependabotStatus;
 
         let evaluator = LiveEvaluator::with_shared_org_summary(
             test_github_client(),
@@ -4198,7 +4190,7 @@ mod tests {
             ("branch_protection", {
                 let mut r = sample_repo("branch-protection-charged");
                 r.repo_details_not_modified = false;
-                r.checks.branch_protection.status = BranchProtectionStatus::Fail;
+                r.checks.branch_protection = crate::test_fixtures::branch_fail();
                 r
             }),
             ("codeowners", {
@@ -6041,9 +6033,15 @@ mod tests {
             ev.checks.dependabot_security_updates.status,
             DependabotStatus::Unknown
         );
-        assert_eq!(
-            ev.checks.branch_protection.status,
-            BranchProtectionStatus::Unknown
+        assert!(
+            matches!(
+                ev.checks.branch_protection,
+                BranchProtectionResult::Unobservable {
+                    reason: crate::domain::checks::IndeterminateReason::Invalid,
+                    ..
+                }
+            ),
+            "failure evidence leaves branch protection unobservable (reason Invalid)"
         );
         assert_eq!(ev.checks.codeowners.status(), CodeownersStatus::Unknown);
         assert_eq!(
@@ -6068,9 +6066,15 @@ mod tests {
             ev.checks.dependabot_security_updates.reason.as_deref(),
             Some("task_panicked")
         );
-        assert_eq!(
-            ev.checks.branch_protection.details.reason.as_deref(),
-            Some("task_panicked")
+        assert!(
+            matches!(
+                ev.checks.branch_protection,
+                BranchProtectionResult::Unobservable {
+                    reason: crate::domain::checks::IndeterminateReason::Invalid,
+                    ..
+                }
+            ),
+            "branch protection has no custom-reason string; it records Unobservable/Invalid"
         );
         assert_eq!(
             ev.checks.security_policy.status(),
@@ -6935,7 +6939,12 @@ mod tests {
             let mut evidence = test_fixtures::evidence_from_repository(&repo, ts);
             evidence.checks.codeowners = test_fixtures::codeowners_with_owners(&["@org/sec-team"]);
             if secret_scanning.status() == SecretScanningStatus::Unknown {
-                evidence.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+                evidence.checks.branch_protection = BranchProtectionResult::Unobservable {
+                    default_branch: repo.default_branch.clone(),
+                    reason: crate::domain::checks::IndeterminateReason::PermissionDenied,
+                    http_status: Some(403),
+                    timestamp: ts.to_string(),
+                };
             }
             evidence.checks.secret_scanning = secret_scanning;
             Ok(evidence)
@@ -7282,7 +7291,12 @@ mod tests {
         let mut evidence = sample_repo("repo-1");
         evidence.repository.updated_at =
             crate::domain::repository::UpdatedAt::new("2026-04-10T00:00:00Z");
-        evidence.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+        evidence.checks.branch_protection = BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: crate::domain::checks::IndeterminateReason::PermissionDenied,
+            http_status: Some(403),
+            timestamp: "2026-04-10T00:00:00Z".to_string(),
+        };
         seed_baseline(
             dir.path(),
             &state,
@@ -9050,7 +9064,12 @@ mod tests {
                 "failed is not observed: {reason}"
             );
             let mut real = crate::test_fixtures::all_passing_evidence("repo");
-            real.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+            real.checks.branch_protection = BranchProtectionResult::Unobservable {
+                default_branch: "main".to_string(),
+                reason: crate::domain::checks::IndeterminateReason::PermissionDenied,
+                http_status: Some(403),
+                timestamp: "2026-09-06T12:00:00Z".to_string(),
+            };
             let previous = PublicationQuality::from_evidence(&admission_evidence(vec![real]), None);
             let incoming =
                 PublicationQuality::from_evidence(&admission_evidence(vec![failed]), None);
@@ -9405,7 +9424,8 @@ mod tests {
         };
         repo.checks.secret_scanning = repo.checks.secret_scanning.with_timestamp("");
         repo.checks.dependabot_security_updates.timestamp.clear();
-        repo.checks.branch_protection.timestamp.clear();
+        repo.checks.branch_protection =
+            BranchProtectionResult::from_history_signals("main", Some(true), Some(true), "");
         repo.checks.codeowners = repo.checks.codeowners.with_timestamp("");
         state.lock_projection().load_baseline(vec![repo.clone()]);
         assert!(warm_start_from_baseline(&config, &state).await);
@@ -9651,7 +9671,12 @@ mod tests {
             };
             repo.checks.secret_scanning = repo.checks.secret_scanning.with_timestamp(timestamp);
             repo.checks.dependabot_security_updates.timestamp = timestamp.into();
-            repo.checks.branch_protection.timestamp = timestamp.into();
+            repo.checks.branch_protection = BranchProtectionResult::from_history_signals(
+                "main",
+                Some(true),
+                Some(true),
+                timestamp,
+            );
             repo.checks.codeowners = repo.checks.codeowners.with_timestamp(timestamp);
             let quality =
                 PublicationQuality::from_evidence(&admission_evidence(vec![repo.clone()]), None);
@@ -9710,7 +9735,12 @@ mod tests {
             .secret_scanning
             .with_timestamp("2000-01-01T00:00:00Z");
         repo.checks.dependabot_security_updates.timestamp = "2000-01-01T00:00:00Z".into();
-        repo.checks.branch_protection.timestamp = "2000-01-01T00:00:00Z".into();
+        repo.checks.branch_protection = BranchProtectionResult::from_history_signals(
+            "main",
+            Some(true),
+            Some(true),
+            "2000-01-01T00:00:00Z",
+        );
         repo.checks.codeowners = repo
             .checks
             .codeowners

@@ -49,7 +49,7 @@ use limits::{
 };
 
 /// Native schema version for [`DomainEvent`].
-pub const DOMAIN_EVENT_SCHEMA_VERSION: u32 = 3;
+pub const DOMAIN_EVENT_SCHEMA_VERSION: u32 = 4;
 
 /// Native schema version for [`OrgStateCaptured`].
 pub const ORG_STATE_SCHEMA_VERSION: u32 = 3;
@@ -621,42 +621,6 @@ impl PardosaType for SecurityPolicyResult {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum SecurityPolicyStatus {
-    Pass = 0,
-    Fail = 1,
-    Unknown = 2,
-    NotApplicable = 3,
-}
-impl_pardosa_enum!(SecurityPolicyStatus {
-    Pass = 0,
-    Fail = 1,
-    Unknown = 2,
-    NotApplicable = 3
-});
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum SecurityPolicyEvidence {
-    Setting = 0,
-    File = 1,
-    Absent = 2,
-    PermissionDenied = 3,
-    TransientError = 4,
-    CollectionError = 5,
-    NotApplicable = 6,
-}
-impl_pardosa_enum!(SecurityPolicyEvidence {
-    Setting = 0,
-    File = 1,
-    Absent = 2,
-    PermissionDenied = 3,
-    TransientError = 4,
-    CollectionError = 5,
-    NotApplicable = 6
-});
-
 macro_rules! native_secret_enum {
     ($ty:ident { $($variant:ident = $tag:literal { $($field:ident: $ft:ty),* $(,)? }),* $(,)? }) => {
         #[derive(Debug, Clone, PartialEq, Eq)]
@@ -743,21 +707,6 @@ native_secret_enum!(SecretScanningResult {
     Unobservable = 2 { metadata: MetadataUnavailable, probe: UnobservableProbe, timestamp: Timestamp }
 });
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum SecretScanningStatus {
-    Enabled = 0,
-    Disabled = 1,
-    PermissionDenied = 2,
-    Unknown = 3,
-}
-impl_pardosa_enum!(SecretScanningStatus {
-    Enabled = 0,
-    Disabled = 1,
-    PermissionDenied = 2,
-    Unknown = 3
-});
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependabotResult {
     pub status: DependabotStatus,
@@ -785,78 +734,17 @@ impl_pardosa_enum!(DependabotStatus {
     Unknown = 3
 });
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchProtectionResult {
-    pub status: BranchProtectionStatus,
-    pub details: BranchProtectionDetails,
-    pub timestamp: Timestamp,
-}
-impl_pardosa_struct!(BranchProtectionResult {
-    status: BranchProtectionStatus,
-    details: BranchProtectionDetails,
-    timestamp: Timestamp,
+native_secret_enum!(HistoryProtectionGap {
+    Absent = 0 { confirmed_not_found: bool, http_status: Option<u16> },
+    NeitherBlocked = 1 {},
+    ForcePushAllowed = 2 {},
+    DeletionAllowed = 3 {}
 });
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum BranchProtectionStatus {
-    Pass = 0,
-    Partial = 1,
-    Fail = 2,
-    Unknown = 3,
-}
-impl_pardosa_enum!(BranchProtectionStatus {
-    Pass = 0,
-    Partial = 1,
-    Fail = 2,
-    Unknown = 3
-});
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchProtectionDetails {
-    pub default_branch: NonEmptyEventString<MAX_BRANCH_NAME>,
-    pub has_pr: Option<bool>,
-    pub required_reviewers: Option<u32>,
-    pub has_status_checks: Option<bool>,
-    pub admin_equivalent: Option<bool>,
-    pub has_broad_bypass: Option<bool>,
-    pub reason: Option<EventString<MAX_REASON>>,
-    pub reason_kind: Option<CollectionFailureReason>,
-    pub http_status: Option<u16>,
-    pub force_push_blocked: Option<bool>,
-    pub deletion_blocked: Option<bool>,
-}
-impl_pardosa_struct!(BranchProtectionDetails {
-    default_branch: NonEmptyEventString<MAX_BRANCH_NAME>,
-    has_pr: Option<bool>,
-    required_reviewers: Option<u32>,
-    has_status_checks: Option<bool>,
-    admin_equivalent: Option<bool>,
-    has_broad_bypass: Option<bool>,
-    reason: Option<EventString<MAX_REASON>>,
-    reason_kind: Option<CollectionFailureReason>,
-    http_status: Option<u16>,
-    force_push_blocked: Option<bool>,
-    deletion_blocked: Option<bool>,
-});
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum CollectionFailureReason {
-    PermissionDenied = 0,
-    PermissionSuspected = 1,
-    NotFoundAbsent = 2,
-    Transient = 3,
-    RateLimited = 4,
-    Invalid = 5,
-}
-impl_pardosa_enum!(CollectionFailureReason {
-    PermissionDenied = 0,
-    PermissionSuspected = 1,
-    NotFoundAbsent = 2,
-    Transient = 3,
-    RateLimited = 4,
-    Invalid = 5
+native_secret_enum!(BranchProtectionResult {
+    Protected = 0 { default_branch: NonEmptyEventString<MAX_BRANCH_NAME>, timestamp: Timestamp },
+    Unprotected = 1 { default_branch: NonEmptyEventString<MAX_BRANCH_NAME>, gap: HistoryProtectionGap, timestamp: Timestamp },
+    Unobservable = 2 { default_branch: NonEmptyEventString<MAX_BRANCH_NAME>, reason: IndeterminateReason, http_status: Option<u16>, timestamp: Timestamp }
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1080,21 +968,6 @@ impl PardosaType for CodeownersResult {
         Ok((value, cursor))
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum CodeownersStatus {
-    Conforming = 0,
-    NonConforming = 1,
-    Absent = 2,
-    Unknown = 3,
-}
-impl_pardosa_enum!(CodeownersStatus {
-    Conforming = 0,
-    NonConforming = 1,
-    Absent = 2,
-    Unknown = 3
-});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -1856,8 +1729,6 @@ mod tests {
             RepositoryChecks,
             SecurityPolicyResult,
             IndeterminateReason,
-            SecurityPolicyStatus,
-            SecurityPolicyEvidence,
             SecretScanningResult,
             SecretScanningFailureReason,
             ProbeSource,
@@ -1866,17 +1737,13 @@ mod tests {
             EnabledProvenance,
             DisabledObservation,
             UnobservableProbe,
-            SecretScanningStatus,
             DependabotResult,
             DependabotStatus,
             BranchProtectionResult,
-            BranchProtectionStatus,
-            BranchProtectionDetails,
-            CollectionFailureReason,
+            HistoryProtectionGap,
             CodeownersResult,
             CodeownersContent,
             CodeownersNonConformingLocation,
-            CodeownersStatus,
             CodeownersTruncationReason,
             ParsedCodeowners,
             CodeownersEntry,
@@ -2006,21 +1873,8 @@ mod tests {
                 reason: Some(es("enabled")),
                 timestamp: ts(22),
             },
-            branch_protection: BranchProtectionResult {
-                status: BranchProtectionStatus::Pass,
-                details: BranchProtectionDetails {
-                    default_branch: nes("main"),
-                    has_pr: Some(true),
-                    required_reviewers: Some(2),
-                    has_status_checks: Some(true),
-                    admin_equivalent: Some(true),
-                    has_broad_bypass: Some(false),
-                    reason: None,
-                    reason_kind: None,
-                    http_status: None,
-                    force_push_blocked: Some(true),
-                    deletion_blocked: Some(true),
-                },
+            branch_protection: BranchProtectionResult::Protected {
+                default_branch: nes("main"),
                 timestamp: ts(23),
             },
             codeowners: CodeownersResult::Conforming {
@@ -2289,6 +2143,97 @@ mod tests {
                 evidence: Some(evidence),
             };
             store.record("owners", event.clone()).unwrap();
+            expected.push((false, event));
+        }
+        drop(store);
+        assert_eq!(
+            crate::store::NativeStore::open_pgno(&path)
+                .unwrap()
+                .events()
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn branch_protection_variants_preserve_native_consumption_and_reopen() {
+        use crate::domain::checks as domain;
+        let timestamp = "2026-09-21T00:00:00Z".to_string();
+        let mut cases = vec![
+            domain::BranchProtectionResult::Protected {
+                default_branch: "main".to_string(),
+                timestamp: timestamp.clone(),
+            },
+            domain::BranchProtectionResult::Unprotected {
+                default_branch: "main".to_string(),
+                gap: domain::HistoryProtectionGap::Absent {
+                    confirmed_not_found: true,
+                    http_status: Some(404),
+                },
+                timestamp: timestamp.clone(),
+            },
+            domain::BranchProtectionResult::Unprotected {
+                default_branch: "main".to_string(),
+                gap: domain::HistoryProtectionGap::Absent {
+                    confirmed_not_found: false,
+                    http_status: None,
+                },
+                timestamp: timestamp.clone(),
+            },
+            domain::BranchProtectionResult::Unprotected {
+                default_branch: "main".to_string(),
+                gap: domain::HistoryProtectionGap::NeitherBlocked,
+                timestamp: timestamp.clone(),
+            },
+            domain::BranchProtectionResult::Unprotected {
+                default_branch: "main".to_string(),
+                gap: domain::HistoryProtectionGap::ForcePushAllowed,
+                timestamp: timestamp.clone(),
+            },
+            domain::BranchProtectionResult::Unprotected {
+                default_branch: "main".to_string(),
+                gap: domain::HistoryProtectionGap::DeletionAllowed,
+                timestamp: timestamp.clone(),
+            },
+        ];
+        let unobservable_cases = [
+            (domain::IndeterminateReason::PermissionDenied, Some(403)),
+            (domain::IndeterminateReason::PermissionSuspected, None),
+            (domain::IndeterminateReason::Transient, Some(429)),
+            (domain::IndeterminateReason::RateLimited, Some(429)),
+            (domain::IndeterminateReason::Invalid, None),
+            (domain::IndeterminateReason::Pending, None),
+        ];
+        for (reason, http_status) in unobservable_cases {
+            cases.push(domain::BranchProtectionResult::Unobservable {
+                default_branch: "main".to_string(),
+                reason,
+                http_status,
+                timestamp: timestamp.clone(),
+            });
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("branch-protection.pgno");
+        let store = crate::store::NativeStore::create_pgno(&path).unwrap();
+        let mut expected = Vec::new();
+        for case in cases {
+            let native = BranchProtectionResult::try_from(case).unwrap();
+            let mut bytes = Vec::new();
+            native.encode_type(&mut bytes).unwrap();
+            let (decoded, consumed) = BranchProtectionResult::decode_type(&bytes).unwrap();
+            assert_eq!(consumed, bytes.len());
+            assert_eq!(decoded, native);
+            let domain: domain::BranchProtectionResult = decoded.into();
+            assert_eq!(BranchProtectionResult::try_from(domain).unwrap(), native);
+            let mut evidence = full_evidence();
+            evidence.checks.branch_protection = native;
+            let event = DomainEvent::RepositoryStateCaptured {
+                domain_key: nes("branch-protection"),
+                repo_name: nes("branch-protection"),
+                timestamp: ts(60),
+                evidence: Some(evidence),
+            };
+            store.record("branch-protection", event.clone()).unwrap();
             expected.push((false, event));
         }
         drop(store);
@@ -2675,7 +2620,7 @@ mod tests {
         "2ec6b5d4f386afbe6a73fe4e0c962897e477316af3137591927bb18a31b4c38f";
 
     const TRUTHFUL_DOMAIN_EVENT_SCHEMA_IDENTITY: &str =
-        "40e25aa9f91091ccb5351ea89089564862d35969f008ff4954a33f7c7533bd95";
+        "1afc053e76ff1199e354224ae29f13b282da52d70b468486f809281fcfaeae7d";
     const TRUTHFUL_ORG_STATE_SCHEMA_IDENTITY: &str =
         "f36b39c7cbd70f00996982547039aeb563a7f0e370220a6741794c06a21bcd59";
     const TRUTHFUL_TEAM_STATE_SCHEMA_IDENTITY: &str =
@@ -2683,7 +2628,7 @@ mod tests {
     const TRUTHFUL_SWEEP_TIMEOUT_SCHEMA_IDENTITY: &str =
         "55b9b99b6408ad5696d2e0ce5cc85c0f28ffd93c1f7ab230d524ae4d329ff44e";
 
-    const CANONICAL_REPO_CAPTURED_BYTES: [u8; 432] = [
+    const CANONICAL_REPO_CAPTURED_BYTES: [u8; 412] = [
         0, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
         45, 49, 40, 0, 0, 0, 0, 0, 0, 0, 1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49,
         1, 6, 0, 0, 0, 110, 111, 100, 101, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111, 45, 49, 0, 1, 4,
@@ -2696,13 +2641,12 @@ mod tests {
         121, 4, 0, 0, 0, 114, 117, 115, 116, 1, 3, 0, 0, 0, 77, 73, 84, 1, 11, 0, 0, 0, 83, 69, 67,
         85, 82, 73, 84, 89, 46, 109, 100, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 200, 0, 0, 0, 0, 1,
         200, 0, 21, 0, 0, 0, 0, 0, 0, 0, 0, 1, 7, 0, 0, 0, 101, 110, 97, 98, 108, 101, 100, 22, 0,
-        0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 109, 97, 105, 110, 1, 1, 1, 2, 0, 0, 0, 1, 1, 1, 1, 1, 0,
-        0, 0, 0, 1, 1, 1, 1, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 47, 115, 114,
-        99, 47, 1, 0, 0, 0, 14, 0, 0, 0, 64, 97, 99, 109, 101, 47, 115, 101, 99, 117, 114, 105,
-        116, 121, 1, 0, 0, 0, 14, 0, 0, 0, 64, 97, 99, 109, 101, 47, 115, 101, 99, 117, 114, 105,
-        116, 121, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 1, 1, 7, 0, 0, 0, 111, 99, 116, 111, 99, 97,
-        116, 1, 12, 0, 0, 0, 77, 111, 110, 97, 32, 79, 99, 116, 111, 99, 97, 116, 1, 30, 0, 0, 0,
-        0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 109, 97, 105, 110, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+        0, 5, 0, 0, 0, 47, 115, 114, 99, 47, 1, 0, 0, 0, 14, 0, 0, 0, 64, 97, 99, 109, 101, 47,
+        115, 101, 99, 117, 114, 105, 116, 121, 1, 0, 0, 0, 14, 0, 0, 0, 64, 97, 99, 109, 101, 47,
+        115, 101, 99, 117, 114, 105, 116, 121, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 1, 1, 7, 0, 0,
+        0, 111, 99, 116, 111, 99, 97, 116, 1, 12, 0, 0, 0, 77, 111, 110, 97, 32, 79, 99, 116, 111,
+        99, 97, 116, 1, 30, 0, 0, 0, 0, 0, 0, 0,
     ];
     const CANONICAL_REPO_DELETED_BYTES: [u8; 32] = [
         1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,

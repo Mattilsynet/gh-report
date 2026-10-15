@@ -4,7 +4,7 @@ expression: "manifest.join(\"\\n\")"
 ---
 admin.html	Admin Diagnostics	h2=3 table=0 a=7
 alert_free.html	Alert-Free Status Coverage	h2=2 table=2 a=9
-branch_protection.html	Branch Protection Regimes	h2=6 table=2 a=9
+branch_protection.html	Branch Protection Coverage	h2=2 table=1 a=9
 codeowners.html	CODEOWNERS Coverage	h2=2 table=1 a=9
 deleted.html	Deleted Repositories	h2=0 table=0 a=7
 dependabot_status.html	Dependabot Status Coverage	h2=2 table=1 a=9

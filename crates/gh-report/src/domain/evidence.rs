@@ -28,7 +28,10 @@ impl RepositoryReadState {
         let pending = [
             checks.secret_scanning.reason(),
             checks.dependabot_security_updates.reason.as_deref(),
-            checks.branch_protection.details.reason.as_deref(),
+            checks
+                .branch_protection
+                .is_pending()
+                .then_some(Self::PENDING_REASON),
         ]
         .into_iter()
         .all(|reason| reason == Some(Self::PENDING_REASON));
@@ -41,8 +44,7 @@ impl RepositoryReadState {
 
     pub(crate) fn observed_check_timestamps(checks: &RepositoryChecks) -> [Option<&str>; 5] {
         use super::checks::{
-            BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
-            SecurityPolicyStatus,
+            CodeownersStatus, DependabotStatus, SecretScanningStatus, SecurityPolicyStatus,
         };
         [
             matches!(
@@ -57,8 +59,10 @@ impl RepositoryReadState {
             .then_some(checks.secret_scanning.timestamp()),
             (checks.dependabot_security_updates.status != DependabotStatus::Unknown)
                 .then_some(checks.dependabot_security_updates.timestamp.as_str()),
-            (checks.branch_protection.status != BranchProtectionStatus::Unknown)
-                .then_some(checks.branch_protection.timestamp.as_str()),
+            checks
+                .branch_protection
+                .is_observed()
+                .then_some(checks.branch_protection.timestamp()),
             (checks.codeowners.status() != CodeownersStatus::Unknown)
                 .then_some(checks.codeowners.timestamp()),
         ]
@@ -109,13 +113,12 @@ impl RepositoryEvidence {
     #[must_use]
     pub fn is_complete(&self) -> bool {
         use super::checks::{
-            BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
-            SecurityPolicyStatus,
+            CodeownersStatus, DependabotStatus, SecretScanningStatus, SecurityPolicyStatus,
         };
         self.checks.security_policy.status() != SecurityPolicyStatus::Unknown
             && self.checks.secret_scanning.status() != SecretScanningStatus::Unknown
             && self.checks.dependabot_security_updates.status != DependabotStatus::Unknown
-            && self.checks.branch_protection.status != BranchProtectionStatus::Unknown
+            && self.checks.branch_protection.is_observed()
             && self.checks.codeowners.status() != CodeownersStatus::Unknown
     }
 }

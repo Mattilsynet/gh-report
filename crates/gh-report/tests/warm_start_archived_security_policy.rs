@@ -23,10 +23,10 @@
 use gh_report::aggregate::metrics::{aggregate_metrics, build_collection_statistics};
 use gh_report::app::state::AppState;
 use gh_report::domain::checks::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersContent,
-    CodeownersResult, DependabotResult, DependabotStatus, EnabledProvenance, ProbeSource,
-    RepositoryChecks, SecretScanningAlerts, SecretScanningResult, SecurityPolicyEvidence,
-    SecurityPolicyResult, SecurityPolicyStatus,
+    BranchProtectionResult, CodeownersContent, CodeownersResult, DependabotResult,
+    DependabotStatus, EnabledProvenance, HistoryProtectionGap, ProbeSource, RepositoryChecks,
+    SecretScanningAlerts, SecretScanningResult, SecurityPolicyEvidence, SecurityPolicyResult,
+    SecurityPolicyStatus,
 };
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
@@ -253,22 +253,11 @@ fn private_404_absence_fixture() -> Vec<RepositoryEvidence> {
                     reason: None,
                     timestamp: ts.to_string(),
                 },
-                branch_protection: BranchProtectionResult {
-                    status: BranchProtectionStatus::Fail,
-                    details: BranchProtectionDetails {
-                        default_branch: "main".to_string(),
-                        has_pr: None,
-                        required_reviewers: None,
-                        has_status_checks: None,
-                        admin_equivalent: None,
-                        has_broad_bypass: None,
-                        reason: Some("not_found_absent".to_string()),
-                        reason_kind: Some(
-                            gh_report::domain::checks::CollectionFailureReason::NotFoundAbsent,
-                        ),
+                branch_protection: BranchProtectionResult::Unprotected {
+                    default_branch: "main".to_string(),
+                    gap: HistoryProtectionGap::Absent {
+                        confirmed_not_found: true,
                         http_status: Some(404),
-                        force_push_blocked: None,
-                        deletion_blocked: None,
                     },
                     timestamp: ts.to_string(),
                 },
@@ -393,21 +382,8 @@ fn evidence_for(
                 reason: None,
                 timestamp: ts.to_string(),
             },
-            branch_protection: BranchProtectionResult {
-                status: BranchProtectionStatus::Pass,
-                details: BranchProtectionDetails {
-                    default_branch: "main".to_string(),
-                    has_pr: Some(true),
-                    required_reviewers: Some(1),
-                    has_status_checks: Some(true),
-                    admin_equivalent: Some(true),
-                    has_broad_bypass: Some(false),
-                    reason: None,
-                    reason_kind: None,
-                    http_status: None,
-                    force_push_blocked: Some(true),
-                    deletion_blocked: Some(true),
-                },
+            branch_protection: BranchProtectionResult::Protected {
+                default_branch: "main".to_string(),
                 timestamp: ts.to_string(),
             },
             codeowners: CodeownersResult::Conforming {

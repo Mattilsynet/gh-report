@@ -160,22 +160,15 @@ pub struct DependabotCounts {
 /// Counts for branch protection status buckets.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BranchProtectionCounts {
-    /// Repos at branch-protection regime BPR2 (`IntegrityOnly`) or higher
-    /// (CHE-0083 amended, CHE-0090).
+    /// Repos with fully held history protection — force-push and branch
+    /// deletion both blocked on the default branch (CHE-0083 ratified).
     pub pass: u32,
-    /// Unused under the BPR2+ pass bar — always zero. Retained so
-    /// [`AggregatedMetrics::branch_protection_coverage`]'s
-    /// `non_pass = partial + fail` arithmetic keeps a stable shape across
-    /// pass-bar changes.
-    pub partial: u32,
-    /// Repos at branch-protection regime BPR1 (`Unprotected`) — below the
-    /// pass bar.
+    /// Repos below the pass bar — history protection not fully held
+    /// (`BranchProtectionResult::Unprotected`).
     pub fail: u32,
-    /// Repos where branch protection is `Excluded` from scoring — status
-    /// indeterminate or not applicable (`BranchProtectionTier::Excluded`) —
-    /// and so dropped from `branch_protection_coverage`'s denominator
-    /// rather than counted as `fail`. Populated since item6-02; previously
-    /// dead (folded into `fail`, never incremented — ghr-bf304b18). See
+    /// Repos where branch protection was not observed
+    /// (`BranchProtectionResult::Unobservable`) and scores as excluded from
+    /// the coverage denominator rather than as `fail`. See
     /// [`AggregatedMetrics::score_exclusion_counts`] for the breakdown by
     /// exclusion reason.
     pub unknown: u32,

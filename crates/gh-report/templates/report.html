@@ -179,23 +179,19 @@
             </thead>
             <tbody>
                 <tr>
-                    <td title="Percentage of observable repos at branch-protection BPR2 (IntegrityOnly) or higher (BPR2 = branch protected with force-push and deletion blocked, but not necessarily requiring PR review). Observable excludes unreadable or permission-suspected repos, counted in the row below rather than as BPR1.">BPR2+ coverage</td>
+                    <td title="Percentage of observable repos where force pushes and branch deletion are both blocked on the default branch (history protection held). Observable excludes unreadable or permission-suspected repos, counted in the row below rather than as unprotected.">Protected coverage</td>
                     <td class="text-right">{{ vm.branch_protection_coverage_table_formatted }}</td>
                 </tr>
                 <tr>
-                    <td title="Repos excluded from the BPR2+ coverage percentage above because branch protection could not be read (permission denied, unreadable, or a rate-limited/transient collection failure), broken down by reason.">Excluded from coverage</td>
+                    <td title="Repos excluded from the coverage percentage above because branch protection could not be read (permission denied, unreadable, or a rate-limited/transient collection failure), broken down by reason.">Excluded from coverage</td>
                     <td class="text-right">{{ vm.branch_protection_excluded_formatted }}</td>
                 </tr>
                 <tr>
-                    <td title="Always zero under the BPR2+ pass bar: BPR2 (IntegrityOnly) now counts toward BPR2+ coverage above, so no separate partial bucket remains between pass and BPR1.">Partial (unused)</td>
-                    <td class="text-right">{{ vm.branch_protection_partial }}</td>
-                </tr>
-                <tr>
-                    <td title="Repos at BPR1 (Unprotected): protection absent (including confirmed absence via a 404), or force-push/deletion not blocked. Unreadable or permission-suspected repos are excluded above, not counted here.">BPR1 unprotected</td>
+                    <td title="Repos on which the default branch is readable but force pushes or branch deletion are not blocked, including confirmed absence of branch protection via an authority 404. Unreadable or permission-suspected repos are excluded above, not counted here.">Unprotected</td>
                     <td class="text-right">{{ vm.branch_protection_fail }}</td>
                 </tr>
                 <tr>
-                    <td title="Total repos excluded from the BPR2+ coverage percentage above because branch protection could not be scored (permission denied, unreadable, or rate-limited/transient). See the by-reason breakdown row above for the split.">Excluded / unreadable</td>
+                    <td title="Total repos excluded from the coverage percentage above because branch protection could not be scored (permission denied, unreadable, or rate-limited/transient). See the by-reason breakdown row above for the split.">Excluded / unreadable</td>
                     <td class="text-right">{{ vm.branch_protection_unknown }}</td>
                 </tr>
             </tbody>
@@ -257,8 +253,8 @@
     <h2 id="metric-caveats">Metric Caveats</h2>
 
     <div class="caveat">
-        <p>Branch protection coverage counts only <code>pass</code> as sufficient; <code>partial</code> remains
-            insufficient.</p>
+        <p>Branch protection coverage counts repositories with both force-push and branch-deletion blocking on the default branch; anything less is not covered
+            and lowers the rate.</p>
     </div>
 
     <h2>Assessment Metadata</h2>

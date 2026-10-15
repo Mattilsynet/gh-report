@@ -1,25 +1,27 @@
 //! Branch protection evaluation.
 //!
-//! Evaluates branch protection from both the rulesets API and the
-//! legacy branch protection API, then merges the results.
+//! Evaluates history protection (force-push and branch-deletion blocking on
+//! the default branch) from both the rulesets API and the legacy branch
+//! protection API, then merges the results into a closed
+//! [`BranchProtectionResult`].
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use tracing::{debug, instrument, trace};
 
 use crate::config;
 use crate::domain::checks::{
-    BranchControls, BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
-    BranchRequirements, CollectionFailureReason,
+    BranchProtectionResult, HistoryProtectionGap, HistorySignals, IndeterminateReason,
 };
 use crate::domain::repository::Repository;
 use crate::github::client::GitHubClient;
 use cherry_pit_web::sanitize_path_segment;
 
-/// Summarize a single ruleset's branch controls.
-fn summarize_ruleset(ruleset: &serde_json::Value) -> BranchControls {
-    let mut has_pr = false;
-    let mut reviewer_count: u32 = 0;
-    let mut has_status_checks = false;
+/// Summarize a single ruleset's history signals.
+///
+/// A ruleset that grants force pushes or deletions is treated as not
+/// blocking that signal even when other rulesets block it; the merge in
+/// [`HistorySignals::merge`] takes any block as definitive.
+fn summarize_ruleset(ruleset: &serde_json::Value) -> HistorySignals {
     let mut force_push_blocked = Some(false);
     let mut deletion_blocked = Some(false);
 
@@ -29,25 +31,6 @@ fn summarize_ruleset(ruleset: &serde_json::Value) -> BranchControls {
                 .get("type")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
-            let params = rule.get("parameters").unwrap_or(&serde_json::Value::Null);
-
-            if rule_type == "pull_request" || rule_type == "required_pull_request_reviews" {
-                has_pr = true;
-                reviewer_count = reviewer_count.max(reviewer_count_from_value(
-                    params.get("required_approving_review_count"),
-                ));
-            }
-            if rule_type == "required_status_checks" {
-                let has_checks = params
-                    .get("required_checks")
-                    .or_else(|| params.get("required_status_checks"))
-                    .or_else(|| params.get("contexts"))
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|arr| !arr.is_empty());
-                if has_checks {
-                    has_status_checks = true;
-                }
-            }
             if rule_type == "non_fast_forward" {
                 force_push_blocked = Some(true);
             }
@@ -57,73 +40,17 @@ fn summarize_ruleset(ruleset: &serde_json::Value) -> BranchControls {
         }
     }
 
-    let has_broad_bypass = ruleset_has_broad_bypass(ruleset);
-
-    BranchControls::new(
-        BranchRequirements::new(has_pr, has_status_checks, !has_broad_bypass)
-            .with_integrity_controls(force_push_blocked, deletion_blocked),
-        reviewer_count,
-        has_broad_bypass,
-    )
+    HistorySignals {
+        force_push_blocked,
+        deletion_blocked,
+    }
 }
 
-/// Parse a required reviewer count and saturate it to `u32::MAX`.
-fn reviewer_count_from_value(value: Option<&serde_json::Value>) -> u32 {
-    value
-        .and_then(|v| {
-            v.as_u64()
-                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-        })
-        .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
-}
-
-/// Check if a ruleset has broad bypass actors.
+/// Summarize legacy branch protection into history signals.
 ///
-/// Returns `true` if any bypass actor is an `OrganizationAdmin` or `RepositoryRole`.
-fn ruleset_has_broad_bypass(ruleset: &serde_json::Value) -> bool {
-    ruleset
-        .get("bypass_actors")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|actors| {
-            actors.iter().any(|actor| {
-                matches!(
-                    actor.get("actor_type").and_then(serde_json::Value::as_str),
-                    Some("OrganizationAdmin" | "RepositoryRole")
-                )
-            })
-        })
-}
-
-/// Summarize legacy branch protection into `BranchControls`.
-///
-/// Extracts controls from GitHub's legacy branch protection API response.
-fn summarize_legacy_protection(protection: &serde_json::Value) -> BranchControls {
-    let pr_reviews = protection.get("required_pull_request_reviews");
-    let has_pr = pr_reviews.is_some_and(|v| !v.is_null());
-
-    let reviewer_count = pr_reviews
-        .and_then(serde_json::Value::as_object)
-        .map_or(0, |pr| {
-            reviewer_count_from_value(pr.get("required_approving_review_count"))
-        });
-
-    let status_checks = protection.get("required_status_checks");
-    let has_status_checks = status_checks
-        .and_then(serde_json::Value::as_object)
-        .is_some_and(|sc| {
-            let checks = sc
-                .get("checks")
-                .or_else(|| sc.get("contexts"))
-                .and_then(serde_json::Value::as_array);
-            checks.is_some_and(|arr| !arr.is_empty())
-        });
-
-    let admin_equivalent = protection
-        .get("enforce_admins")
-        .and_then(|ea| ea.get("enabled"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
+/// The legacy API reports `allow_force_pushes` and `allow_deletions` in
+/// "allowed" polarity; the signals invert them into "blocked" polarity.
+fn summarize_legacy_protection(protection: &serde_json::Value) -> HistorySignals {
     let force_push_blocked = protection
         .get("allow_force_pushes")
         .and_then(|value| value.get("enabled"))
@@ -136,21 +63,19 @@ fn summarize_legacy_protection(protection: &serde_json::Value) -> BranchControls
         .and_then(serde_json::Value::as_bool)
         .map(|allowed| !allowed);
 
-    BranchControls::new(
-        BranchRequirements::new(has_pr, has_status_checks, admin_equivalent)
-            .with_integrity_controls(force_push_blocked, deletion_blocked),
-        reviewer_count,
-        false,
-    )
+    HistorySignals {
+        force_push_blocked,
+        deletion_blocked,
+    }
 }
 
 /// Evaluate branch protection for a repository.
 ///
-/// Evaluates branch protection for a repository:
-/// 1. Fetch rulesets and legacy branch protection concurrently.
+/// 1. Fetch rulesets and legacy protection concurrently.
 /// 2. Filter rulesets that apply to the default branch.
-/// 3. Summarize each applicable ruleset and the legacy protection.
-/// 4. Merge all controls and determine the final status.
+/// 3. Summarize each applicable ruleset and the legacy protection into
+///    history signals.
+/// 4. Merge all signals and determine the final outcome.
 #[instrument(skip_all, fields(repo = %repo.name))]
 pub async fn evaluate(
     client: &GitHubClient,
@@ -163,21 +88,10 @@ pub async fn evaluate(
         Ok(n) => n,
         Err(e) => {
             debug!(repo = %repo.name, error = %e, "skipping branch protection: invalid repo name");
-            return BranchProtectionResult {
-                status: BranchProtectionStatus::Unknown,
-                details: BranchProtectionDetails {
-                    default_branch: repo.default_branch.clone(),
-                    has_pr: None,
-                    required_reviewers: None,
-                    has_status_checks: None,
-                    admin_equivalent: None,
-                    has_broad_bypass: None,
-                    reason: Some("invalid_repo_name".to_string()),
-                    reason_kind: Some(CollectionFailureReason::Invalid),
-                    http_status: None,
-                    force_push_blocked: None,
-                    deletion_blocked: None,
-                },
+            return BranchProtectionResult::Unobservable {
+                default_branch: repo.default_branch.clone(),
+                reason: IndeterminateReason::Invalid,
+                http_status: None,
                 timestamp: run_timestamp.to_string(),
             };
         }
@@ -219,9 +133,8 @@ pub async fn evaluate(
 
     debug!(
         repo = %repo.name,
-        status = %result.status,
-        has_pr = ?result.details.has_pr,
-        required_reviewers = ?result.details.required_reviewers,
+        default_branch = %result.default_branch(),
+        protected = result.is_protected(),
         "branch protection evaluation complete"
     );
 
@@ -239,34 +152,34 @@ impl ProtectionEndpoint {
         self,
         data: Option<&serde_json::Value>,
         default_branch: &str,
-    ) -> Option<Vec<BranchControls>> {
+    ) -> Option<Vec<HistorySignals>> {
         let data = data?;
         match self {
             Self::Rulesets => {
                 let rulesets = data.as_array()?;
-                let controls: Vec<BranchControls> = rulesets
+                let signals: Vec<HistorySignals> = rulesets
                     .iter()
                     .filter(|ruleset| ruleset_applies(ruleset, default_branch))
                     .map(summarize_ruleset)
                     .collect();
                 trace!(
-                    applicable_rulesets = controls.len(),
+                    applicable_rulesets = signals.len(),
                     total_rulesets = rulesets.len(),
                     "filtered rulesets for default branch"
                 );
-                Some(controls)
+                Some(signals)
             }
             Self::Legacy => {
                 if !data.is_object() {
                     return None;
                 }
-                let controls = summarize_legacy_protection(data);
+                let signals = summarize_legacy_protection(data);
                 trace!(
-                    has_pr = controls.has_pr(),
-                    has_status_checks = controls.has_status_checks(),
+                    force_push_blocked = ?signals.force_push_blocked,
+                    deletion_blocked = ?signals.deletion_blocked,
                     "legacy branch protection summarized"
                 );
-                Some(vec![controls])
+                Some(vec![signals])
             }
         }
     }
@@ -309,7 +222,7 @@ fn repo_admin_signal(repo_details_result: &crate::github::client::ApiOutcome) ->
 }
 
 enum ProtectionEvidence {
-    Complete(BranchControls),
+    Complete(HistorySignals),
     Incomplete(EndpointFailure),
     AbsentControls {
         absence: ConfirmedAbsence,
@@ -324,11 +237,8 @@ enum ConfirmedAbsence {
 }
 
 impl ConfirmedAbsence {
-    const fn reason_kind(self) -> Option<CollectionFailureReason> {
-        match self {
-            Self::NoControls => None,
-            Self::AuthorityConfirmedNotFound => Some(CollectionFailureReason::NotFoundAbsent),
-        }
+    const fn confirmed_not_found(self) -> bool {
+        matches!(self, Self::AuthorityConfirmedNotFound)
     }
 }
 
@@ -338,39 +248,21 @@ struct EndpointFailure {
     http_status: Option<u16>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IndeterminateReason {
-    PermissionDenied,
-    RateLimited,
-    PermissionSuspected,
-    Transient,
-    Invalid,
-}
-
-impl IndeterminateReason {
+impl EndpointFailure {
     const fn precedence(self) -> u8 {
-        match self {
-            Self::PermissionDenied => 0,
-            Self::RateLimited => 1,
-            Self::PermissionSuspected => 2,
-            Self::Transient => 3,
-            Self::Invalid => 4,
-        }
-    }
-
-    const fn persisted(self) -> CollectionFailureReason {
-        match self {
-            Self::PermissionDenied => CollectionFailureReason::PermissionDenied,
-            Self::RateLimited => CollectionFailureReason::RateLimited,
-            Self::PermissionSuspected => CollectionFailureReason::PermissionSuspected,
-            Self::Transient => CollectionFailureReason::Transient,
-            Self::Invalid => CollectionFailureReason::Invalid,
+        match self.reason {
+            IndeterminateReason::PermissionDenied => 0,
+            IndeterminateReason::RateLimited => 1,
+            IndeterminateReason::PermissionSuspected => 2,
+            IndeterminateReason::Transient => 3,
+            IndeterminateReason::Invalid => 4,
+            IndeterminateReason::Pending => 5,
         }
     }
 }
 
 enum EndpointEvidence {
-    Observed(Vec<BranchControls>),
+    Observed(Vec<HistorySignals>),
     ConfirmedAbsent { http_status: Option<u16> },
     Indeterminate(EndpointFailure),
 }
@@ -430,7 +322,7 @@ fn evaluate_outcomes(
     run_timestamp: &str,
 ) -> BranchProtectionResult {
     let evidence = classify_evidence(rulesets_result, legacy_result, default_branch, admin);
-    build_protection_result(evidence, default_branch, run_timestamp)
+    build_protection_result(&evidence, default_branch, run_timestamp)
 }
 
 fn classify_evidence(
@@ -459,22 +351,22 @@ fn classify_evidence(
             EndpointEvidence::Indeterminate(failure) => Some(*failure),
             EndpointEvidence::Observed(_) | EndpointEvidence::ConfirmedAbsent { .. } => None,
         })
-        .min_by_key(|failure| failure.reason.precedence());
+        .min_by_key(|failure| failure.precedence());
 
     if let Some(failure) = indeterminate {
         return ProtectionEvidence::Incomplete(failure);
     }
 
-    let observed: Vec<BranchControls> = endpoints
+    let observed: Vec<HistorySignals> = endpoints
         .into_iter()
         .filter_map(|endpoint| match endpoint {
-            EndpointEvidence::Observed(controls) => Some(controls.iter().cloned()),
+            EndpointEvidence::Observed(signals) => Some(signals.iter().copied()),
             EndpointEvidence::ConfirmedAbsent { .. } | EndpointEvidence::Indeterminate(_) => None,
         })
         .flatten()
         .collect();
 
-    let Some(controls) = BranchControls::merge(&observed) else {
+    let Some(signals) = HistorySignals::merge(&observed) else {
         let (absence, http_status) = match (&rulesets, &legacy) {
             (EndpointEvidence::ConfirmedAbsent { http_status }, _)
             | (_, EndpointEvidence::ConfirmedAbsent { http_status }) => {
@@ -493,69 +385,38 @@ fn classify_evidence(
         };
     };
 
-    ProtectionEvidence::Complete(controls)
+    ProtectionEvidence::Complete(signals)
 }
 
 fn build_protection_result(
-    evidence: ProtectionEvidence,
+    evidence: &ProtectionEvidence,
     default_branch: &str,
     run_timestamp: &str,
 ) -> BranchProtectionResult {
     match evidence {
-        ProtectionEvidence::Incomplete(failure) => BranchProtectionResult {
-            status: BranchProtectionStatus::Unknown,
-            details: unobserved_details(
-                default_branch,
-                Some(failure.reason.persisted()),
-                failure.http_status,
-            ),
+        ProtectionEvidence::Incomplete(failure) => BranchProtectionResult::Unobservable {
+            default_branch: default_branch.to_string(),
+            reason: failure.reason,
+            http_status: failure.http_status,
             timestamp: run_timestamp.to_string(),
         },
         ProtectionEvidence::AbsentControls {
             absence,
             http_status,
-        } => BranchProtectionResult {
-            status: BranchProtectionStatus::Fail,
-            details: unobserved_details(default_branch, absence.reason_kind(), http_status),
-            timestamp: run_timestamp.to_string(),
-        },
-        ProtectionEvidence::Complete(controls) => BranchProtectionResult {
-            status: controls.status(),
-            details: BranchProtectionDetails {
-                default_branch: default_branch.to_string(),
-                has_pr: Some(controls.has_pr()),
-                required_reviewers: Some(controls.reviewer_count),
-                has_status_checks: Some(controls.has_status_checks()),
-                admin_equivalent: Some(controls.admin_equivalent()),
-                has_broad_bypass: Some(controls.has_broad_bypass()),
-                reason: None,
-                reason_kind: None,
-                http_status: None,
-                force_push_blocked: controls.force_push_blocked(),
-                deletion_blocked: controls.deletion_blocked(),
+        } => BranchProtectionResult::Unprotected {
+            default_branch: default_branch.to_string(),
+            gap: HistoryProtectionGap::Absent {
+                confirmed_not_found: absence.confirmed_not_found(),
+                http_status: *http_status,
             },
             timestamp: run_timestamp.to_string(),
         },
-    }
-}
-
-fn unobserved_details(
-    default_branch: &str,
-    reason_kind: Option<CollectionFailureReason>,
-    status_code: Option<u16>,
-) -> BranchProtectionDetails {
-    BranchProtectionDetails {
-        default_branch: default_branch.to_string(),
-        has_pr: None,
-        required_reviewers: None,
-        has_status_checks: None,
-        admin_equivalent: None,
-        has_broad_bypass: None,
-        reason: reason_kind.map(|reason| reason.to_string()),
-        reason_kind,
-        http_status: status_code,
-        force_push_blocked: None,
-        deletion_blocked: None,
+        ProtectionEvidence::Complete(signals) => BranchProtectionResult::from_history_signals(
+            default_branch,
+            signals.force_push_blocked,
+            signals.deletion_blocked,
+            run_timestamp,
+        ),
     }
 }
 
@@ -605,111 +466,43 @@ fn ruleset_applies(ruleset: &serde_json::Value, default_branch: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::checks::BranchProtectionTier;
+    use crate::domain::checks::HistoryProtectionGap;
 
     #[test]
-    fn summarize_ruleset_pr_and_status_checks() {
-        let ruleset = serde_json::json!({
-            "rules": [
-                {
-                    "type": "pull_request",
-                    "parameters": {
-                        "required_approving_review_count": 2
-                    }
-                },
-                {
-                    "type": "required_status_checks",
-                    "parameters": {
-                        "required_checks": [{"context": "ci"}]
-                    }
-                }
-            ],
-            "bypass_actors": []
-        });
-        let controls = summarize_ruleset(&ruleset);
-        assert!(controls.has_pr());
-        assert_eq!(controls.reviewer_count, 2);
-        assert!(controls.has_status_checks());
-        assert!(controls.admin_equivalent());
-        assert!(!controls.has_broad_bypass());
-    }
-
-    #[test]
-    fn summarize_ruleset_force_push_and_deletion_rules_block_controls() {
+    fn summarize_ruleset_force_push_and_deletion_rules_block_signal() {
         let ruleset = serde_json::json!({
             "rules": [
                 {"type": "non_fast_forward"},
                 {"type": "deletion"}
-            ],
-            "bypass_actors": []
-        });
-
-        let controls = summarize_ruleset(&ruleset);
-
-        assert_eq!(controls.force_push_blocked(), Some(true));
-        assert_eq!(controls.deletion_blocked(), Some(true));
-    }
-
-    #[test]
-    fn summarize_ruleset_missing_force_push_and_deletion_rules_reports_unblocked() {
-        let ruleset = serde_json::json!({
-            "rules": [
-                {"type": "pull_request", "parameters": {"required_approving_review_count": 1}}
-            ],
-            "bypass_actors": []
-        });
-
-        let controls = summarize_ruleset(&ruleset);
-
-        assert_eq!(controls.force_push_blocked(), Some(false));
-        assert_eq!(controls.deletion_blocked(), Some(false));
-        assert_eq!(controls.tier(), BranchProtectionTier::BelowBaseline);
-    }
-
-    #[test]
-    fn summarize_ruleset_with_broad_bypass() {
-        let ruleset = serde_json::json!({
-            "rules": [
-                {"type": "pull_request", "parameters": {"required_approving_review_count": 1}}
-            ],
-            "bypass_actors": [
-                {"actor_type": "OrganizationAdmin", "actor_id": 1}
             ]
         });
-        let controls = summarize_ruleset(&ruleset);
-        assert!(controls.has_pr());
-        assert!(!controls.admin_equivalent());
-        assert!(controls.has_broad_bypass());
+
+        let signals = summarize_ruleset(&ruleset);
+
+        assert_eq!(signals.force_push_blocked, Some(true));
+        assert_eq!(signals.deletion_blocked, Some(true));
+    }
+
+    #[test]
+    fn summarize_ruleset_missing_rules_reports_unblocked() {
+        let ruleset = serde_json::json!({
+            "rules": [
+                {"type": "pull_request", "parameters": {"required_approving_review_count": 1}}
+            ]
+        });
+
+        let signals = summarize_ruleset(&ruleset);
+
+        assert_eq!(signals.force_push_blocked, Some(false));
+        assert_eq!(signals.deletion_blocked, Some(false));
     }
 
     #[test]
     fn summarize_ruleset_no_rules() {
-        let ruleset = serde_json::json!({"rules": [], "bypass_actors": []});
-        let controls = summarize_ruleset(&ruleset);
-        assert!(!controls.has_pr());
-        assert_eq!(controls.reviewer_count, 0);
-        assert!(!controls.has_status_checks());
-    }
-
-    #[test]
-    fn summarize_legacy_full_protection() {
-        let protection = serde_json::json!({
-            "required_pull_request_reviews": {
-                "required_approving_review_count": 1
-            },
-            "required_status_checks": {
-                "checks": [{"context": "ci"}]
-            },
-            "enforce_admins": {
-                "enabled": true
-            }
-        });
-        let controls = summarize_legacy_protection(&protection);
-        assert!(controls.has_pr());
-        assert_eq!(controls.reviewer_count, 1);
-        assert!(controls.has_status_checks());
-        assert!(controls.admin_equivalent());
-        assert!(!controls.has_broad_bypass());
+        let ruleset = serde_json::json!({"rules": []});
+        let signals = summarize_ruleset(&ruleset);
+        assert_eq!(signals.force_push_blocked, Some(false));
+        assert_eq!(signals.deletion_blocked, Some(false));
     }
 
     #[test]
@@ -719,31 +512,18 @@ mod tests {
             "allow_deletions": {"enabled": true}
         });
 
-        let controls = summarize_legacy_protection(&protection);
+        let signals = summarize_legacy_protection(&protection);
 
-        assert_eq!(controls.force_push_blocked(), Some(true));
-        assert_eq!(controls.deletion_blocked(), Some(false));
+        assert_eq!(signals.force_push_blocked, Some(true));
+        assert_eq!(signals.deletion_blocked, Some(false));
     }
 
     #[test]
     fn summarize_legacy_no_protection() {
         let protection = serde_json::json!({});
-        let controls = summarize_legacy_protection(&protection);
-        assert!(!controls.has_pr());
-        assert_eq!(controls.reviewer_count, 0);
-        assert!(!controls.has_status_checks());
-        assert!(!controls.admin_equivalent());
-    }
-
-    #[test]
-    fn summarize_legacy_contexts_fallback() {
-        let protection = serde_json::json!({
-            "required_status_checks": {
-                "contexts": ["ci/build"]
-            }
-        });
-        let controls = summarize_legacy_protection(&protection);
-        assert!(controls.has_status_checks());
+        let signals = summarize_legacy_protection(&protection);
+        assert_eq!(signals.force_push_blocked, None);
+        assert_eq!(signals.deletion_blocked, None);
     }
 
     #[test]
@@ -759,15 +539,22 @@ mod tests {
             "2026-06-17T11:31:04Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Fail);
-        assert_eq!(result.details.reason.as_deref(), Some("not_found_absent"));
+        let gap = result.gap().unwrap();
         assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::NotFoundAbsent)
+            gap,
+            HistoryProtectionGap::Absent {
+                confirmed_not_found: true,
+                http_status: Some(404)
+            }
         );
-        assert_eq!(result.details.http_status, Some(404));
-        assert_eq!(result.details.force_push_blocked, None);
-        assert_eq!(result.details.deletion_blocked, None);
+        assert!(gap.is_absent());
+        assert_eq!(gap.http_status(), Some(404));
+        assert!(result.is_observed());
+        assert!(!result.is_protected());
+        assert_eq!(
+            result.score_category(),
+            crate::domain::checks::ScoreCategory::Fail
+        );
     }
 
     #[test]
@@ -783,10 +570,11 @@ mod tests {
             "2026-06-17T11:31:04Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert!(!result.is_observed());
         assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::PermissionDenied)
+            result.http_status(),
+            Some(403),
+            "denied endpoints must surface the 403"
         );
     }
 
@@ -803,16 +591,8 @@ mod tests {
             "2026-06-17T11:31:04Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason.as_deref(),
-            Some("permission_suspected")
-        );
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::PermissionSuspected)
-        );
-        assert_eq!(result.details.http_status, Some(404));
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(404));
     }
 
     #[test]
@@ -828,16 +608,8 @@ mod tests {
             "2026-06-17T11:31:04Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason.as_deref(),
-            Some("permission_suspected")
-        );
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::PermissionSuspected)
-        );
-        assert_eq!(result.details.http_status, Some(404));
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(404));
     }
 
     #[test]
@@ -863,19 +635,6 @@ mod tests {
     }
 
     #[test]
-    fn every_indeterminate_reason_persists_as_an_indeterminate_collection_reason() {
-        for reason in [
-            IndeterminateReason::PermissionDenied,
-            IndeterminateReason::RateLimited,
-            IndeterminateReason::PermissionSuspected,
-            IndeterminateReason::Transient,
-            IndeterminateReason::Invalid,
-        ] {
-            assert!(reason.persisted().is_indeterminate(), "{reason:?}");
-        }
-    }
-
-    #[test]
     fn classify_endpoint_maps_every_unmodelled_failure_to_an_indeterminate_reason() {
         let cases = [
             (Some(401), false, IndeterminateReason::Invalid),
@@ -897,7 +656,6 @@ mod tests {
                 EndpointEvidence::Indeterminate(failure) => {
                     assert_eq!(failure.reason, expected, "status {status:?}");
                     assert_eq!(failure.http_status, status);
-                    assert!(failure.reason.persisted().is_indeterminate());
                 }
                 EndpointEvidence::Observed(_) | EndpointEvidence::ConfirmedAbsent { .. } => {
                     panic!("failure {status:?} must never classify as observed or absent")
@@ -927,13 +685,8 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::Invalid)
-        );
-        assert_eq!(result.details.http_status, Some(401));
-        assert_eq!(result.details.has_pr, None);
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(401));
     }
 
     #[test]
@@ -949,7 +702,7 @@ mod tests {
             AdminAccess::NotAdmin,
             "2026-08-31T00:00:00Z",
         );
-        assert_eq!(denied_legacy.details.http_status, Some(403));
+        assert_eq!(denied_legacy.http_status(), Some(403));
 
         let legacy = crate::github::client::ApiOutcome::success(serde_json::json!({
             "required_pull_request_reviews": { "required_approving_review_count": 2 }
@@ -964,26 +717,13 @@ mod tests {
             AdminAccess::NotAdmin,
             "2026-08-31T00:00:00Z",
         );
-        assert_eq!(denied_ruleset_side.details.http_status, Some(403));
+        assert_eq!(denied_ruleset_side.http_status(), Some(403));
     }
 
     #[test]
-    fn confirmed_absence_never_renders_an_indeterminate_reason() {
-        assert_eq!(ConfirmedAbsence::NoControls.reason_kind(), None);
-        assert_eq!(
-            ConfirmedAbsence::AuthorityConfirmedNotFound.reason_kind(),
-            Some(CollectionFailureReason::NotFoundAbsent)
-        );
-        for absence in [
-            ConfirmedAbsence::NoControls,
-            ConfirmedAbsence::AuthorityConfirmedNotFound,
-        ] {
-            assert!(
-                !absence
-                    .reason_kind()
-                    .is_some_and(CollectionFailureReason::is_indeterminate)
-            );
-        }
+    fn confirmed_absence_never_renders_an_unobservable_outcome() {
+        assert!(!ConfirmedAbsence::NoControls.confirmed_not_found());
+        assert!(ConfirmedAbsence::AuthorityConfirmedNotFound.confirmed_not_found());
     }
 
     #[test]
@@ -1045,12 +785,8 @@ mod tests {
             "2026-06-17T11:31:04Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::PermissionSuspected)
-        );
-        assert_eq!(result.details.http_status, Some(404));
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(404));
     }
 
     fn applicable_ruleset_outcome() -> crate::github::client::ApiOutcome {
@@ -1063,8 +799,7 @@ mod tests {
                     {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
                     {"type": "non_fast_forward"},
                     {"type": "deletion"}
-                ],
-                "bypass_actors": []
+                ]
             }
         ]))
     }
@@ -1083,11 +818,8 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::PermissionDenied)
-        );
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(403));
     }
 
     #[test]
@@ -1108,13 +840,8 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::PermissionDenied)
-        );
-        assert_eq!(result.details.has_pr, None);
-        assert_eq!(result.details.force_push_blocked, None);
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(403));
     }
 
     #[test]
@@ -1131,15 +858,12 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::PermissionSuspected)
-        );
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(404));
     }
 
     #[test]
-    fn readable_rulesets_with_legacy_404_under_admin_still_scores_as_genuine_absence() {
+    fn readable_rulesets_with_legacy_404_under_admin_still_scores_as_protected() {
         let rulesets = applicable_ruleset_outcome();
         let legacy_not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
@@ -1152,20 +876,55 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Pass);
-        assert_eq!(result.details.reason_kind, None);
-        assert_eq!(result.details.has_pr, Some(true));
-        assert_eq!(result.details.force_push_blocked, Some(true));
+        assert!(result.is_protected());
+        assert!(result.gap().is_none());
     }
 
-    fn readable_legacy_outcome() -> crate::github::client::ApiOutcome {
-        crate::github::client::ApiOutcome::success(serde_json::json!({
-            "required_pull_request_reviews": { "required_approving_review_count": 2 },
-            "required_status_checks": { "contexts": ["ci/build"] },
-            "enforce_admins": { "enabled": true },
+    #[test]
+    fn readable_rulesets_blocking_only_force_push_is_unprotected_deletion_allowed() {
+        let rulesets = crate::github::client::ApiOutcome::success(serde_json::json!([
+            {
+                "target": "branch",
+                "enforcement": "active",
+                "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+                "rules": [
+                    {"type": "non_fast_forward"}
+                ]
+            }
+        ]));
+        let legacy_fp_blocked = crate::github::client::ApiOutcome::success(serde_json::json!({
+            "allow_force_pushes": {"enabled": false},
+            "allow_deletions": {"enabled": true}
+        }));
+
+        let result = evaluate_outcomes(
+            &rulesets,
+            &legacy_fp_blocked,
+            "main",
+            AdminAccess::Admin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert!(!result.is_protected());
+        assert_eq!(result.gap(), Some(HistoryProtectionGap::DeletionAllowed));
+    }
+
+    #[test]
+    fn readable_legacy_full_protection() {
+        let legacy = crate::github::client::ApiOutcome::success(serde_json::json!({
             "allow_force_pushes": {"enabled": false},
             "allow_deletions": {"enabled": false}
-        }))
+        }));
+
+        let result = evaluate_outcomes(
+            &crate::github::client::ApiOutcome::success(serde_json::json!([])),
+            &legacy,
+            "main",
+            AdminAccess::Admin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert!(result.is_protected());
     }
 
     fn success_without_payload() -> crate::github::client::ApiOutcome {
@@ -1190,13 +949,8 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::Invalid)
-        );
-        assert_eq!(result.details.http_status, Some(200));
-        assert_eq!(result.details.has_pr, None);
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(200));
     }
 
     #[test]
@@ -1209,12 +963,7 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::Invalid)
-        );
-        assert_eq!(result.details.has_pr, None);
+        assert!(!result.is_observed());
     }
 
     #[test]
@@ -1230,13 +979,8 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::Invalid)
-        );
-        assert_eq!(result.details.http_status, Some(200));
-        assert_eq!(result.details.has_pr, None);
+        assert!(!result.is_observed());
+        assert_eq!(result.http_status(), Some(200));
     }
 
     #[test]
@@ -1249,42 +993,7 @@ mod tests {
             "2026-08-31T00:00:00Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::Invalid)
-        );
-        assert_eq!(result.details.has_pr, None);
-    }
-
-    #[test]
-    fn ruleset_has_broad_bypass_org_admin() {
-        let ruleset = serde_json::json!({
-            "bypass_actors": [{"actor_type": "OrganizationAdmin"}]
-        });
-        assert!(ruleset_has_broad_bypass(&ruleset));
-    }
-
-    #[test]
-    fn ruleset_has_broad_bypass_repo_role() {
-        let ruleset = serde_json::json!({
-            "bypass_actors": [{"actor_type": "RepositoryRole"}]
-        });
-        assert!(ruleset_has_broad_bypass(&ruleset));
-    }
-
-    #[test]
-    fn ruleset_has_no_broad_bypass() {
-        let ruleset = serde_json::json!({
-            "bypass_actors": [{"actor_type": "Team"}]
-        });
-        assert!(!ruleset_has_broad_bypass(&ruleset));
-    }
-
-    #[test]
-    fn ruleset_has_no_bypass_actors() {
-        let ruleset = serde_json::json!({});
-        assert!(!ruleset_has_broad_bypass(&ruleset));
+        assert!(!result.is_observed());
     }
 
     #[test]
@@ -1332,19 +1041,13 @@ mod tests {
         assert!(!ruleset_applies(&ruleset, "main"));
     }
 
-    #[test]
-    fn summarize_ruleset_required_pull_request_reviews_type() {
-        let ruleset = serde_json::json!({
-            "rules": [
-                {
-                    "type": "required_pull_request_reviews",
-                    "parameters": {"required_approving_review_count": 3}
-                }
-            ],
-            "bypass_actors": []
-        });
-        let controls = summarize_ruleset(&ruleset);
-        assert!(controls.has_pr());
-        assert_eq!(controls.reviewer_count, 3);
+    fn readable_legacy_outcome() -> crate::github::client::ApiOutcome {
+        crate::github::client::ApiOutcome::success(serde_json::json!({
+            "required_pull_request_reviews": { "required_approving_review_count": 2 },
+            "required_status_checks": { "contexts": ["ci/build"] },
+            "enforce_admins": { "enabled": true },
+            "allow_force_pushes": {"enabled": false},
+            "allow_deletions": {"enabled": false}
+        }))
     }
 }

@@ -1,41 +1,40 @@
 # CHE-0083. gh-report Branch Protection Scoring
 
 Date: 2026-06-17
-Last-reviewed: 2026-07-17
+Last-reviewed: 2026-10-15
 Tier: B
 Status: Accepted
 Crates: gh-report
 
 ## Related
 
-References: CHE-0082, CHE-0090, PGN-0013, COM-0019
+References: CHE-0082, PGN-0013, COM-0019
+Supersedes: CHE-0090
 
 ## Context
 
-gh-report branch-protection scoring used an AND-of-five gate: pull requests, one reviewer, status checks, admin enforcement, and no broad bypass. That made Scorecard bonus-level controls act as baseline gates. The 42-public-repo soak showed 28 genuine-absence repos and 14 weak ruleset repos; none had PR review enforcement. Force-push and deletion signals were absent from persisted evidence, so the minimal baseline could not be measured.
+gh-report branch-protection scoring began as an AND-of-five gate (pull requests, one reviewer, status checks, admin enforcement, and no broad bypass), then a report-side Branch Protection Regime (BPR) ladder scored six bands over seven persisted signals. Both models anchored the baseline on pull-request review, which external-ruleset repositories can satisfy while leaving history rewrite unblocked. The 42-public-repo soak showed review-based bars are a poor history-protection proxy: they conflate a repository's code-review culture with the destructive-rewrite block baseline governance actually needs. This revision narrows branch protection to its history-protection core and removes the rest from the check.
 
 ## Decision
 
-Replace the branch-protection gate with a report-side Branch Protection Regime (BPR) model, per the BPR partition ratified in CHE-0090. Persist only raw per-repository signals; derive regimes and org-wide distributions in aggregation and rendering.
+Replace the regime ladder with a history-protection-only closed sum, `BranchProtectionResult`, and give Branch Protection a place in the CoverageControl denominator drill-down.
 
-R1 [5]: Score BPR1 Unprotected (CHE-0090's below-baseline band) when branch protection is absent, unreadable as genuine absence, force pushes are not blocked, or deletion is not blocked.
+R1 [5]: Model branch protection per repository as exactly one of `Protected` (both force pushes and branch deletion are blocked on the default branch), `Unprotected` carrying a `HistoryProtectionGap` (`Absent` | `NeitherBlocked` | `ForcePushAllowed` | `DeletionAllowed`), or `Unobservable` with a typed collection-health (`IndeterminateReason`) failure. A closed algebraic sum (CHE-0002); no other outcome exists.
 
-R2 [5]: Score BPR2 IntegrityOnly when the default branch is protected and force-push plus deletion blocking are observed (CHE-0090's tier consistency map: BPR1<->BelowBaseline, BPR2<->Minimal — the BPR index does not track the old T-number by offset).
+R2 [5]: Score `Protected` as Pass/Met and `Unprotected` as Fail/Unmet. `Unobservable` is Excluded — never a compliance verdict (CHE-0082) — and under the CoverageControl model an unobservable repository leaves the Branch Protection denominator rather than swimming as a failure.
 
-R3 [5]: Score BPR3 ReviewedWithBypass or BPR4 ReviewedGated (CHE-0090's split of the old accept bar) when BPR2 also requires pull requests with at least one approving review. Widened dashboard pass bar: branch-protection coverage counts a repository as PASS when its regime is BPR2 IntegrityOnly or higher — pass := regime in {BPR2, BPR3, BPR4, BPR5}; denominator remains all non-archived repos per ghr-1e6b9b61.
+R3 [5]: Treat genuine absence of controls (`HistoryProtectionGap::Absent { confirmed_not_found }`, from an observed authority signal / admin-scoped 404) as `Unprotected` — a real, denominator-counted present finding — per CHE-0082:R4/R5.
 
-R4 [5]: Treat required status checks, stale-review dismissal, and admin-equivalent enforcement as additive bonuses that raise a BPR3/BPR4 repository to BPR5 Hardened when present; absence never blocks BPR1 or BPR2.
+R4 [5]: Persist only the history-protection raw signals (`force_push_blocked`, `deletion_blocked` when observed) and the resulting `HistoryProtectionGap`. The prior seven-signal `BranchProtectionDetails` and the report-side BPR ladder (CHE-0090) are removed from branch-protection evidence and scoring, along with the legacy `partial` outcome.
 
-R5 [5]: Treat broad or undocumented bypass actors as downgrades that cap the regime at BPR3 ReviewedWithBypass, not as an outright scoring failure.
+R5 [5]: Emit the change as a schema-major cutover (`EVIDENCE_SCHEMA_VERSION = 25.0`, fresh `-v25` streams) because the new computation makes prior projection evidence incomparable (COM-0027, OPERATIONS.md § Schema Versions → When to bump).
 
-R6 [5]: Append `force_push_blocked: Option<bool>` and `deletion_blocked: Option<bool>` to branch-protection details; `None` means unreadable or not observed and must not be fabricated as `Some(false)` for permission-suspected 404s.
-
-R7 [5]: Keep the computed tier and org-wide tier distribution report-side only; do not persist them on per-repository event payloads.
+R6 [5]: Keep the org- and owner-level coverage rates consistent with the repo model: excluded controls leave the denominator at every level (heritage ruling; see `EVIDENCE_SCHEMA_VERSION = 16.0` in OPERATIONS.md § Version history).
 
 ## Consequences
 
-+ becomes easier: branch-protection coverage now reflects a defendable accept bar while still showing weak-but-present baseline protection separately from genuine absence and unreadable evidence.
++ becomes easier: baseline governance is one unambiguous fact — is destructive history rewrite blocked — instead of a six-band report-side cascade over privileges external rulesets do not reliably expose to the collecting token.
 
-− becomes harder: report code must compute tier buckets from raw signals; old soak dumps without force-push or deletion fields can show only pre-H5 fixture shape, not honest tier ordering or final live distribution.
+− becomes harder: repositories whose only defensive bar was PR review while history stayed mutable now read `Unprotected`; operators must re-baseline expectations from the `-v24` era.
 
-risks/migration: live before/after org numbers remain pending until a scoped App-token collection refreshes the raw H5 signals.
+risks/migration: schema-major cutover provisions fresh `-v25` streams and leaves `-v24` streams archived and untouched; old stores refuse and a documented re-scrape is required per OPERATIONS.md § Schema Versions.

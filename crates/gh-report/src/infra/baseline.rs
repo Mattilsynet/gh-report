@@ -24,8 +24,7 @@ use tracing::debug;
 
 use crate::config;
 use crate::domain::checks::{
-    BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
-    SecurityPolicyStatus,
+    CodeownersStatus, DependabotStatus, SecretScanningStatus, SecurityPolicyStatus,
 };
 use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::time::parse_iso8601;
@@ -174,7 +173,7 @@ fn is_total_failure(evidence: &RepositoryEvidence) -> bool {
     c.security_policy.status() == SecurityPolicyStatus::Unknown
         && c.secret_scanning.status() == SecretScanningStatus::Unknown
         && c.dependabot_security_updates.status == DependabotStatus::Unknown
-        && c.branch_protection.status == BranchProtectionStatus::Unknown
+        && !c.branch_protection.is_observed()
         && c.codeowners.status() == CodeownersStatus::Unknown
 }
 
@@ -431,7 +430,12 @@ mod tests {
         ev.checks.security_policy = crate::test_fixtures::policy_unknown();
         ev.checks.secret_scanning = crate::test_fixtures::secret_unknown();
         ev.checks.dependabot_security_updates.status = DependabotStatus::Unknown;
-        ev.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+        ev.checks.branch_protection = crate::domain::checks::BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: crate::domain::checks::IndeterminateReason::PermissionDenied,
+            http_status: Some(403),
+            timestamp: ev.checks.branch_protection.timestamp().to_string(),
+        };
         ev.checks.codeowners = crate::test_fixtures::codeowners_unknown();
 
         let baseline = build_baseline(&[ev]);
@@ -449,7 +453,12 @@ mod tests {
         };
         ev.checks.secret_scanning = crate::test_fixtures::secret_unknown();
         ev.checks.dependabot_security_updates.status = DependabotStatus::Unknown;
-        ev.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+        ev.checks.branch_protection = crate::domain::checks::BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: crate::domain::checks::IndeterminateReason::PermissionDenied,
+            http_status: Some(403),
+            timestamp: ev.checks.branch_protection.timestamp().to_string(),
+        };
         ev.checks.codeowners = crate::test_fixtures::codeowners_unknown();
 
         assert!(
@@ -463,7 +472,12 @@ mod tests {
         let mut ev = test_fixtures::all_passing_evidence("partial-repo");
         ev.repository.updated_at =
             crate::domain::repository::UpdatedAt::new("2026-04-09T12:00:00Z");
-        ev.checks.branch_protection.status = BranchProtectionStatus::Unknown;
+        ev.checks.branch_protection = crate::domain::checks::BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: crate::domain::checks::IndeterminateReason::PermissionDenied,
+            http_status: Some(403),
+            timestamp: ev.checks.branch_protection.timestamp().to_string(),
+        };
 
         let baseline = build_baseline(&[ev]);
         assert_eq!(baseline.entries.len(), 1);

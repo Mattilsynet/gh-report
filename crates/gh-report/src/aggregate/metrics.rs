@@ -12,9 +12,9 @@ use tracing::warn;
 
 use crate::config;
 use crate::domain::checks::{
-    BranchProtectionRegime, CodeownersStatus, CollectionFailureReason, DependabotStatus,
-    ExclusionReason, ScoreCategory, SecretScanningStatus, SecurityPolicyEvidence,
-    SecurityPolicyStatus,
+    BranchProtectionResult, CodeownersStatus, CollectionFailureReason, DependabotStatus,
+    ExclusionReason, HistoryProtectionGap, IndeterminateReason, ScoreCategory,
+    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyStatus,
 };
 use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::metrics::{
@@ -81,12 +81,10 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 ///
 /// - **Security policy**: all public repositories, archived included; denominator
 ///   is total public repos, retaining their published policy surface.
-/// - **Secret scanning, Dependabot, CODEOWNERS**: observable non-archived repos
-///   (pass + fail). Measurement failures (`permission_denied`, `unknown`) feed
-///   the health-score floor, not the denominator.
-/// - **Branch protection**: all non-archived repos; unreadable repos count as
-///   not-covered, never dropped (ratified `ghr-1e6b9b61`). Many private repos
-///   return `permission_denied`.
+/// - **Secret scanning, Dependabot, CODEOWNERS, Branch protection**:
+///   observable non-archived repos (pass + fail). Measurement failures
+///   (`permission_denied`, `unknown`) feed the health-score floor, not the
+///   denominator.
 /// - **Open secret alert prevalence**: repos with scanning enabled AND
 ///   observable alerts.
 #[must_use]
@@ -208,17 +206,6 @@ impl ExclusionTally {
         self.permission_denied > 0 || self.unknown > 0 || self.other > 0
     }
 
-    /// Count of repos excluded for a measurement-failure reason
-    /// (`PermissionDenied`/`Unknown`/`Other`), excluding `NotApplicable`.
-    /// Branch protection folds this into its coverage denominator so a repo
-    /// the token cannot read counts as not-covered rather than being dropped
-    /// (bd `ghr-1e6b9b61`).
-    fn measurement_failure_count(&self) -> u32 {
-        self.permission_denied
-            .saturating_add(self.unknown)
-            .saturating_add(self.other)
-    }
-
     fn record(&mut self, reason: ExclusionReason) {
         match reason {
             ExclusionReason::PermissionDenied => {
@@ -271,25 +258,6 @@ fn coverage_metric(pass: u32, fail: u32, tally: &ExclusionTally) -> RateMetric {
     } else {
         RateMetric::new(pass, denominator)
     }
-}
-
-/// Build the branch-protection coverage `RateMetric` over the full active
-/// population.
-///
-/// Unlike [`coverage_metric`], the denominator counts every non-archived
-/// repo — including those excluded for a measurement-failure reason
-/// (`permission_denied`/`unknown`/`other`) — so a repo the token cannot read
-/// counts as not-covered rather than being dropped. This is the ratified
-/// population matrix for branch protection (bd `ghr-1e6b9b61`); branch
-/// protection is uniquely affected because a large private-repo fraction
-/// returns `permission_denied`. `pass` is the numerator; `fail` is the
-/// observable non-pass count; `measurement_failures` is the excluded count
-/// folded into the denominator.
-fn branch_protection_metric(pass: u32, fail: u32, measurement_failures: u32) -> RateMetric {
-    let denominator = pass
-        .saturating_add(fail)
-        .saturating_add(measurement_failures);
-    RateMetric::new(pass, denominator)
 }
 
 fn exclusion_tally_from_policy(counts: &PolicyCounts) -> ExclusionTally {
@@ -412,27 +380,20 @@ fn open_secret_alert_prevalence(input: CoverageInputs<'_>) -> RateMetric {
 }
 
 fn branch_protection_coverage(input: CoverageInputs<'_>) -> RateMetric {
-    let non_pass = input
-        .branch_counts
-        .partial
-        .saturating_add(input.branch_counts.fail);
+    let non_pass = input.branch_counts.fail;
     let observable = input.branch_counts.pass.saturating_add(non_pass);
-    branch_protection_metric(
-        input.branch_counts.pass,
-        non_pass,
-        input.branch_tally.measurement_failure_count(),
-    )
-    .with_extra("insufficient", non_pass)
-    .with_extra("unknown", input.branch_counts.unknown)
-    .with_extra("observable_repositories", observable)
-    .with_extra(
-        "collection_health_branch_protection_permission_suspected",
-        input.taxonomy.branch_protection_permission_suspected,
-    )
-    .with_extra(
-        "collection_health_branch_protection_not_found_absent",
-        input.taxonomy.branch_protection_not_found_absent,
-    )
+    coverage_metric(input.branch_counts.pass, non_pass, input.branch_tally)
+        .with_extra("insufficient", non_pass)
+        .with_extra("unknown", input.branch_counts.unknown)
+        .with_extra("observable_repositories", observable)
+        .with_extra(
+            "collection_health_branch_protection_permission_suspected",
+            input.taxonomy.branch_protection_permission_suspected,
+        )
+        .with_extra(
+            "collection_health_branch_protection_not_found_absent",
+            input.taxonomy.branch_protection_not_found_absent,
+        )
 }
 
 fn codeowners_coverage(input: CoverageInputs<'_>) -> RateMetric {
@@ -619,33 +580,44 @@ fn count_collection_health_reasons(
             counts.secret_scanning_permission_denied =
                 counts.secret_scanning_permission_denied.saturating_add(1);
         }
-        match repo.checks.branch_protection.details.reason_kind {
-            Some(CollectionFailureReason::PermissionSuspected) => {
-                counts.branch_protection_permission_suspected = counts
-                    .branch_protection_permission_suspected
-                    .saturating_add(1);
-            }
-            Some(CollectionFailureReason::NotFoundAbsent) => {
+        match &repo.checks.branch_protection {
+            BranchProtectionResult::Unobservable { reason, .. } => match reason {
+                IndeterminateReason::PermissionDenied => {
+                    counts.branch_protection_permission_denied =
+                        counts.branch_protection_permission_denied.saturating_add(1);
+                }
+                IndeterminateReason::PermissionSuspected => {
+                    counts.branch_protection_permission_suspected = counts
+                        .branch_protection_permission_suspected
+                        .saturating_add(1);
+                }
+                IndeterminateReason::Transient => {
+                    counts.branch_protection_transient =
+                        counts.branch_protection_transient.saturating_add(1);
+                }
+                IndeterminateReason::RateLimited => {
+                    counts.branch_protection_rate_limited =
+                        counts.branch_protection_rate_limited.saturating_add(1);
+                }
+                IndeterminateReason::Invalid => {
+                    counts.branch_protection_invalid =
+                        counts.branch_protection_invalid.saturating_add(1);
+                }
+                IndeterminateReason::Pending => {}
+            },
+            BranchProtectionResult::Unprotected {
+                gap:
+                    HistoryProtectionGap::Absent {
+                        confirmed_not_found: true,
+                        ..
+                    },
+                ..
+            } => {
                 counts.branch_protection_not_found_absent =
                     counts.branch_protection_not_found_absent.saturating_add(1);
             }
-            Some(CollectionFailureReason::PermissionDenied) => {
-                counts.branch_protection_permission_denied =
-                    counts.branch_protection_permission_denied.saturating_add(1);
-            }
-            Some(CollectionFailureReason::Transient) => {
-                counts.branch_protection_transient =
-                    counts.branch_protection_transient.saturating_add(1);
-            }
-            Some(CollectionFailureReason::RateLimited) => {
-                counts.branch_protection_rate_limited =
-                    counts.branch_protection_rate_limited.saturating_add(1);
-            }
-            Some(CollectionFailureReason::Invalid) => {
-                counts.branch_protection_invalid =
-                    counts.branch_protection_invalid.saturating_add(1);
-            }
-            None => {}
+            BranchProtectionResult::Protected { .. }
+            | BranchProtectionResult::Unprotected { .. } => {}
         }
     }
     counts
@@ -653,24 +625,22 @@ fn count_collection_health_reasons(
 
 /// Count branch protection statuses across active repos.
 ///
-/// Pass bar is BPR2 (`IntegrityOnly`) or higher (CHE-0083 amended, CHE-0090).
-/// `partial` is unused under this predicate — every non-excluded,
-/// non-`Unprotected` regime now counts as `pass` — and stays zero rather
-/// than being removed, so the population matrix in
-/// [`branch_protection_coverage`] (`non_pass = partial + fail`) keeps a
-/// single stable arithmetic shape across pass-bar changes.
+/// Pass bar is full history protection (CHE-0083 ratified): only
+/// [`BranchProtectionResult::Protected`] counts as `pass`; every
+/// [`BranchProtectionResult::Unprotected`] counts as `fail`; unobserved
+/// outcomes count as `unknown` and are excluded from the coverage
+/// denominator via [`coverage_metric`].
 fn count_branch_protection_statuses(active: &[&RepositoryEvidence]) -> BranchProtectionCounts {
     count_statuses(
         active,
-        |repo, counts: &mut BranchProtectionCounts| match repo.checks.branch_protection.regime() {
-            BranchProtectionRegime::IntegrityOnly
-            | BranchProtectionRegime::ReviewedWithBypass
-            | BranchProtectionRegime::ReviewedGated
-            | BranchProtectionRegime::Hardened => {
+        |repo, counts: &mut BranchProtectionCounts| match repo.checks.branch_protection {
+            BranchProtectionResult::Protected { .. } => {
                 counts.pass = counts.pass.saturating_add(1);
             }
-            BranchProtectionRegime::Unprotected => counts.fail = counts.fail.saturating_add(1),
-            BranchProtectionRegime::Unmeasured => {
+            BranchProtectionResult::Unprotected { .. } => {
+                counts.fail = counts.fail.saturating_add(1);
+            }
+            BranchProtectionResult::Unobservable { .. } => {
                 counts.unknown = counts.unknown.saturating_add(1);
             }
         },
@@ -751,11 +721,6 @@ fn count_alert_observable_enabled(active: &[&RepositoryEvidence]) -> u32 {
 
 /// A control whose org-level coverage denominator can be enumerated
 /// repository by repository.
-///
-/// Branch protection is deliberately absent: its denominator is the whole
-/// active population and it already owns a richer drill-down
-/// (`branch_protection.html`) that partitions by regime rather than by
-/// denominator membership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverageControl {
     /// [`AggregatedMetrics::security_policy_coverage`].
@@ -766,6 +731,8 @@ pub enum CoverageControl {
     Dependabot,
     /// [`AggregatedMetrics::codeowners_coverage`].
     Codeowners,
+    /// [`AggregatedMetrics::branch_protection_coverage`].
+    BranchProtection,
 }
 
 impl CoverageControl {
@@ -775,6 +742,7 @@ impl CoverageControl {
         Self::SecretScanning,
         Self::Dependabot,
         Self::Codeowners,
+        Self::BranchProtection,
     ];
 
     /// The coverage [`RateMetric`] this control's denominator belongs to.
@@ -785,6 +753,7 @@ impl CoverageControl {
             Self::SecretScanning => &metrics.secret_scanning_coverage,
             Self::Dependabot => &metrics.dependabot_security_updates_coverage,
             Self::Codeowners => &metrics.codeowners_coverage,
+            Self::BranchProtection => &metrics.branch_protection_coverage,
         }
     }
 
@@ -794,7 +763,7 @@ impl CoverageControl {
     pub fn population_description(self) -> &'static str {
         match self {
             Self::SecurityPolicy => "every public repository, archived included",
-            Self::SecretScanning | Self::Dependabot | Self::Codeowners => {
+            Self::SecretScanning | Self::Dependabot | Self::Codeowners | Self::BranchProtection => {
                 "every non-archived repository"
             }
         }
@@ -803,7 +772,9 @@ impl CoverageControl {
     fn in_population(self, repo: &RepositoryEvidence) -> bool {
         match self {
             Self::SecurityPolicy => repo.repository.visibility == Visibility::Public,
-            Self::SecretScanning | Self::Dependabot | Self::Codeowners => !repo.repository.archived,
+            Self::SecretScanning | Self::Dependabot | Self::Codeowners | Self::BranchProtection => {
+                !repo.repository.archived
+            }
         }
     }
 
@@ -851,6 +822,26 @@ impl CoverageControl {
                 CodeownersStatus::Absent => DenominatorMembership::Eligible(ControlOutcome::Unmet),
                 CodeownersStatus::Unknown => {
                     DenominatorMembership::Excluded(UnmeasuredReason::Unknown)
+                }
+            },
+            Self::BranchProtection => match &repo.checks.branch_protection {
+                BranchProtectionResult::Protected { .. } => {
+                    DenominatorMembership::Eligible(ControlOutcome::Met)
+                }
+                BranchProtectionResult::Unprotected { .. } => {
+                    DenominatorMembership::Eligible(ControlOutcome::Unmet)
+                }
+                BranchProtectionResult::Unobservable { reason, .. } => {
+                    DenominatorMembership::Excluded(match reason {
+                        IndeterminateReason::PermissionDenied
+                        | IndeterminateReason::PermissionSuspected => {
+                            UnmeasuredReason::PermissionDenied
+                        }
+                        IndeterminateReason::Transient
+                        | IndeterminateReason::RateLimited
+                        | IndeterminateReason::Invalid
+                        | IndeterminateReason::Pending => UnmeasuredReason::Unknown,
+                    })
                 }
             },
         }
@@ -1224,7 +1215,7 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> OwnerControlCove
     );
     per_control_coverage.insert(
         "branch_protection".to_string(),
-        branch_protection_metric(bp_pass, bp_fail, bp_tally.measurement_failure_count()),
+        coverage_metric(bp_pass, bp_fail, &bp_tally),
     );
     per_control_coverage.insert(
         "codeowners".to_string(),
@@ -1366,8 +1357,8 @@ fn merge_age_buckets(source: &HashMap<String, u64>) -> HashMap<String, u32> {
 mod tests {
     use super::*;
     use crate::domain::checks::{
-        BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
-        SecretScanningResult, SecretScanningStatus, SecurityPolicyResult,
+        BranchProtectionResult, HistoryProtectionGap, IndeterminateReason, SecretScanningResult,
+        SecretScanningStatus, SecurityPolicyResult,
     };
     use crate::domain::metrics::{
         CollectionHealthCheckKind, CollectionHealthCount, ScoreExclusionCount,
@@ -1380,7 +1371,7 @@ mod tests {
     ///
     /// Returns 5 non-archived repos (3 public, 1 internal, 1 private) + 1 archived:
     /// - public-1: all checks pass
-    /// - public-2: policy fail, secret disabled, dependabot disabled, branch partial, codeowners non-conforming
+    /// - public-2: policy fail, secret disabled, dependabot disabled, branch pass, codeowners non-conforming
     /// - public-3: policy unknown, secret `permission_denied`, dependabot unknown, branch unknown, codeowners unknown
     /// - internal-1: all checks pass (but policy not counted since non-public)
     /// - private-1: secret unknown, branch fail, codeowners absent
@@ -1407,7 +1398,7 @@ mod tests {
                     policy_fail(),
                     secret_disabled(),
                     dependabot_disabled(),
-                    branch_partial(),
+                    branch_pass(),
                     codeowners_non_conforming(),
                 ),
             ),
@@ -1462,90 +1453,55 @@ mod tests {
         ]
     }
 
-    fn branch_protection_result_with_reason(
-        reason_kind: CollectionFailureReason,
-    ) -> BranchProtectionResult {
-        BranchProtectionResult {
-            status: BranchProtectionStatus::Unknown,
-            details: BranchProtectionDetails {
-                default_branch: "main".to_string(),
-                has_pr: None,
-                required_reviewers: None,
-                has_status_checks: None,
-                admin_equivalent: None,
-                has_broad_bypass: None,
-                reason: None,
-                reason_kind: Some(reason_kind),
-                http_status: None,
-                force_push_blocked: None,
-                deletion_blocked: None,
-            },
-            timestamp: make_timestamp(),
-        }
-    }
-
-    fn repo_with_branch_protection_reason(
-        reason_kind: CollectionFailureReason,
-    ) -> RepositoryEvidence {
+    fn repo_with_branch(name: &str, branch: BranchProtectionResult) -> RepositoryEvidence {
         make_repository_evidence(
-            "reason-kind-probe",
+            name,
             Visibility::Public,
             false,
             make_checks(
                 policy_pass_setting(),
                 secret_enabled_observable(false),
                 dependabot_enabled(),
-                branch_protection_result_with_reason(reason_kind),
+                branch,
                 codeowners_conforming(),
             ),
         )
     }
 
     fn three_pass_two_fail_one_excluded_branch_protection() -> Vec<RepositoryEvidence> {
-        let passing = |name: &str| all_passing_evidence(name);
-        let failing = |name: &str, branch: BranchProtectionResult| {
-            make_repository_evidence(
-                name,
-                Visibility::Public,
-                false,
-                make_checks(
-                    policy_pass_setting(),
-                    secret_enabled_observable(false),
-                    dependabot_enabled(),
-                    branch,
-                    codeowners_conforming(),
-                ),
-            )
-        };
         vec![
-            passing("pass-1"),
-            passing("pass-2"),
-            passing("pass-3"),
-            failing("fail-1", branch_partial()),
-            failing("fail-2", branch_fail()),
-            failing(
+            repo_with_branch("pass-1", branch_pass()),
+            repo_with_branch("pass-2", branch_pass()),
+            repo_with_branch("pass-3", branch_pass()),
+            repo_with_branch("partial-as-protected", branch_pass()),
+            repo_with_branch(
+                "fail-1",
+                branch_unprotected_with_gap(HistoryProtectionGap::NeitherBlocked),
+            ),
+            repo_with_branch(
                 "excluded-1",
-                branch_protection_result_with_reason(CollectionFailureReason::PermissionDenied),
+                branch_unobservable(IndeterminateReason::PermissionDenied),
             ),
         ]
     }
 
     #[test]
-    fn branch_protection_excluded_repo_counts_in_denominator_and_by_reason() {
+    fn branch_protection_excluded_repo_leaves_denominator() {
         let repos = three_pass_two_fail_one_excluded_branch_protection();
         let metrics = aggregate_metrics(&repos);
 
         assert_eq!(
             metrics.branch_protection_coverage.numerator, 4,
-            "BPR2+ pass bar: the fixture's one BPR2 (IntegrityOnly) repo now \
-             counts as pass alongside the 3 already-passing repos"
+            "CHE-0083: the former partial repo now counts as Protected alongside \
+             the 3 already-passing repos"
         );
         assert_eq!(
-            metrics.branch_protection_coverage.denominator, 6,
-            "ghr-1e6b9b61: the permission_denied repo counts in the denominator \
-             as not-covered (6 = all non-archived), not dropped to the observable 5"
+            metrics.branch_protection_coverage.denominator, 5,
+            "CHE-0083: the permission_denied repo is excluded and leaves the \
+             denominator (eligible population only)"
         );
-        assert_eq!(metrics.branch_protection_coverage.rate, Some(66.7));
+        assert_eq!(metrics.branch_protection_coverage.rate, Some(80.0));
+        assert_eq!(metrics.branch_protection_counts.pass, 4);
         assert_eq!(metrics.branch_protection_counts.fail, 1);
         assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
@@ -1655,41 +1611,59 @@ mod tests {
         );
     }
 
-    /// ghr-1e6b9b61 regression: the user-reported symptom was a Branch
-    /// Protection dashboard reading `0.0% (0/36)` when 544 of 580 active repos
-    /// returned `permission_denied`. Those repos must count in the denominator
-    /// as not-covered — an all-permission-denied population yields `0/N`, not
-    /// the observable-only `0/1` floor.
+    /// CHE-0083: an all-unobservable branch-protection population is excluded
+    /// from coverage, and with an empty eligible population the UF2-5 floor
+    /// reports `0/1` rather than a misleading empty-rate or counting the
+    /// unobservable repos as not-covered.
     #[test]
-    fn branch_protection_all_permission_denied_counts_full_population_in_denominator() {
+    fn branch_protection_all_permission_denied_uses_uf2_5_floor() {
         let repos = vec![
-            repo_with_branch_protection_reason(CollectionFailureReason::PermissionDenied),
-            repo_with_branch_protection_reason(CollectionFailureReason::PermissionDenied),
-            repo_with_branch_protection_reason(CollectionFailureReason::PermissionDenied),
+            repo_with_branch(
+                "denied-1",
+                branch_unobservable(IndeterminateReason::PermissionDenied),
+            ),
+            repo_with_branch(
+                "denied-2",
+                branch_unobservable(IndeterminateReason::PermissionDenied),
+            ),
+            repo_with_branch(
+                "denied-3",
+                branch_unobservable(IndeterminateReason::PermissionDenied),
+            ),
         ];
         let metrics = aggregate_metrics(&repos);
 
         assert_eq!(metrics.branch_protection_coverage.numerator, 0);
         assert_eq!(
-            metrics.branch_protection_coverage.denominator, 3,
-            "all permission_denied repos count in the denominator (0/3), not 0/1"
+            metrics.branch_protection_coverage.denominator, 1,
+            "CHE-0083: every repo unobservable leaves the eligible population \
+             empty and UF2-5 floors the rate to 0/1"
         );
         assert_eq!(metrics.branch_protection_coverage.rate, Some(0.0));
+        assert_eq!(metrics.branch_protection_counts.unknown, 3);
     }
 
     #[test]
     fn score_exclusion_counts_by_reason_breakdown_sums_to_excluded_total() {
         let repos = vec![
-            repo_with_branch_protection_reason(CollectionFailureReason::PermissionDenied),
-            repo_with_branch_protection_reason(CollectionFailureReason::NotFoundAbsent),
-            repo_with_branch_protection_reason(CollectionFailureReason::Transient),
+            repo_with_branch(
+                "excluded-permission",
+                branch_unobservable(IndeterminateReason::PermissionDenied),
+            ),
+            repo_with_branch(
+                "excluded-rate-limited",
+                branch_unobservable(IndeterminateReason::RateLimited),
+            ),
+            repo_with_branch(
+                "excluded-invalid",
+                branch_unobservable(IndeterminateReason::Invalid),
+            ),
         ];
         let metrics = aggregate_metrics(&repos);
 
         assert_eq!(
-            metrics.branch_protection_coverage.denominator, 3,
-            "ghr-1e6b9b61: all 3 excluded repos count in the denominator as \
-             not-covered (0/3), not floored to the observable-empty 0/1"
+            metrics.branch_protection_coverage.denominator, 1,
+            "UF2-5 floor: with all repos excluded the eligible population is empty"
         );
         assert_eq!(metrics.branch_protection_coverage.rate, Some(0.0));
 
@@ -1710,15 +1684,8 @@ mod tests {
         assert!(
             branch_protection_exclusions.contains(&&ScoreExclusionCount {
                 check_kind: CollectionHealthCheckKind::BranchProtection,
-                reason: ExclusionReason::Unknown,
-                count: 1,
-            })
-        );
-        assert!(
-            branch_protection_exclusions.contains(&&ScoreExclusionCount {
-                check_kind: CollectionHealthCheckKind::BranchProtection,
                 reason: ExclusionReason::Other,
-                count: 1,
+                count: 2,
             })
         );
     }
@@ -1980,32 +1947,37 @@ mod tests {
 
         assert_eq!(
             metrics.branch_protection_counts.pass, 3,
-            "BPR2+ pass bar: sample_repos' 1 BPR2 (IntegrityOnly) repo moves \
-             from partial into pass, alongside the 2 already-passing repos"
+            "full history protection pass bar: public-1, public-2, internal-1 (3 Protected)"
         );
-        assert_eq!(metrics.branch_protection_counts.partial, 0);
         assert_eq!(
             metrics.branch_protection_counts.fail, 1,
-            "pcoqb fix: public-3's excluded tier routes to .unknown, not folded into .fail \
-             (only private-1's genuine BelowBaseline remains)"
+            "private-1's Unprotected/Absent is the only fail (public-3's unobservable \
+             routes to .unknown, not .fail)"
         );
         assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
         assert_eq!(metrics.branch_protection_coverage.numerator, 3);
-        assert_eq!(metrics.branch_protection_coverage.denominator, 5);
+        assert_eq!(
+            metrics.branch_protection_coverage.denominator, 4,
+            "CHE-0083: public-3's Unobservable repo leaves the denominator \
+             (eligible = 3 pass + 1 fail), not counted as not-covered"
+        );
         assert_eq!(
             metrics.branch_protection_coverage.rate,
-            Some(60.0),
-            "ghr-1e6b9b61: the 1 unmeasured repo counts in the denominator as \
-             not-covered (3/5 = 60.0%), not dropped to the observable 3/4"
+            Some(75.0),
+            "3/4 observed repos are Protected"
         );
     }
 
     #[test]
     fn aggregate_metrics_collection_health_taxonomy_counts() {
         let mut repos = sample_repos();
-        repos[0].checks.branch_protection.details.reason_kind =
-            Some(CollectionFailureReason::PermissionSuspected);
+        repos[0].checks.branch_protection = BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: IndeterminateReason::PermissionSuspected,
+            http_status: Some(403),
+            timestamp: make_timestamp(),
+        };
 
         let metrics = aggregate_metrics(&repos);
         assert_eq!(
@@ -2027,8 +1999,12 @@ mod tests {
     #[test]
     fn aggregate_metrics_exposes_typed_collection_health_counts() {
         let mut repos = sample_repos();
-        repos[0].checks.branch_protection.details.reason_kind =
-            Some(CollectionFailureReason::PermissionSuspected);
+        repos[0].checks.branch_protection = BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: IndeterminateReason::PermissionSuspected,
+            http_status: Some(403),
+            timestamp: make_timestamp(),
+        };
 
         let metrics = aggregate_metrics(&repos);
 
@@ -2059,10 +2035,20 @@ mod tests {
     #[test]
     fn collection_health_taxonomy_pre_extension_three_rows_contain_expected_counts() {
         let mut repos = sample_repos();
-        repos[0].checks.branch_protection.details.reason_kind =
-            Some(CollectionFailureReason::PermissionSuspected);
-        repos[3].checks.branch_protection.details.reason_kind =
-            Some(CollectionFailureReason::NotFoundAbsent);
+        repos[0].checks.branch_protection = BranchProtectionResult::Unobservable {
+            default_branch: "main".to_string(),
+            reason: IndeterminateReason::PermissionSuspected,
+            http_status: Some(403),
+            timestamp: make_timestamp(),
+        };
+        repos[3].checks.branch_protection = BranchProtectionResult::Unprotected {
+            default_branch: "main".to_string(),
+            gap: HistoryProtectionGap::Absent {
+                confirmed_not_found: true,
+                http_status: Some(404),
+            },
+            timestamp: make_timestamp(),
+        };
 
         let metrics = aggregate_metrics(&repos);
 
@@ -2098,30 +2084,45 @@ mod tests {
     #[test]
     fn branch_protection_additional_reasons_counted_when_present_absent_when_not() {
         let reasons = [
-            CollectionFailureReason::RateLimited,
-            CollectionFailureReason::Transient,
-            CollectionFailureReason::Invalid,
-            CollectionFailureReason::PermissionDenied,
+            (
+                IndeterminateReason::RateLimited,
+                CollectionFailureReason::RateLimited,
+            ),
+            (
+                IndeterminateReason::Transient,
+                CollectionFailureReason::Transient,
+            ),
+            (
+                IndeterminateReason::Invalid,
+                CollectionFailureReason::Invalid,
+            ),
+            (
+                IndeterminateReason::PermissionDenied,
+                CollectionFailureReason::PermissionDenied,
+            ),
         ];
-        for reason in reasons {
-            let present = aggregate_metrics(&[repo_with_branch_protection_reason(reason)]);
+        for (indeterminate, failure) in reasons {
+            let present = aggregate_metrics(&[repo_with_branch(
+                "probe",
+                branch_unobservable(indeterminate),
+            )]);
             assert!(
                 present
                     .collection_health_counts
                     .contains(&CollectionHealthCount {
                         check_kind: CollectionHealthCheckKind::BranchProtection,
-                        reason,
+                        reason: failure,
                         count: 1,
                     }),
-                "expected a BranchProtection/{reason:?} row when the reason is present"
+                "expected a BranchProtection/{failure:?} row when the reason is present"
             );
 
             let absent = aggregate_metrics(&[all_passing_evidence("clean")]);
             assert!(
                 !absent.collection_health_counts.iter().any(|c| c.check_kind
                     == CollectionHealthCheckKind::BranchProtection
-                    && c.reason == reason),
-                "did not expect a BranchProtection/{reason:?} row when the reason is absent"
+                    && c.reason == failure),
+                "did not expect a BranchProtection/{failure:?} row when the reason is absent"
             );
         }
     }
@@ -2513,8 +2514,9 @@ mod tests {
         assert_eq!(
             metrics.branch_protection_coverage.extra.get("insufficient"),
             Some(&serde_json::json!(1)),
-            "insufficient = partial(0) + fail(1); BPR2+ pass bar moves the 1 BPR2 \
-             (IntegrityOnly) repo out of partial into pass, so this drops from 2 to 1"
+            "insufficient = unprotected(1): branch protection has no partial \
+             category under CHE-0083, so only private-1 (Unprotected) is \
+             insufficient"
         );
         assert_eq!(
             metrics
@@ -2522,7 +2524,8 @@ mod tests {
                 .extra
                 .get("observable_repositories"),
             Some(&serde_json::json!(4)),
-            "observable = pass(2) + partial(1) + fail(1); excludes public-3, dropping from 5 to 4"
+            "observable = pass(3) + unprotected(1); the unknown repo (public-3) \
+             is excluded from the denominator (CHE-0083)"
         );
 
         assert_eq!(
@@ -2854,9 +2857,10 @@ mod tests {
     /// (`Unknown`/`PermissionDenied`/`Other`) must score as a genuine failure
     /// (`Some(0.0)`), not vanish to `None` — an all-unmeasured control silently
     /// inflating Team Health to a vacuous 100% (ghr-1546ca65/e861p) is the bug
-    /// this guards against. Under the ratified population matrix branch
-    /// protection counts these repos in the denominator (0/2), so the
-    /// `Some(0.0)` arises directly rather than via the denom==0 floor.
+    /// this guards against. Under CHE-0083 unobservable repositories leave the
+    /// branch-protection denominator, so with no observable population the
+    /// rate floors to 0/1 via `coverage_metric`; the `Some(0.0)` arises from
+    /// the floor rather than from counting exclusions in the denominator.
     #[test]
     fn owner_control_coverage_all_measurement_failure_floors_to_zero_rate() {
         let repos = vec![
@@ -2889,7 +2893,7 @@ mod tests {
         let team = &result[0];
         let branch_protection = team.per_control_coverage.get("branch_protection").unwrap();
         assert_eq!(branch_protection.numerator, 0);
-        assert_eq!(branch_protection.denominator, 2);
+        assert_eq!(branch_protection.denominator, 1);
         assert_eq!(branch_protection.rate, Some(0.0));
     }
 
@@ -2935,12 +2939,12 @@ mod tests {
         assert_eq!(security_policy.rate, None);
     }
 
-    /// ghr-1e6b9b61: a mixed branch-protection team (pass + fail + excluded)
-    /// counts the excluded (measurement-failure) repo in the denominator as
-    /// not-covered — the ratified population is all non-archived repos, so a
-    /// repo the token cannot read lowers the rate rather than being dropped.
+    /// ghr-1e6b9b61 / CHE-0083: a mixed branch-protection team (pass + fail +
+    /// unobservable) counts only the observable repositories in the
+    /// denominator; the unobservable repo is excluded rather than counted as
+    /// not-covered, so pass + fail yield 1/2 = 50.0.
     #[test]
-    fn owner_control_coverage_mixed_team_counts_excluded_in_denominator() {
+    fn owner_control_coverage_mixed_team_counts_excluded_from_denominator() {
         let repos = vec![
             make_repository_evidence(
                 "pass-1",
@@ -2984,11 +2988,11 @@ mod tests {
         let branch_protection = team.per_control_coverage.get("branch_protection").unwrap();
         assert_eq!(branch_protection.numerator, 1);
         assert_eq!(
-            branch_protection.denominator, 3,
-            "excluded repo counts in the denominator (3) as not-covered per the \
-             ratified population matrix"
+            branch_protection.denominator, 2,
+            "only observable repos make the branch-protection denominator \
+             (CHE-0083); the unobservable repo is excluded"
         );
-        assert_eq!(branch_protection.rate, Some(33.3));
+        assert_eq!(branch_protection.rate, Some(50.0));
     }
 
     #[test]
@@ -3438,11 +3442,14 @@ mod tests {
             repo("pass-1", branch_pass()),
             repo("pass-2", branch_pass()),
             repo("pass-3", branch_pass()),
-            repo("fail-1", branch_partial()),
+            repo(
+                "fail-1",
+                branch_unprotected_with_gap(HistoryProtectionGap::NeitherBlocked),
+            ),
             repo("fail-2", branch_fail()),
             repo(
                 "excluded-1",
-                branch_protection_result_with_reason(CollectionFailureReason::PermissionDenied),
+                branch_unobservable(IndeterminateReason::PermissionDenied),
             ),
         ];
         let owners = build_owner_metrics(&repos);
@@ -3453,11 +3460,11 @@ mod tests {
             .unwrap();
         assert_eq!(branch_protection.numerator, 3);
         assert_eq!(
-            branch_protection.denominator, 6,
-            "ghr-1e6b9b61 at owner scope: the permission_denied repo counts in \
-             the denominator as not-covered (6 = all non-archived), not dropped to 5"
+            branch_protection.denominator, 5,
+            "CHE-0083: the Unobservable repo leaves the per-owner denominator \
+             (5 = 3 pass + 2 fail), not counted as not-covered"
         );
-        assert_eq!(branch_protection.rate, Some(50.0));
+        assert_eq!(branch_protection.rate, Some(60.0));
 
         assert!(
             owners[0]
@@ -3474,7 +3481,7 @@ mod tests {
 
     #[test]
     fn owner_score_exclusion_counts_by_reason_breakdown_sums_to_excluded_total() {
-        let repo = |name: &str, reason_kind: CollectionFailureReason| {
+        let repo = |name: &str, branch: BranchProtectionResult| {
             make_repository_evidence(
                 name,
                 Visibility::Public,
@@ -3483,15 +3490,21 @@ mod tests {
                     policy_pass_setting(),
                     secret_enabled_observable(false),
                     dependabot_enabled(),
-                    branch_protection_result_with_reason(reason_kind),
+                    branch,
                     codeowners_with_owners(&["@org/team"]),
                 ),
             )
         };
         let repos = vec![
-            repo("r1", CollectionFailureReason::PermissionDenied),
-            repo("r2", CollectionFailureReason::NotFoundAbsent),
-            repo("r3", CollectionFailureReason::Transient),
+            repo(
+                "r1",
+                branch_unobservable(IndeterminateReason::PermissionDenied),
+            ),
+            repo("r2", branch_unobservable(IndeterminateReason::Transient)),
+            repo(
+                "r3",
+                branch_unobservable(IndeterminateReason::PermissionSuspected),
+            ),
         ];
         let owners = build_owner_metrics(&repos);
         assert_eq!(owners.len(), 1);
@@ -3500,9 +3513,8 @@ mod tests {
             .get("branch_protection")
             .unwrap();
         assert_eq!(
-            branch_protection.denominator, 3,
-            "ghr-1e6b9b61: all 3 excluded repos count in the denominator as \
-             not-covered (0/3), not floored to the observable-empty 0/1"
+            branch_protection.denominator, 1,
+            "UF2-5 floor: all 3 repos excluded leaves 0 eligible, floored to 0/1"
         );
         assert_eq!(branch_protection.rate, Some(0.0));
 
@@ -3516,12 +3528,7 @@ mod tests {
         assert!(exclusions.contains(&&ScoreExclusionCount {
             check_kind: CollectionHealthCheckKind::BranchProtection,
             reason: ExclusionReason::PermissionDenied,
-            count: 1,
-        }));
-        assert!(exclusions.contains(&&ScoreExclusionCount {
-            check_kind: CollectionHealthCheckKind::BranchProtection,
-            reason: ExclusionReason::Unknown,
-            count: 1,
+            count: 2,
         }));
         assert!(exclusions.contains(&&ScoreExclusionCount {
             check_kind: CollectionHealthCheckKind::BranchProtection,

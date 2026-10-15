@@ -3215,30 +3215,30 @@ mod tests {
 
     #[test]
     fn nats_subjects_for_stem_derives_native_subjects() {
-        let (meta, data) = nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v24");
-        assert_eq!(meta, "gh-report-org_4d617474696c73796e6574-v24_meta");
-        assert_eq!(data, "gh-report-org_4d617474696c73796e6574-v24_data");
+        let (meta, data) = nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v25");
+        assert_eq!(meta, "gh-report-org_4d617474696c73796e6574-v25_meta");
+        assert_eq!(data, "gh-report-org_4d617474696c73796e6574-v25_data");
 
         let (org_meta, org_data) =
-            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v24-org");
+            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v25-org");
         assert_eq!(
             org_meta,
-            "gh-report-org_4d617474696c73796e6574-v24-org_meta"
+            "gh-report-org_4d617474696c73796e6574-v25-org_meta"
         );
         assert_eq!(
             org_data,
-            "gh-report-org_4d617474696c73796e6574-v24-org_data"
+            "gh-report-org_4d617474696c73796e6574-v25-org_data"
         );
 
         let (team_meta, team_data) =
-            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v24-team");
+            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v25-team");
         assert_eq!(
             team_meta,
-            "gh-report-org_4d617474696c73796e6574-v24-team_meta"
+            "gh-report-org_4d617474696c73796e6574-v25-team_meta"
         );
         assert_eq!(
             team_data,
-            "gh-report-org_4d617474696c73796e6574-v24-team_data"
+            "gh-report-org_4d617474696c73796e6574-v25-team_data"
         );
     }
 

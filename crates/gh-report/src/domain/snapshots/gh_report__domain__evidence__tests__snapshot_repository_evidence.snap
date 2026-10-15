@@ -52,19 +52,10 @@ expression: evidence
       "timestamp": "2026-04-09T12:00:00+00:00"
     },
     "branch_protection": {
-      "status": "pass",
-      "details": {
+      "protected": {
         "default_branch": "main",
-        "has_pr": true,
-        "required_reviewers": 1,
-        "has_status_checks": true,
-        "admin_equivalent": true,
-        "has_broad_bypass": false,
-        "reason": null,
-        "force_push_blocked": true,
-        "deletion_blocked": true
-      },
-      "timestamp": "2026-04-09T12:00:00+00:00"
+        "timestamp": "2026-04-09T12:00:00+00:00"
+      }
     },
     "codeowners": {
       "conforming": {
