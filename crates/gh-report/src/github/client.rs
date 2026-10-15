@@ -768,7 +768,7 @@ impl GitHubClient {
         })
     }
 
-    fn build_http_client() -> Result<reqwest::Client, GitHubApiError> {
+    fn http_client_builder() -> reqwest::ClientBuilder {
         let mut headers = HeaderMap::new();
         headers.insert(
             ACCEPT,
@@ -786,6 +786,10 @@ impl GitHubClient {
             .connect_timeout(Duration::from_secs(config::DEFAULT_CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(config::DEFAULT_REQUEST_TIMEOUT_SECS))
             .pool_max_idle_per_host(10)
+    }
+
+    fn build_http_client() -> Result<reqwest::Client, GitHubApiError> {
+        Self::http_client_builder()
             .build()
             .map_err(GitHubApiError::Http)
     }
