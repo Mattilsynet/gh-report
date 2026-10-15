@@ -95,8 +95,10 @@ pub enum RateRegulatorKind {
 pub struct NatsStoreConfig {
     /// NATS server URL used by the `JetStream` client.
     pub nats_url: String,
-    /// Per-org `JetStream` stream name.
+    /// Per-org `JetStream` stream stem (`gh-report-{token}-{major}[-org|-team]`).
     pub stream_name: String,
+    /// Validated locator deriving dual-stream names and hierarchical subjects.
+    pub locator: pardosa_nats::NatsLocator,
     /// Legacy logical event identifier; native storage does not subscribe to this address.
     pub subject: String,
     /// Legacy logical consumer identifier; native replay does not create this consumer.
@@ -106,20 +108,24 @@ pub struct NatsStoreConfig {
 }
 
 impl NatsStoreConfig {
-    /// Actual native metadata and data subjects derived from the stream stem.
+    /// Actual native metadata and data subjects derived from the locator.
     #[must_use]
     pub fn native_subjects(&self) -> (String, String) {
-        Self::native_subjects_for_stem(&self.stream_name)
-    }
-
-    pub(crate) fn native_subjects_for_stem(stem: &str) -> (String, String) {
-        (format!("{stem}_meta"), format!("{stem}_data"))
+        (
+            self.locator.meta_subject().to_string(),
+            self.locator.data_subject().to_string(),
+        )
     }
     /// Derive per-org `JetStream` names from the exact UTF-8 org bytes.
     ///
     /// # Errors
     ///
     /// Returns [`ConfigError::MissingField`] if `org_name` is empty.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the derived locator tokens are not NATS-safe; the hex-encoded
+    /// org token and schema-major `v25` token are NATS-safe by construction.
     pub fn for_org(org_name: &str, nats_url: impl Into<String>) -> Result<Self, ConfigError> {
         if org_name.is_empty() {
             return Err(ConfigError::MissingField {
@@ -128,12 +134,15 @@ impl NatsStoreConfig {
         }
         let token = org_token(org_name.as_bytes());
         let major = crate::config::EVIDENCE_SCHEMA_MAJOR;
+        let locator = pardosa_nats::NatsLocator::new(["gh-report", &token, major])
+            .expect("gh-report locator tokens are NATS-safe");
         Ok(Self {
             nats_url: nats_url.into(),
-            stream_name: format!("gh-report-{token}-{major}"),
+            stream_name: locator.stream_stem().to_string(),
             subject: format!("gh-report.{token}.{major}.events"),
             durable_consumer: format!("gh-report-{token}-{major}"),
             credentials_path: None,
+            locator,
         })
     }
 
@@ -145,33 +154,45 @@ impl NatsStoreConfig {
     }
 
     /// Derive the distinct org-event `JetStream` names paired with this repo stream.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `org` child token is not NATS-safe; it is NATS-safe by construction.
     #[must_use]
     pub fn org_events(&self) -> Self {
+        let locator = self.locator.child("org").expect("org token is NATS-safe");
         Self {
             nats_url: self.nats_url.clone(),
-            stream_name: format!("{}-org", self.stream_name),
+            stream_name: locator.stream_stem().to_string(),
             subject: self.subject.strip_suffix(".events").map_or_else(
                 || format!("{}.org.events", self.subject),
                 |base| format!("{base}.org.events"),
             ),
             durable_consumer: format!("{}-org", self.durable_consumer),
             credentials_path: self.credentials_path.clone(),
+            locator,
         }
     }
 
     /// Derive the distinct team-event `JetStream` names paired with this
     /// repo stream (CHE-0089:R2), mirroring [`Self::org_events`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `team` child token is not NATS-safe; it is NATS-safe by construction.
     #[must_use]
     pub fn team_events(&self) -> Self {
+        let locator = self.locator.child("team").expect("team token is NATS-safe");
         Self {
             nats_url: self.nats_url.clone(),
-            stream_name: format!("{}-team", self.stream_name),
+            stream_name: locator.stream_stem().to_string(),
             subject: self.subject.strip_suffix(".events").map_or_else(
                 || format!("{}.team.events", self.subject),
                 |base| format!("{base}.team.events"),
             ),
             durable_consumer: format!("{}-team", self.durable_consumer),
             credentials_path: self.credentials_path.clone(),
+            locator,
         }
     }
 }

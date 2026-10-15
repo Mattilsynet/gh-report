@@ -18,7 +18,7 @@ Comprehensive operational handbook for probing, monitoring, and diagnosing `gh-r
          │
          ├──► NATS JetStream (tls://connect.nats.mattilsynet.io:4222)
          │       └── Account: 3FUb5hddItnLAqAuKV8gbnLdxsc
-         │       └── Streams: gh-report-org_4d617474696c73796e6574-v20*
+         │       └── Streams: gh-report-org_4d617474696c73796e6574-v25*
          │
          └──► HTTP / WebSocket Clients (via Google IAP)
                  ├── /api/v1/status (Telemetry JSON)
@@ -172,16 +172,16 @@ gcloud secrets versions access latest --secret nats-user-gh-report-creds \
 ```bash
 nats --creds /tmp/nats.creds -s tls://connect.nats.mattilsynet.io:4222 stream list
 ```
-* **Expected Active Streams for Major Version `v20`:**
-  * `gh-report-org_4d617474696c73796e6574-v20_data`: Core domain log (repositories, organizations, teams).
-  * `gh-report-org_4d617474696c73796e6574-v20_meta`: Epoch ownership claims and container headers.
-  * `gh-report-org_4d617474696c73796e6574-v20-team-team_data` / `_meta`: Dedicated team roster events.
-  * `gh-report-org_4d617474696c73796e6574-v20-org-org_data` / `_meta`: Organization alert snapshots.
+* **Expected Active Streams for Major Version `v25` (dual stream per org via `NatsLocator`):**
+  * `gh-report-org_4d617474696c73796e6574-v25_data` (subject `gh-report.org_4d617474696c73796e6574.v25.data`): Core domain log (repositories, organizations, teams).
+  * `gh-report-org_4d617474696c73796e6574-v25_meta` (subject `gh-report.org_4d617474696c73796e6574.v25.meta`): Epoch ownership claims and container headers.
+  * `gh-report-org_4d617474696c73796e6574-v25-team_data` / `_meta` (subjects `gh-report.org_4d617474696c73796e6574.v25.team.{data,meta}`): Dedicated team roster events.
+  * `gh-report-org_4d617474696c73796e6574-v25-org_data` / `_meta` (subjects `gh-report.org_4d617474696c73796e6574.v25.org.{data,meta}`): Organization alert snapshots.
 
 ### B. Probing Specific Events & Sequences
 ```bash
 nats --creds /tmp/nats.creds -s tls://connect.nats.mattilsynet.io:4222 \
-  stream get gh-report-org_4d617474696c73796e6574-v20_data <sequence_number>
+  stream get gh-report-org_4d617474696c73796e6574-v25_data <sequence_number>
 ```
 
 #### Envelope Binary Layout (Pardosa 0.5.5 Standard Envelope `C4.19`)

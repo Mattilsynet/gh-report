@@ -1076,10 +1076,6 @@ fn connect_nats_sync(
     })
 }
 
-fn nats_subjects_for_stem(stem: &str) -> (String, String) {
-    crate::config::runtime::NatsStoreConfig::native_subjects_for_stem(stem)
-}
-
 fn open_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
@@ -1107,25 +1103,23 @@ fn open_event_store(
                 ));
             };
             let client = connect_nats_sync(handle, nats)?;
-            let stem = &nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_locator_and_runtime(
                 client,
-                stem,
+                nats.locator.clone(),
                 Arc::clone(rt),
             );
             tracing::info!(
                 target: "gh_report",
-                stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                stream_stem = %adapter.stem(),
+                meta_subject = %adapter.meta_subject(),
+                data_subject = %adapter.data_subject(),
                 "initializing NatsStorageAdapter for unified event store"
             );
             match EventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         action = "created",
                         "NATS event stream created and claimed"
                     );
@@ -1134,7 +1128,7 @@ fn open_event_store(
                 Err(err) if err.is_already_exists() => {
                     tracing::info!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         action = "opened",
                         "NATS event stream already exists; replaying envelopes"
                     );
@@ -1143,7 +1137,7 @@ fn open_event_store(
                             let count = store.events().map_or(0, |v| v.len());
                             tracing::info!(
                                 target: "gh_report",
-                                stream_stem = %stem,
+                                stream_stem = %nats.locator.stream_stem(),
                                 replayed_events = count,
                                 "NATS event stream replayed successfully"
                             );
@@ -1152,7 +1146,7 @@ fn open_event_store(
                         Err(err) => {
                             tracing::error!(
                                 target: "gh_report",
-                                stream_stem = %stem,
+                                stream_stem = %nats.locator.stream_stem(),
                                 error = %err,
                                 "failed to open existing NATS event stream"
                             );
@@ -1163,7 +1157,7 @@ fn open_event_store(
                 Err(err) => {
                     tracing::error!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         error = %err,
                         "failed to create NATS event stream"
                     );
@@ -1201,25 +1195,23 @@ fn open_org_event_store(
                 ));
             };
             let client = connect_nats_sync(handle, nats)?;
-            let stem = &nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_locator_and_runtime(
                 client,
-                stem,
+                nats.locator.clone(),
                 Arc::clone(rt),
             );
             tracing::info!(
                 target: "gh_report",
-                stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                stream_stem = %adapter.stem(),
+                meta_subject = %adapter.meta_subject(),
+                data_subject = %adapter.data_subject(),
                 "initializing NatsStorageAdapter for org event store"
             );
             match OrgEventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         action = "created",
                         "NATS org event stream created and claimed"
                     );
@@ -1228,7 +1220,7 @@ fn open_org_event_store(
                 Err(err) if err.is_already_exists() => {
                     tracing::info!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         action = "opened",
                         "NATS org event stream already exists; replaying envelopes"
                     );
@@ -1237,7 +1229,7 @@ fn open_org_event_store(
                 Err(err) => {
                     tracing::error!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         error = %err,
                         "failed to create NATS org event stream"
                     );
@@ -1275,25 +1267,23 @@ fn open_team_event_store(
                 ));
             };
             let client = connect_nats_sync(handle, nats)?;
-            let stem = &nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(stem);
-            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
+            let adapter = pardosa_nats::NatsStorageAdapter::from_client_with_locator_and_runtime(
                 client,
-                stem,
+                nats.locator.clone(),
                 Arc::clone(rt),
             );
             tracing::info!(
                 target: "gh_report",
-                stream_stem = %stem,
-                meta_subject = %meta_subj,
-                data_subject = %data_subj,
+                stream_stem = %adapter.stem(),
+                meta_subject = %adapter.meta_subject(),
+                data_subject = %adapter.data_subject(),
                 "initializing NatsStorageAdapter for team event store"
             );
             match TeamEventStoreImpl::create_nats(adapter.clone()) {
                 Ok(store) => {
                     tracing::info!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         action = "created",
                         "NATS team event stream created and claimed"
                     );
@@ -1302,7 +1292,7 @@ fn open_team_event_store(
                 Err(err) if err.is_already_exists() => {
                     tracing::info!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         action = "opened",
                         "NATS team event stream already exists; replaying envelopes"
                     );
@@ -1311,7 +1301,7 @@ fn open_team_event_store(
                 Err(err) => {
                     tracing::error!(
                         target: "gh_report",
-                        stream_stem = %stem,
+                        stream_stem = %nats.locator.stream_stem(),
                         error = %err,
                         "failed to create NATS team event stream"
                     );
@@ -2821,17 +2811,15 @@ mod tests {
 
         {
             let nats_runtime = Arc::clone(&nats_runtime);
-            let org_stream_name = org_nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(&org_stream_name);
             let client = nats_runtime
                 .block_on(async_nats::connect(&url))
                 .expect("connect");
-            let org_adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
-                client,
-                org_stream_name,
-                Arc::clone(&nats_runtime),
-            )
-            .with_subjects_for_test(meta_subj, data_subj);
+            let org_adapter =
+                pardosa_nats::NatsStorageAdapter::from_client_with_locator_and_runtime(
+                    client,
+                    org_nats.locator,
+                    Arc::clone(&nats_runtime),
+                );
             let claim = OwnershipClaimRecord {
                 epoch: 1,
                 machine_id: [0u8; 16],
@@ -2904,17 +2892,15 @@ mod tests {
 
         {
             let nats_runtime = Arc::clone(&nats_runtime);
-            let team_stream_name = team_nats.stream_name;
-            let (meta_subj, data_subj) = nats_subjects_for_stem(&team_stream_name);
             let client = nats_runtime
                 .block_on(async_nats::connect(&url))
                 .expect("connect");
-            let team_adapter = pardosa_nats::NatsStorageAdapter::from_client_with_runtime(
-                client,
-                team_stream_name,
-                Arc::clone(&nats_runtime),
-            )
-            .with_subjects_for_test(meta_subj, data_subj);
+            let team_adapter =
+                pardosa_nats::NatsStorageAdapter::from_client_with_locator_and_runtime(
+                    client,
+                    team_nats.locator,
+                    Arc::clone(&nats_runtime),
+                );
             let claim = OwnershipClaimRecord {
                 epoch: 1,
                 machine_id: [0u8; 16],
@@ -3215,30 +3201,31 @@ mod tests {
 
     #[test]
     fn nats_subjects_for_stem_derives_native_subjects() {
-        let (meta, data) = nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v25");
-        assert_eq!(meta, "gh-report-org_4d617474696c73796e6574-v25_meta");
-        assert_eq!(data, "gh-report-org_4d617474696c73796e6574-v25_data");
-
-        let (org_meta, org_data) =
-            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v25-org");
+        let repo =
+            NatsStoreConfig::for_org("Mattilsynet", crate::config::runtime::DEFAULT_NATS_URL)
+                .unwrap();
         assert_eq!(
-            org_meta,
-            "gh-report-org_4d617474696c73796e6574-v25-org_meta"
-        );
-        assert_eq!(
-            org_data,
-            "gh-report-org_4d617474696c73796e6574-v25-org_data"
+            repo.native_subjects(),
+            (
+                "gh-report.org_4d617474696c73796e6574.v25.meta".to_string(),
+                "gh-report.org_4d617474696c73796e6574.v25.data".to_string(),
+            )
         );
 
-        let (team_meta, team_data) =
-            nats_subjects_for_stem("gh-report-org_4d617474696c73796e6574-v25-team");
         assert_eq!(
-            team_meta,
-            "gh-report-org_4d617474696c73796e6574-v25-team_meta"
+            repo.org_events().native_subjects(),
+            (
+                "gh-report.org_4d617474696c73796e6574.v25.org.meta".to_string(),
+                "gh-report.org_4d617474696c73796e6574.v25.org.data".to_string(),
+            )
         );
+
         assert_eq!(
-            team_data,
-            "gh-report-org_4d617474696c73796e6574-v25-team_data"
+            repo.team_events().native_subjects(),
+            (
+                "gh-report.org_4d617474696c73796e6574.v25.team.meta".to_string(),
+                "gh-report.org_4d617474696c73796e6574.v25.team.data".to_string(),
+            )
         );
     }
 
@@ -3310,6 +3297,7 @@ mod tests {
         let config = NatsStoreConfig {
             nats_url: "nats://alice:secret%FF%FE@127.0.0.1:4222".to_string(),
             stream_name: "test-stream".to_string(),
+            locator: pardosa_nats::NatsLocator::from_stem("test-stream").unwrap(),
             subject: "test.subject".to_string(),
             durable_consumer: "test-consumer".to_string(),
             credentials_path: None,
@@ -3372,15 +3360,6 @@ mod tests {
         let allowed =
             NatsStoreConfig::for_org("test-acl-org", crate::config::runtime::DEFAULT_NATS_URL)
                 .unwrap();
-        let allowed_subjects = [
-            allowed.stream_name.clone(),
-            allowed.org_events().stream_name,
-            allowed.team_events().stream_name,
-        ]
-        .into_iter()
-        .flat_map(|stem| [format!("\"{stem}_meta\""), format!("\"{stem}_data\"")])
-        .collect::<Vec<_>>()
-        .join(", ");
         let conf = r#"
 accounts: {
     APP: {
@@ -3391,7 +3370,7 @@ accounts: {
                 password: "p@ss:word"
                 permissions: {
                     publish: {
-                        allow: [ALLOWED_SUBJECTS, "$JS.API.>", "allowed-baddata-meta"]
+                        allow: ["gh-report.>", "$JS.API.>"]
                     }
                     subscribe: {
                         allow: [">"]
@@ -3402,9 +3381,7 @@ accounts: {
     }
 }
 "#;
-        let conf = conf.replace("ALLOWED_SUBJECTS", &allowed_subjects);
-        let Some(server) = crate::store::tests::TestNatsServer::spawn_with_auth_config(&conf)
-        else {
+        let Some(server) = crate::store::tests::TestNatsServer::spawn_with_auth_config(conf) else {
             return;
         };
 
@@ -3533,7 +3510,8 @@ accounts: {
             client.clone(),
             bad_stem,
             Arc::clone(&rt),
-        );
+        )
+        .with_subjects_for_test(format!("{bad_stem}_meta"), format!("{bad_stem}_data"));
         let bad_claim = OwnershipClaimRecord {
             epoch: 1,
             machine_id: [0u8; 16],
@@ -3580,7 +3558,7 @@ accounts: {
             Arc::clone(&rt),
         )
         .with_subjects_for_test(
-            "allowed-baddata-meta".to_string(),
+            "gh-report.baddata.meta".to_string(),
             format!("{bad_data_stem}_data"),
         );
         let bad_data_result = crate::store::NativeStore::create_nats(bad_data_adapter);

@@ -1,7 +1,7 @@
 # CHE-0089. gh-report TeamStateCaptured Event and Per-Team Fiber
 
 Date: 2026-07-16
-Last-reviewed: 2026-07-16
+Last-reviewed: 2026-10-15
 Tier: B
 Status: Accepted
 Crates: gh-report
@@ -32,7 +32,7 @@ repository stream.
 
 R1 [5]: Add `DomainEvent::TeamStateCaptured { org, team_slug, members, orphan_attribution_inputs, fetched_at, status }` as a new durable current-state variant carrying full team identity and membership; it owns its own `GenomeSafe` SCHEMA_HASH, pinned by a regression test, and adds no field to the `RepositoryStateCaptured` or `OrgStateCaptured` payloads (CHE-0073 R2/R8/R10 unaffected, their SCHEMA_HASH values unchanged).
 
-R2 [5]: Route `TeamStateCaptured` on a per-team fiber keyed `(org, team_slug) -> team_domain_key -> pardosa fiber`, one fiber per team, on its own stream/subject (PGN-0010:R6). `team_domain_key` derives from `(org, team_slug)` as a NATS-safe token per CHE-0072:R7/R8 and PGN-0010:R4; the per-team `FiberStore` gives single-writer per team for free. Team is NOT the repository aggregate — team↔repo is many-to-many via CODEOWNERS.
+R2 [5]: Route `TeamStateCaptured` on a per-team fiber keyed `(org, team_slug) -> team_domain_key -> pardosa fiber`, one fiber per team, on its own dual stream `gh-report-{token}-{major}-team_{meta,data}` and hierarchical subjects `gh-report.{token}.{major}.team.{meta,data}` via `pardosa_nats::NatsLocator` per CHE-0072:R7/R8 and PGN-0010:R4; the per-team `FiberStore` gives single-writer per team for free. Team is NOT the repository aggregate — team↔repo is many-to-many via CODEOWNERS.
 
 R3 [5]: Map every field TOTALly onto native storage per CHE-0074:R3; recover fibers across restart by `FiberIndex<domain_key>` plus `resume_defined` (CHE-0074:R4/R5); signal removal by `pardosa::StoreWriter::detach` with the envelope `detached` flag as the durable soft-delete (CHE-0074:R6). A team whose membership cannot be mapped totally is an abort, not a partial write.
 

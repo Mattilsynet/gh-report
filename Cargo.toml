@@ -109,8 +109,8 @@ cherry-pit-merger = { git = "https://github.com/acje/cherry-pit", rev = "008d875
 cherry-pit-wq = { git = "https://github.com/acje/cherry-pit", rev = "008d8750e7447f274cd2c2c6b7bf8327f6de591e", version = "0.2.0" }
 cherry-pit-storage = { git = "https://github.com/acje/cherry-pit", rev = "008d8750e7447f274cd2c2c6b7bf8327f6de591e", version = "0.1.0" }
 pardosa-cherry-pit-test-support = { git = "https://github.com/acje/cherry-pit", rev = "008d8750e7447f274cd2c2c6b7bf8327f6de591e", version = "0.0.0" }
-pardosa = { git = "https://github.com/acje/pardosa", rev = "e8070764aabf551f9725636c4674a86fe55e04ff", version = "0.5.5" }
-pardosa-nats = { git = "https://github.com/acje/pardosa", rev = "e8070764aabf551f9725636c4674a86fe55e04ff", version = "0.5.5" }
+pardosa = { git = "https://github.com/acje/pardosa", rev = "d70d0bfc9f2be40ee39c5de94438552f599efe50", version = "0.5.5" }
+pardosa-nats = { git = "https://github.com/acje/pardosa", rev = "d70d0bfc9f2be40ee39c5de94438552f599efe50", version = "0.5.5" }
 
 # === Pardosa workspace tier (mission pardosa-migration-1748376000) ===
 # Added when the active Pardosa crates were imported from rescue-pardosa.

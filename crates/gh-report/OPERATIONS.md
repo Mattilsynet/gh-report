@@ -511,7 +511,7 @@ Both constants live in `crates/gh-report/src/config/mod.rs`.
 
 ### MINOR vs MAJOR: what "validated against on load" means
 
-The "No" in the table above refers to the cosmetic **minor** string stamped on payloads — that string is informational and is never read back to gate a load. The load-bearing safety property is at the **major** boundary and is enforced structurally, not by string comparison: `EVIDENCE_SCHEMA_MAJOR` (e.g. `v20`) is woven into every derived JetStream identity — the stream name, subject, and durable-consumer name (`gh-report-<token>-v20`, `gh-report.<token>.v20.events`). A binary compiled against major N addresses the `-vN` stream by name, so a binary meeting a store written under a newer major N+1 reads an absent or empty `-v(N+1)` stream — it never mis-reads or corrupts the older data. Major migration therefore **fails closed** by stream isolation: cross-major mixing is structurally impossible, not merely discouraged. This is characterized by `schema_major_isolates_stream_identity_across_majors` in `config/runtime.rs`.
+The "No" in the table above refers to the cosmetic **minor** string stamped on payloads — that string is informational and is never read back to gate a load. The load-bearing safety property is at the **major** boundary and is enforced structurally, not by string comparison: `EVIDENCE_SCHEMA_MAJOR` (e.g. `v25`) is woven into every derived JetStream identity via a `pardosa_nats::NatsLocator` dual-stream pair per org (`gh-report-{token}-{major}[-org|-team]_{meta,data}`) publishing under hierarchical subjects (`gh-report.{token}.{major}[.org|.team].{meta,data}`) under the `gh-report.>` ACL. A binary compiled against major N addresses the `-vN` stream by name, so a binary meeting a store written under a newer major N+1 reads an absent or empty `-v(N+1)` stream — it never mis-reads or corrupts the older data. Major migration therefore **fails closed** by stream isolation: cross-major mixing is structurally impossible, not merely discouraged. This is characterized by `schema_major_isolates_stream_identity_across_majors` in `config/runtime.rs`.
 
 ### When to bump
 
@@ -967,7 +967,7 @@ The `POST /webhook` endpoint accepts GitHub webhook deliveries to drive incremen
 
 For MAP, set `GH_REPORT_NATS_URL=tls://connect.nats.mattilsynet.io:4222`. The endpoint requires TLS and JWT `.creds` authentication. The `.creds` file is issued from Synadia Control Plane (`scp.nats.mattilsynet.io`) and delivered through GCP Secret Manager as `nats-user-<username>-creds`; mount that secret as a file volume and set `GH_REPORT_NATS_CREDS` to the mounted path. Never commit a `.creds` file; credentials are delivered via Secret Manager under SEC-0007.
 
-At startup, gh-report creates its per-organization JetStream stream at runtime: stream `gh-report-<org_token>` and subject `gh-report.<org_token>.events`. The configured NATS user must have JetStream permissions in its account for that stream and subject.
+At startup, gh-report provisions its per-organization JetStream dual streams at runtime via `pardosa_nats::NatsLocator`: `gh-report-{token}-{major}_{meta,data}` plus `-org`/`-team` pairs, publishing under hierarchical subjects `gh-report.{token}.{major}[.org|.team].{meta,data}`. The configured NATS user must have JetStream permissions for these streams and `gh-report.>` subjects in its account.
 
 ### Recovering from an out-of-band JetStream stream recreation
 

@@ -1,7 +1,7 @@
 # PGN-0020. Blocking Schema-Version Migration and Stream-Naming Convention
 
 Date: 2026-07-06
-Last-reviewed: 2026-07-16
+Last-reviewed: 2026-10-15
 Tier: B
 Status: Accepted
 Crates: pardosa, pardosa-nats
@@ -42,10 +42,11 @@ R2 [5]: Mint fresh `EventId`/`FiberId` values for every migrated event per
   them, and never assume a continuous identity space spanning old and new
   streams.
 R3 [5]: Treat any V1/V2-style label as an adopter-chosen `stream_name`
-  convention only (`pardosa-nats::JetStreamConfigBuilder::stream_name`);
-  keep the PGN-0019 `stream_description_marker` — itself a JetStream
-  expression of the PGN-0003 `SCHEMA_HASH` — as the sole schema-open gate,
-  never deriving schema identity from the stream name.
+  convention only, expressed via `pardosa_nats::NatsLocator` /
+  `stream_name`; keep the PGN-0019 `stream_description_marker` — a
+  JetStream expression of the PGN-0003 `SCHEMA_HASH` / C8.2 schema
+  descriptor — as the sole schema-open gate, never deriving schema
+  identity from the stream name.
 R4 [5]: Do not reintroduce PAR-0005's retired KV-registry cutover,
   grace-period `max_age`, or rollback-by-re-point mechanics under this
   amendment; each remains retired and any future revival requires its own
