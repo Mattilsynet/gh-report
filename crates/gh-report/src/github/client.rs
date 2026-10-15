@@ -786,6 +786,7 @@ impl GitHubClient {
             .connect_timeout(Duration::from_secs(config::DEFAULT_CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(config::DEFAULT_REQUEST_TIMEOUT_SECS))
             .pool_max_idle_per_host(10)
+            .min_tls_version(reqwest::tls::Version::TLS_1_3)
     }
 
     fn build_http_client() -> Result<reqwest::Client, GitHubApiError> {
@@ -3024,6 +3025,18 @@ mod tests {
     fn validate_api_base_url_rejects_invalid_url() {
         let result = validate_api_base_url("not a url");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_http_client_enforces_tls_1_3_minimum() {
+        let builder = GitHubClient::http_client_builder();
+        let debug = format!("{builder:?}");
+        assert!(
+            debug.contains("tls_version_min: Version(Tls1_3)"),
+            "expected the GitHub API reqwest client to offer TLS 1.3 only so \
+             alumina-proxy's TLS 1.3-only CONNECT gate accepts its ClientHello; \
+             builder debug output: {debug}"
+        );
     }
 
     #[test]
