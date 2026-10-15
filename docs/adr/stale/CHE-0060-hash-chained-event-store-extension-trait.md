@@ -7,8 +7,6 @@ Status: Deprecated
 
 ## Related
 
-(no lineage edges — this ADR is retired without successor)
-
 ## Retirement
 
 Moved-to-stale: 2026-05-19

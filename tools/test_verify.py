@@ -148,6 +148,13 @@ def _write_stub(path, content, mode=None):
 def runner_fixture(**scenario):
     """Create stubs, plant the tripwires recording stub, yield controls.
 
+    EXCLUSIVE-USE FIXTURE: planting transiently overwrites
+    tools/tripwires.sh on disk with a recording stub (restored in finally;
+    original bytes+mode are asserted restored). This is an attended,
+    single-run fixture — do not run it concurrently with or overlapping a
+    real `scripts/verify.sh` / tripwires run, or a parallel process may
+    observe the stub.
+
     Restores tools/tripwires.sh bytes+mode in all paths; the caller asserts
     restoration after the with-block.
     """

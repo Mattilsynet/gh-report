@@ -620,7 +620,7 @@ spec:
 
 ### Kubernetes / Knative Probe Configuration
 
-`/healthz` returns 200 immediately (liveness). `/readyz` returns 200 only after the first successful collection completes.
+`/healthz` returns 200 immediately (liveness). `/readyz` is application readiness: it returns 200 only when the three event stores (`event_store`, `org_event_store`, `team_event_store`) are all backend-reachable and the in-memory page cache holds an `index.html` page (`AppState::is_ready`, `src/app/state/server_state.rs:20-30`). It is not proof of a fresh collection — a warm or cached `index.html` satisfies it before or without a completed collection. Freshness and coverage come from the report contents and `/api/v1/status` (last run time, run count), not from readiness.
 
 For **first-ever deployments** (empty projection), the initial collection may take minutes to hours depending on organization size. During this time `/readyz` returns 503, which can cause Kubernetes to kill the pod before it becomes ready. Use a `startupProbe` to give the pod time to complete its first collection:
 
@@ -643,7 +643,7 @@ readinessProbe:
   periodSeconds: 5
 ```
 
-**Warm-start** deployments (non-empty projection) render and publish a cache from projected evidence within seconds, so `/readyz` passes quickly without needing a long startup grace period.
+**Warm-start** deployments (non-empty projection) render and publish a cache from projected evidence within seconds, so `/readyz` passes quickly (once the three stores are backend-reachable and a cached `index.html` exists) without needing a long startup grace period.
 
 ### Container / Cloud Run
 
@@ -757,7 +757,7 @@ gcloud run deploy gh-report \
 
 The HTTP server is built into the process — there is no separate serve command. It starts automatically after the initial collection completes.
 
-The generic SERVE pipeline — in-memory page cache, ETag/304, zstd content negotiation, WebSocket live updates, path normalization, security headers, and health probes — lives in `cherry-pit-web::serve`. `crates/gh-report/src/infra/server/` is a thin re-export shim over it. `gh-report` implements `cherry_pit_web::serve::ServerState` via its `AppState` struct to wire governance-specific behavior (status payload with `organization`, readiness based on completed runs), and owns the one extra route, `/api/v1/status`.
+The generic SERVE pipeline — in-memory page cache, ETag/304, zstd content negotiation, WebSocket live updates, path normalization, security headers, and health probes — lives in `cherry-pit-web::serve`. `crates/gh-report/src/infra/server/` is a thin re-export shim over it. `gh-report` implements `cherry_pit_web::serve::ServerState` via its `AppState` struct to wire governance-specific behavior (status payload with `organization`, readiness from the three backend-reachable event stores plus a cached `index.html`), and owns the one extra route, `/api/v1/status`.
 
 The persistence layer uses [`cherry-pit-storage`](../cherry-pit-storage/) for crash-safe atomic file writes, RAII run-locking with stale detection, and canonical JSON + SHA-256 snapshot signatures for content-addressable diffing.
 
@@ -770,7 +770,7 @@ The server serves pages from an in-memory cache (no disk I/O on the serving path
 | Path | Description | Source |
 |------|-------------|--------|
 | `/healthz` | Liveness probe — always returns `{"status": "ok"}` | Built-in (cherry-pit-web::serve) |
-| `/readyz` | Readiness probe — returns 200 only when both event stores are backend-reachable and a run completed, cached pages exist, or the projection is non-empty; otherwise 503 with `{"status":"not_ready","reason":"no reports published yet"}` | Built-in (cherry-pit-web::serve) |
+| `/readyz` | Readiness probe — returns 200 only when the event, org, and team stores are all backend-reachable and the cached pages include `index.html`; otherwise 503 with `{"status":"not_ready","reason":"no reports published yet"}` | Built-in (cherry-pit-web::serve) |
 | `/api/v1/status` | JSON status (last run time, run count, etc.) | Extra route (gh-report) |
 | `/ws` | WebSocket endpoint for real-time page update notifications | Built-in (cherry-pit-web::serve) |
 

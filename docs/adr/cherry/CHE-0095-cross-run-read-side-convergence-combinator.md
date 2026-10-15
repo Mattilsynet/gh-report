@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0046, CHE-0088, PGN-0016, PGN-0023, CHE-0037, CHE-0040 | Supersedes: none
+References: CHE-0046, CHE-0088, PGN-0016, PGN-0023, CHE-0037, CHE-0040
 
 ## Context
 

@@ -1587,9 +1587,7 @@ fn conversion_persistence(error: &EventConversionError) -> PersistenceError {
 
 pub(crate) fn log_error_chain(event: &'static str, error: &(dyn Error + 'static)) {
     let error_display = error.to_string();
-    let chain = format!(
-        "{{\"level\": 1, \"error\": \"{error_display}\"}}\n{{\"level\": 2, \"error\": \"{error_display}\"}}"
-    );
+    let chain = crate::app::write_policy::source_chain(error);
     tracing::error!(
         diagnostic_event = event,
         error_chain = chain.as_str(),
@@ -4029,6 +4027,66 @@ accounts: {
         assert!(
             output.contains("nats: authorization violation"),
             "full diagnostic chain must include innermost source"
+        );
+    }
+
+    #[test]
+    fn log_error_chain_walks_nested_source() {
+        use std::error::Error;
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct Inner(&'static str);
+        impl fmt::Display for Inner {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "inner cause: {}", self.0)
+            }
+        }
+        impl Error for Inner {}
+
+        #[derive(Debug)]
+        struct Outer;
+        impl fmt::Display for Outer {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "outer wraps")
+            }
+        }
+        impl Error for Outer {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                Some(&Inner("nats connect refused"))
+            }
+        }
+
+        let output = capture_events(|| log_error_chain("gh_report_test_walk_source", &Outer));
+        assert!(
+            output.contains("inner cause: nats connect refused"),
+            "chain must walk Error::source() past a Display that omits it: {output}"
+        );
+    }
+
+    #[test]
+    fn log_error_chain_source_free_renders_single_level() {
+        use std::error::Error;
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct Plain(&'static str);
+        impl fmt::Display for Plain {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl Error for Plain {}
+
+        let output = capture_events(|| {
+            log_error_chain(
+                "gh_report_test_no_source",
+                &Plain("source-free render single level"),
+            );
+        });
+        assert!(
+            output.contains("error_chain=source-free render single level;"),
+            "a source-free error must render exactly one real level: {output}"
         );
     }
 

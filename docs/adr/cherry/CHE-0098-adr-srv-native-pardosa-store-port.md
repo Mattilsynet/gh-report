@@ -9,7 +9,7 @@ Parent-cross-domain: PGN-0008 — adr-srv consumes pardosa through the public ty
 
 ## Related
 
-References: PGN-0008, PGN-0003, PGN-0013, PGN-0014, CHE-0074, CHE-0075, CHE-0072, AFM-0027, CHE-0100 | Supersedes: none
+References: PGN-0008, PGN-0003, PGN-0013, PGN-0014, CHE-0074, CHE-0075, CHE-0072, AFM-0027, CHE-0100
 
 ## Context
 

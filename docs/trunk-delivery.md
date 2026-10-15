@@ -62,15 +62,61 @@ allowed, with safe deletion after merge. Local branch checkout, new worktrees,
 clones, stash, archives, history resets, force pushes, hook bypasses, protection
 changes, and permission workarounds are outside this workflow.
 
-After each coherent producer cycle, adopt exact canonical `main` revisions and
-lock resolution in the consumers, then deploy gh-report from its committed
-`main`. A producer-only shipment is an intermediate checkpoint. Immediately
-before final acceptance, reread GitHub API heads and verify exact pinned-main
-agreement for the producer chain. Reconcile head races at most twice; a further
-race is a reported blocker, not an unbounded retry or stale-head acceptance.
+After each coherent producer cycle, adopt the nominated tested immutable
+published producer cohort and its lock resolution in the consumers, then
+deploy gh-report from its committed `main`. A producer-only shipment is an
+intermediate checkpoint. Producers nominate verified, published revisions;
+consumers keep the full family pinned at exact copies (current cohort
+unchanged: `acje/pardosa` @ `e807076`, `acje/cherry-pit` @ `008d875`) with a
+coherent lock, and record revision, lock, toolchain, environment, and raw
+exits, reusing only exact-input proof. Producer heads may advance without
+invalidating an unchanged exact-input adoption — freshness is a property of
+the nominated tested cohort, distinct from latest-`main` agreement — and a
+newer head becomes a later cohort, adopted on the next authorized cycle.
+Local producer updates cannot enter an adoption until that publication is
+authorized. Canonical family pins, intake fingerprint, and producer-native
+plus consumer gates are retained; adoption consumes only committed published
+revisions — never dirty, path-based, or vendored consumption — and confers no
+publication authority.
 
 This authoritative document ships in the same consumer commit/PR as the
 adoption. It is not disposable local planning output.
+
+### gh-report main history-integrity protection (scoped exception)
+
+For `Mattilsynet/gh-report` main only, branch protection is deliberately
+history-integrity-only. Force pushes and deletions are blocked and linear
+history is required; mandatory PR reviews, code-owner/stale-review, and
+conversation resolution are not enforced at branch-protection level, and the
+required-status-checks listing is empty. Removing required statuses removes
+GitHub's status-based mechanical integration blocking: with no effective or
+inherited rulesets (verified empty), a failing gate no longer prevents a
+merge at the platform level. This is an authorized main-only tradeoff, not
+an unchanged enforcement posture. Pull requests to main remain available and
+preferred, but are optional; the release workflow above does not require them
+for this repository.
+
+Administrator bypass is explicit and user-accepted: `enforce_admins=false`,
+so repository admins are not bound by the branch-level history blocks.
+History-integrity protection is therefore a best-effort barrier against
+non-admin force-push/delete and accidents, not an absolute guarantee against
+administrator action (see RST-0007 gh-report scoped ruling).
+
+Operational authority for this exception is the explicit user decision
+(2026-10-08); CHE-0083/CHE-0090 classify report-side scoring and supply
+learning context only. The CI gate commands remain: every gate job in
+`.github/workflows/ci-reusable.yml` (RST-0007, cited by job id) keeps its job
+id and run-and-fail behavior inside its caller workflows — `ci.yml` triggers
+on PRs to main, and `build.yml` triggers on `v*` tags; direct main pushes
+run neither. Delivery quality for any direct main publication therefore rests
+on pre-publication obligations — run the local verification tiers and gate
+checks, perform dependency/supply-chain intake (cargo audit + deny), obtain
+independent engineering review (mandatory linus/code-review), and retain
+guard plant→fail→revert→clean evidence — with no reliance on post-push CI.
+This exception is scoped to `Mattilsynet/gh-report`; it does not alter CI
+triggers or add workflows, does not weaken gates or protection for any other
+repository, and grants no force-push, deletion, or history-rewrite authority
+anywhere.
 
 ## Deployed consumer proof
 

@@ -7,8 +7,6 @@ Status: Deprecated
 
 ## Related
 
-(no lineage edges — successor recorded in Status)
-
 ## Retirement
 
 Moved-to-stale: 2026-07-14

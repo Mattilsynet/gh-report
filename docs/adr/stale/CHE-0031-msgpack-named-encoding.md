@@ -7,8 +7,6 @@ Status: Superseded by CHE-0065
 
 ## Related
 
-(no lineage edges — this ADR is superseded; reverse direction recorded in `Status:`)
-
 ## Retirement
 
 Superseded-by: CHE-0065

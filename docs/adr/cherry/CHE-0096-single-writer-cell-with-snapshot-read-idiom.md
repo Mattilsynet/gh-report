@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0048, CHE-0075, COM-0018, CHE-0009 | Supersedes: none
+References: CHE-0048, CHE-0075, COM-0018, CHE-0009
 
 ## Context
 

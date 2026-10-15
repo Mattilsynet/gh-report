@@ -7,8 +7,6 @@ Status: Superseded by CHE-0071
 
 ## Related
 
-(no lineage edges — successor recorded in Status)
-
 ## Retirement
 
 Moved-to-stale: 2026-06-10

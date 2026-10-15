@@ -11,7 +11,7 @@ truth)
 
 ## Related
 
-References: CHE-0024, CHE-0046, PGN-0016, COM-0025, CHE-0095 | Supersedes: none
+References: CHE-0024, CHE-0046, PGN-0016, COM-0025, CHE-0095
 
 ## Context
 

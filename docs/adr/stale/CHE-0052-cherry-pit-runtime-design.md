@@ -8,8 +8,6 @@ Status: Superseded by CHE-0055
 
 ## Related
 
-(no lineage edges — successor recorded in Status)
-
 ## Retirement
 
 Superseded-by: CHE-0055

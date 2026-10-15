@@ -441,4 +441,163 @@ mod tests {
             Some("ascending")
         );
     }
+
+    #[wasm_bindgen_test]
+    async fn keydown_space_on_header_reorders_rows() {
+        let fixture = TableFixture::new(
+            "<thead><tr><th data-sort-type=\"text\">Name</th></tr></thead>\
+             <tbody><tr><td>Zeta</td></tr><tr><td>Alpha</td></tr></tbody>",
+        );
+        let table = &fixture.table;
+        assert!(table.parent_node().is_none());
+        let header: HtmlElement = table
+            .query_selector("th")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(header.get_attribute("tabindex").as_deref(), Some("0"));
+
+        yield_to_microtasks().await;
+        let options = js_sys::Object::new();
+        assert!(js_sys::Reflect::set(&options, &"key".into(), &" ".into()).unwrap());
+        let constructor =
+            js_sys::Reflect::get(&web_sys::window().unwrap(), &"KeyboardEvent".into())
+                .unwrap()
+                .dyn_into::<js_sys::Function>()
+                .unwrap();
+        let keydown: web_sys::KeyboardEvent = js_sys::Reflect::construct(
+            &constructor,
+            &js_sys::Array::of2(&"keydown".into(), &options),
+        )
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+        assert_eq!(keydown.key(), " ");
+        header.dispatch_event(&keydown).unwrap();
+
+        yield_to_microtasks().await;
+
+        let tbody: HtmlTableSectionElement = table
+            .query_selector("tbody")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(row_names(&tbody), vec!["Alpha", "Zeta"]);
+        assert!(table.parent_node().is_none());
+        assert_eq!(
+            header.get_attribute("aria-sort").as_deref(),
+            Some("ascending")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn switching_sorted_column_resets_inactive_header_aria_sort() {
+        let fixture = TableFixture::new(
+            "<thead><tr>\
+             <th data-sort-type=\"text\">Name</th>\
+             <th data-sort-type=\"text\">Team</th>\
+             </tr></thead>\
+             <tbody>\
+             <tr><td>Zeta</td><td>AB Team</td></tr>\
+             <tr><td>Alpha</td><td>ZU Team</td></tr>\
+             </tbody>",
+        );
+        let table = &fixture.table;
+        assert!(table.parent_node().is_none());
+        let node_list = table.query_selector_all("thead th").unwrap();
+        let headers: Vec<HtmlElement> = (0..node_list.length())
+            .filter_map(|i| node_list.item(i))
+            .filter_map(|node| node.dyn_into::<HtmlElement>().ok())
+            .collect();
+        assert_eq!(headers.len(), 2);
+        let (name, team) = (&headers[0], &headers[1]);
+        yield_to_microtasks().await;
+        assert_eq!(name.get_attribute("aria-sort").as_deref(), Some("none"));
+        assert_eq!(team.get_attribute("aria-sort").as_deref(), Some("none"));
+
+        yield_to_microtasks().await;
+        let click = Event::new("click").unwrap();
+        name.dispatch_event(&click).unwrap();
+        yield_to_microtasks().await;
+        assert_eq!(
+            name.get_attribute("aria-sort").as_deref(),
+            Some("ascending")
+        );
+        assert_eq!(team.get_attribute("aria-sort").as_deref(), Some("none"));
+        let tbody: HtmlTableSectionElement = table
+            .query_selector("tbody")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(row_names(&tbody), vec!["Alpha", "Zeta"]);
+
+        team.dispatch_event(&Event::new("click").unwrap()).unwrap();
+        yield_to_microtasks().await;
+        assert_eq!(name.get_attribute("aria-sort").as_deref(), Some("none"));
+        assert_eq!(
+            team.get_attribute("aria-sort").as_deref(),
+            Some("ascending")
+        );
+        let team_order: Vec<String> = (0..tbody.rows().length())
+            .filter_map(|i| tbody.rows().item(i))
+            .filter_map(|node| node.dyn_into::<HtmlTableRowElement>().ok())
+            .map(|row| {
+                row.cells()
+                    .item(0)
+                    .map(|cell| cell.text_content().unwrap_or_default())
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(team_order, vec!["Zeta", "Alpha"]);
+    }
+
+    #[wasm_bindgen_test]
+    async fn numeric_na_sorts_below_zero_percent_in_dom_both_directions() {
+        let fixture = TableFixture::new(
+            "<thead><tr><th data-sort-type=\"numeric\">Share</th></tr></thead>\
+             <tbody>\
+             <tr><td data-sort-value=\"10%\">Ten</td></tr>\
+             <tr><td data-sort-value=\"0%\">Zero</td></tr>\
+             <tr><td data-sort-value=\"N/A\">NA</td></tr>\
+             <tr><td data-sort-value=\"2%\">Two</td></tr>\
+             </tbody>",
+        );
+        let table = &fixture.table;
+        assert!(table.parent_node().is_none());
+        let header: HtmlElement = table
+            .query_selector("th")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let tbody: HtmlTableSectionElement = table
+            .query_selector("tbody")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        yield_to_microtasks().await;
+        for (expected_asc, expected_desc) in [(
+            vec!["NA", "Zero", "Two", "Ten"],
+            vec!["Ten", "Two", "Zero", "NA"],
+        )] {
+            header
+                .dispatch_event(&Event::new("click").unwrap())
+                .unwrap();
+            yield_to_microtasks().await;
+            assert_eq!(row_names(&tbody), expected_asc);
+            header
+                .dispatch_event(&Event::new("click").unwrap())
+                .unwrap();
+            yield_to_microtasks().await;
+            assert_eq!(row_names(&tbody), expected_desc);
+        }
+        assert_eq!(
+            header.get_attribute("aria-sort").as_deref(),
+            Some("descending")
+        );
+    }
 }

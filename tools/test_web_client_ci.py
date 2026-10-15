@@ -14,19 +14,34 @@ from workflow_subset import load, read_workflow
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALL = "cargo install --version 0.2.128 --locked wasm-bindgen-cli"
+INSTALL = "cargo install --version 0.2.129 --locked wasm-bindgen-cli"
+WARM = [f"python3.12 -B tools/verify_web_client.py {mode} --ci"
+        for mode in ("status", "native", "browser")]
+COLD = [f"python3.12 -B tools/verify_web_client.py {mode} --ci"
+        for mode in ("prepare", "wasm", "imports")]
+ALL_OWNED = WARM + COLD + ["python3.12 -B tools/test_web_client_verify.py"]
+# Every runner-owned frontend command the CI gate must carry exactly once.
+# PREBUILDS is intentionally empty: the raw cargo precompile steps it used to
+# name (host-lib build, wasm test --no-run, wasm release build, wasm-target
+# clippy, wasm-tools import dump) are consolidated into single runner
+# operations (prepare/wasm/imports) and must not reappear as raw cargo.
 COMMANDS = [f"python3.12 -B tools/verify_web_client.py {mode} --ci"
-            for mode in ("status", "compiler", "browser")]
-PREBUILDS = [
-    "cargo build -p gh-report-web-client --lib --locked",
-    "cargo test -p gh-report-web-client --target wasm32-unknown-unknown --locked --lib --no-run",
-]
+            for mode in ("prepare", "status", "native", "browser", "wasm", "imports")]
+PREBUILDS = []
+# The frontend owner gate is a POSITIVE closed step segment, not a shell
+# parser or a token-prefix matcher. Between the pinned wasm-bindgen/wasm-tools
+# install step and the workspace clippy sentinel, every step's run must be
+# exactly one of ALL_OWNED; any other executable step there (raw cargo in any
+# spelling — reordered or environment-prefixed — an action step, a renamed
+# interpreter) is unaccounted and rejected by construction. Workspace cargo
+# and the later tripwire steps outside the segment stay legitimate.
+WORKSPACE_CLIPPY_SENTINEL = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
 
 
 def is_install_step(step):
     return step.get("run") == INSTALL or (
         "install-action" in step.get("uses", "")
-        and "wasm-bindgen-cli@0.2.128" in step.get("with", {}).get("tool", "")
+        and "wasm-bindgen-cli@0.2.129" in step.get("with", {}).get("tool", "")
     )
 
 
@@ -39,7 +54,7 @@ def assert_gates(test, workflow):
     test.assertFalse(any("verify_web_client.py bundle" in step.get("run", "") for step in steps))
     matches = [i for i, step in enumerate(steps)
                if step.get("with", {}).get("toolchain") == "1.99.0"]
-    test.assertEqual(len(matches), 1, "toolchain setup")
+    test.assertEqual(len(matches), 1, "unique 1.99 toolchain setup")
     setup = matches[0]
     setup_step = steps[setup]
     test.assertTrue(
@@ -63,22 +78,45 @@ def assert_gates(test, workflow):
     matches = [i for i, step in enumerate(steps) if is_install_step(step)]
     test.assertEqual(len(matches), 1, INSTALL)
     install = matches[0]
+    install_with = steps[install].get("with", {})
+    test.assertEqual(install_with.get("fallback"), "none")
+    test.assertEqual(install_with.get("checksum"), "true")
     test.assertLess(setup, install)
     test.assertNotIn("if", steps[install])
     test.assertNotIn("continue-on-error", steps[install])
-    for command in COMMANDS + PREBUILDS + ["python3.12 -B tools/test_web_client_verify.py"]:
-        matches = [(i, step) for i, step in enumerate(steps) if step.get("run") == command]
+    clippy = next(i for i, step in enumerate(steps)
+                  if step.get("run") == WORKSPACE_CLIPPY_SENTINEL)
+    segment = steps[install + 1:clippy]
+    test.assertEqual(len(segment), len(ALL_OWNED),
+                     "closed frontend segment holds exactly the runner-owned operation set")
+    for command in ALL_OWNED:
+        matches = [(i, step) for i, step in enumerate(segment) if step.get("run") == command]
         test.assertEqual(len(matches), 1, command)
-        index, step = matches[0]
-        test.assertLess(install, index)
+        _, step = matches[0]
         test.assertNotIn("continue-on-error", step)
-        test.assertNotIn("if", step)
-    for build, mode in zip(PREBUILDS, ("compiler", "browser")):
-        before = next(i for i, step in enumerate(steps) if step.get("run") == build)
-        after = next(i for i, step in enumerate(steps)
-                     if step.get("run") == f"python3.12 -B tools/verify_web_client.py {mode} --ci")
-        test.assertLess(before, after)
-        test.assertEqual(steps[before].get("env", {}).get("CARGO_TARGET_DIR"), "target")
+        test.assertNotIn("uses", step)
+        if command == "python3.12 -B tools/verify_web_client.py wasm --ci":
+            test.assertEqual(step.get("if"), "always()", "wasm lint+compile gate")
+        elif command.endswith(" imports --ci"):
+            test.assertEqual(step.get("if"), "always()", "import-key tripwire")
+        else:
+            test.assertNotIn("if", step)
+    for step in segment:
+        run = step.get("run", "")
+        test.assertIn(run, ALL_OWNED,
+                      f"unknown executable step inside the closed frontend segment: {run or '<inert step>'}")
+        test.assertNotIn("uses", step, "no action step inside the closed frontend segment")
+        test.assertNotIn("continue-on-error", step, "no ignore inside the closed frontend segment")
+    cold = next(i for i, step in enumerate(segment)
+                if step.get("run") == "python3.12 -B tools/verify_web_client.py prepare --ci")
+    for mode in ("native", "browser"):
+        warm = next(i for i, step in enumerate(segment)
+                    if step.get("run") == f"python3.12 -B tools/verify_web_client.py {mode} --ci")
+        test.assertLess(cold, warm, "cold prepare ordered before warm check")
+    for run in ("python3.12 -B tools/verify_web_client.py bundle",
+                "python3.12 -B tools/verify_web_client.py artifacts"):
+        test.assertFalse(any(run in step.get("run", "") for step in steps),
+                         "bundle/artifacts stays local (ghr-6fg0y)")
 
 
 class WorkflowGates(unittest.TestCase):
@@ -170,19 +208,19 @@ class WorkflowGates(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     assert_gates(self, changed)
                 assert_gates(self, workflow)
-        for build in PREBUILDS:
+        cold_prepare = "python3.12 -B tools/verify_web_client.py prepare --ci"
+        for mutation in ("reorder", "rawcargo"):
             changed = copy.deepcopy(workflow)
             steps = changed["jobs"]["build-test-lint"]["steps"]
-            step = next(step for step in steps if step.get("run") == build)
-            steps.remove(step)
-            steps.append(step)
-            with self.assertRaises(AssertionError):
-                assert_gates(self, changed)
-            assert_gates(self, workflow)
-            changed = copy.deepcopy(workflow)
-            step = next(step for step in changed["jobs"]["build-test-lint"]["steps"]
-                        if step.get("run") == build)
-            step["env"]["CARGO_TARGET_DIR"] = "other-target"
+            if mutation == "reorder":
+                step = next(step for step in steps if step.get("run") == cold_prepare)
+                steps.remove(step)
+                steps.append(step)
+            else:
+                imports_index = next(i for i, step in enumerate(steps)
+                                     if step.get("run") == "python3.12 -B tools/verify_web_client.py imports --ci")
+                steps.insert(imports_index,
+                             {"run": "cargo build -p gh-report-web-client --lib --locked"})
             with self.assertRaises(AssertionError):
                 assert_gates(self, changed)
             assert_gates(self, workflow)
@@ -220,7 +258,7 @@ class WorkflowGates(unittest.TestCase):
         )
         install_step = (
             "      - name: install canonical comment-free\n"
-            "        run: cargo +1.99.0 install --git https://github.com/acje/comment-free --rev 09d2d79441ed9497af4fa92e4c2830a1a3e38048 --locked comment-free\n"
+            "        run: cargo +1.99.0 install --git https://github.com/acje/comment-free --rev b4666626bbeee4e74ca41fd6ff1048b2f167dd27 --locked comment-free\n"
         )
 
         def plant(source, variant):
@@ -251,6 +289,83 @@ class WorkflowGates(unittest.TestCase):
         self.assertEqual(workflow_path.read_bytes(), original.encode(),
                          "byte-identical restore")
 
+    def test_supply_chain_install_steps_exact_pin(self):
+        workflow_path = ROOT / ".github/workflows/ci-reusable.yml"
+
+        def assert_supply_chain_gates(test):
+            workflow = read_workflow(workflow_path)
+            steps = workflow["jobs"]["supply-chain"]["steps"]
+            audit = [s for s in steps
+                     if s.get("with", {}).get("tool", "").startswith("cargo-audit@")]
+            deny = [s for s in steps
+                    if s.get("with", {}).get("tool", "").startswith("cargo-deny@")]
+            test.assertEqual(len(audit), 1, "cargo-audit install step")
+            test.assertEqual(len(deny), 1, "cargo-deny install step")
+            for step in audit + deny:
+                test.assertNotIn("if", step)
+                test.assertNotIn("continue-on-error", step)
+                test.assertEqual(step.get("with", {}).get("fallback"), "none")
+                test.assertEqual(step.get("with", {}).get("checksum"), "true")
+            test.assertEqual(audit[0]["with"]["tool"], "cargo-audit@0.22.2")
+            test.assertEqual(deny[0]["with"]["tool"], "cargo-deny@0.20.2")
+
+        source = workflow_path.read_text()
+        assert_supply_chain_gates(self)
+        try:
+            for old, plant in (
+                ("tool: cargo-audit@0.22.2", "tool: cargo-audit@0.22.1"),
+                ("tool: cargo-audit@0.22.2", "tool: cargo-audit"),
+                ("tool: cargo-deny@0.20.2", "tool: cargo-deny@0.19.4"),
+            ):
+                changed = source.replace(old, plant, 1)
+                self.assertNotEqual(changed, source)
+                workflow_path.write_text(changed)
+                with self.assertRaises(AssertionError):
+                    assert_supply_chain_gates(self)
+                workflow_path.write_text(source)
+        finally:
+            workflow_path.write_text(source)
+        assert_supply_chain_gates(self)
+
+
+    def test_closed_frontend_segment_guard_plant_fail_revert_clean(self):
+        # Real-file four-step ledger for the closed frontend segment: a step
+        # planted INSIDE the segment whose run is not exactly one of ALL_OWNED
+        # is rejected by construction (no shell parser, no token prefixes).
+        # Covers the round-2 witnesses: pinned selectors, shell blocks, raw
+        # cargo test, REORDERED flags and ENVIRONMENT-PREFIXED cargo all fail.
+        workflow_path = ROOT / ".github/workflows/ci-reusable.yml"
+        anchor = "        run: python3.12 -B tools/verify_web_client.py imports --ci\n"
+        blocks = {
+            "pinned": "      - name: raw cargo pinned-selector add\n"
+                      "        run: cargo +1.99.0 build -p gh-report-web-client --lib --locked\n",
+            "shell": "      - name: raw cargo shell-block add\n"
+                     "        run: |\n"
+                     "          set -euo pipefail\n"
+                     "          cargo build -p gh-report-web-client --lib --locked\n",
+            "tester": "      - name: raw cargo test add\n"
+                      "        run: cargo test -p gh-report-web-client --target wasm32-unknown-unknown --locked --lib\n",
+            "reordered": "      - name: raw cargo reordered flags add\n"
+                         "        run: cargo +1.99.0 build --locked -p gh-report-web-client --lib\n",
+            "envprefixed": "      - name: raw cargo env-prefixed add\n"
+                           "        run: CARGO_TARGET_DIR=target cargo +1.99.0 build -p gh-report-web-client --lib --locked\n",
+        }
+        original = workflow_path.read_text()
+        assert_gates(self, read_workflow(workflow_path))
+        try:
+            for variant, block in blocks.items():
+                self.assertIn(anchor, original, variant)
+                planted = original.replace(anchor, anchor + block, 1)
+                self.assertNotEqual(planted, original, variant)
+                workflow_path.write_text(planted)
+                with self.assertRaises(AssertionError):
+                    assert_gates(self, read_workflow(workflow_path))
+                workflow_path.write_text(original)
+                assert_gates(self, read_workflow(workflow_path))
+        finally:
+            workflow_path.write_text(original)
+        self.assertEqual(workflow_path.read_bytes(), original.encode(),
+                         "byte-identical restore")
 
 if __name__ == "__main__":
     read_workflow(ROOT / ".github/workflows/ci-reusable.yml")

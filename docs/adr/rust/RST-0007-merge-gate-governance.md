@@ -1,7 +1,7 @@
 # RST-0007. Merge-Gate Governance
 
 Date: 2026-08-12
-Last-reviewed: 2026-08-28 — refined — all six gates now compliant (dead-code cites RST-0003:R6) and R7's coverage claim holds as written now gate-citation rejects zero-citation gates
+Last-reviewed: 2026-08-28 — refined — all six gates now compliant (dead-code cites RST-0003:R6) and R7's coverage claim holds as written now gate-citation rejects zero-citation gates; 2026-10-08 — gh-report scoped ruling added (history-integrity listing removal is not gate removal)
 Tier: B
 Status: Accepted
 Parent-cross-domain: COM-0017 — merge-gate authorship and citation obligations are the general enforcement-mechanism concern COM-0017 already governs; no same-domain RST parent covers who may add a gate or what it must cite
@@ -82,3 +82,41 @@ risks/migration: 6 merge-blocking gates, ground-truthed against
   asserts every job cites at least one rule id, so no gate passes
   vacuously. R2's invariant-match half and R3-R6 stay
   code-review-tier per R7.
+
+## gh-report scoped ruling (2026-10-08)
+
+R6 routes "removing or weakening an existing merge gate" through COM-0035:R5's
+reopen obligation. This section records the repo-scoped ruling under
+COM-0035:R5 for `Mattilsynet/gh-report` main.
+
+The branch-protection `required_status_checks.contexts` listing on main was
+emptied as part of adopting history-integrity-only protection: force-push and
+deletion blocked, linear history required, PR review and conversation not
+required, and `enforce_admins=false` per explicit user decision (2026-10-08).
+Ruled under COM-0035:R5 that re-opening is satisfied by this scoped ruling,
+which records an intentional tradeoff rather than unchanged enforcement.
+With `required_status_checks: null` and no effective or inherited rulesets
+(verified empty via `rules/branches/main`, `rulesets?includes_parents=true`
+and `rulesets`), GitHub's status-based integration blocking is removed: a
+failing gate job no longer mechanically prevents a merge at the platform
+level. What remains are the gate commands themselves plus process obligation:
+every gate job in `ci-reusable.yml` (build-test-lint,
+projection-lock-tripwire, fence-converge-tripwire, non-exhaustive-check,
+dead-code-inner-suppression-tripwire, supply-chain) retains its job id,
+citations, and run-and-fail behavior inside its caller workflows (`ci.yml`
+on PRs to main; `build.yml` on `v*` tags); direct main pushes run neither.
+Quality for direct main publication therefore rests on pre-publication
+obligations — local verification tiers and gate checks, dependency intake,
+and independent engineering review — not on post-push CI. For the removed
+names the R4 name↔list sync obligation extinguishes with the emptied list;
+if the list is reintroduced, or a retained job's `name:` changes, R4's sync
+obligation resumes.
+
+Scope: exclusively `Mattilsynet/gh-report` main. This ruling does not amend
+R2/R3/R5/R7, any gate command, or any other repository. Operational policy
+authority for this exception is the explicit user decision (2026-10-08);
+CHE-0083/CHE-0090 supply report-side scoring and learning context, not policy
+authority. The `enforce_admins=false` admin bypass is an accepted, recorded
+tradeoff, not an omission: history-integrity protection is best-effort
+against non-admin force-push/delete and accidents, and is not absolute
+against administrators.

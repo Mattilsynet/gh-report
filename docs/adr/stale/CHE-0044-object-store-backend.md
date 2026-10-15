@@ -7,8 +7,6 @@ Status: Deprecated
 
 ## Related
 
-(no lineage edges — nothing superseded this planned backend)
-
 ## Retirement
 
 Moved-to-stale: 2026-06-19
