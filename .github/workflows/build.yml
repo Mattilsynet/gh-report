@@ -36,6 +36,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      # MEDIUM-5 hardening (Layer 2): a release tag must point to a commit that
+      # is an ancestor of main. Code cannot reach main without passing PR review
+      # + CI (branch protection), so this blocks releasing a tag aimed at an
+      # arbitrary non-main commit even if a tag slips past the Stabsec-only tag
+      # ruleset. Deploy already `needs: build`, so a failure here gates deploy.
+      - name: Verify release tag is an ancestor of main
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::refusing to release: $GITHUB_REF_NAME does not point to a commit on main"
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
