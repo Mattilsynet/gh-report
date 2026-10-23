@@ -12,6 +12,7 @@ unmaintained = "all"
 unused-ignored-advisory = "deny"
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "expires=2027-02-15 owner=@Mattilsynet/stabsec class=unmaintained -- compile-time-only proc-macro (paste 1.0.15), never reaches the shipped wasm bundle or server binary; sole path is Leptos macro machinery (chain verified 100% Leptos-family); no patched version; upstream archived 2024-10-06; exit trigger = Leptos drops paste (SEC-0013:R1)" },
+    { id = "RUSTSEC-2026-0374", reason = "expires=2027-01-21 owner=@Mattilsynet/stabsec class=unmaintained -- compile-time-only (askama_derive config parsing behind default `config` feature), never reaches the shipped wasm bundle or server binary; chain askama 0.16.1 -> askama_macros -> askama_derive -> basic-toml 0.1.10; no patched version (basic-toml archived/unmaintained); upstream replacement committed but unreleased (askama main 3863808cf5 swaps basic-toml -> toml 1.0.7, 2026-10-20); exit trigger = askama ships a release containing the basic-toml->toml swap, then bump and remove this ignore (unused-ignored-advisory=deny enforces removal) (SEC-0013:R1)" },
 ]
 
 [licenses]
