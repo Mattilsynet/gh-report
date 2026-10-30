@@ -132,3 +132,4 @@ Resource gaps (**Unknown**, not filled with invented constants):
 - **Shutdown grace**: not measured on a live host.
 - **Drain ledger**: no item/byte accounting for work shed by
   `BatchTracker::drain` on a fence.
+
