@@ -20,6 +20,7 @@ expression: "&pages[\"admin.html\"]"
 
 <body>
 
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <nav class="top-nav">
     <a href=".">Dashboard</a>
     
@@ -29,6 +30,7 @@ expression: "&pages[\"admin.html\"]"
     <a href="admin.html" class="admin-link">Admin (8)</a>
 </nav>
 
+    <main id="main-content" tabindex="-1">
     <h1>Admin Diagnostics</h1>
 
     <ul class="breadcrumb">
@@ -198,6 +200,7 @@ expression: "&pages[\"admin.html\"]"
         </ul>
         
     </section>
+    </main>
 
 </body>
 

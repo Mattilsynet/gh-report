@@ -20,6 +20,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
 
 <body>
 
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <nav class="top-nav">
     <a href="..">Dashboard</a>
     <a href="../owners.html">Owners</a>
@@ -29,6 +30,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
     <a href="../admin.html" class="admin-link">Admin</a>
 </nav>
 
+    <main id="main-content" tabindex="-1">
     <h1 title="@org/team-a"><a href="https://github.com/orgs/TestOrg/teams/team-a" target="_blank"
             rel="noopener noreferrer">team-a</a></h1>
 
@@ -248,6 +250,8 @@ expression: "&pages[\"owners/org-team-a.html\"]"
     
 
     
+    </main>
+
 </body>
 
 </html>

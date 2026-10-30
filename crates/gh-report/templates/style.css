@@ -240,6 +240,41 @@ code {
    font-size: 0.9em;
 }
 
+/* ── Skip Link — first focusable element; reveals above the nav ─────── */
+
+.skip-link {
+   position: absolute;
+   top: -100%;
+   left: 1em;
+   padding: .6em 1em;
+   margin: 0;
+   overflow: hidden;
+   clip: rect(0, 0, 0, 0);
+   clip-path: inset(50%);
+   white-space: nowrap;
+   border: 0;
+}
+
+.skip-link:focus,
+.skip-link:focus-visible {
+   position: static;
+   width: auto;
+   height: auto;
+   padding: .6em 1em;
+   margin-bottom: 1em;
+   overflow: visible;
+   clip: auto;
+   clip-path: none;
+   white-space: normal;
+   color: var(--text-primary);
+   background: var(--bg-page);
+   border: 2px solid var(--accent);
+   border-radius: 6px;
+   outline: 3px solid var(--accent);
+   outline-offset: 2px;
+   text-decoration: underline;
+}
+
 /* ── Top Nav Bar ────────────────────────────────────────────────── */
 
 .top-nav {

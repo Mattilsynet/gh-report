@@ -20,6 +20,7 @@ expression: "&pages[\"deleted.html\"]"
 
 <body>
 
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <nav class="top-nav">
     <a href=".">Dashboard</a>
     <a href="owners.html">Owners</a>
@@ -29,6 +30,7 @@ expression: "&pages[\"deleted.html\"]"
     <a href="admin.html" class="admin-link">Admin</a>
 </nav>
 
+    <main id="main-content" tabindex="-1">
     <h1>Deleted Repositories</h1>
 
     <ul class="breadcrumb">
@@ -97,6 +99,7 @@ expression: "&pages[\"deleted.html\"]"
     </div>
     
     
+    </main>
 
 </body>
 

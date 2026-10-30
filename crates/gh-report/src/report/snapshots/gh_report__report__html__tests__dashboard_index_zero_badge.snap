@@ -18,6 +18,7 @@ expression: "normalize_build_footer(&pages[\"index.html\"])"
 
 <body>
 
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <nav class="top-nav">
     <a href=".">Dashboard</a>
     
@@ -27,6 +28,7 @@ expression: "normalize_build_footer(&pages[\"index.html\"])"
     <a href="admin.html" class="admin-link">Admin</a>
 </nav>
 
+    <main id="main-content" tabindex="-1">
     <div class="page-header">
         <p class="meta"><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Scope:</strong> 5 total · 5 non-archived · 0 archived repositories in <code>TestOrg</code></p>
     </div>
@@ -105,6 +107,8 @@ expression: "normalize_build_footer(&pages[\"index.html\"])"
     </div>
 
     
+
+    </main>
 
     <footer class="build-footer">
         <p class="meta">gh-report v[BUILD] · build [SHA]</p>

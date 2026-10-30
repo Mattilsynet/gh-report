@@ -6,6 +6,7 @@
 <body>
     {% include "partials/nav.html" %}
 
+    <main id="main-content" tabindex="-1">
     <h1>{{ vm.control_name() }}</h1>
 
     <ul class="breadcrumb">
@@ -52,5 +53,6 @@
         </div>
         {% endif %}
     </section>
+    </main>
 </body>
 </html>

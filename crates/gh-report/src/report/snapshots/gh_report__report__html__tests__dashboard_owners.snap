@@ -18,7 +18,8 @@ expression: "&pages[\"owners.html\"]"
 </head>
 <body>
 
-<nav class="top-nav">
+<a href="#main-content" class="skip-link">Skip to main content</a>
+    <nav class="top-nav">
     <a href=".">Dashboard</a>
     <a href="owners.html">Owners</a>
     <a href="orphans.html">Orphans (0)</a>
@@ -27,6 +28,7 @@ expression: "&pages[\"owners.html\"]"
     <a href="admin.html" class="admin-link">Admin</a>
 </nav>
 
+<main id="main-content" tabindex="-1">
 <h1>Owner Coverage Breakdown</h1>
 
 <ul class="breadcrumb">
@@ -111,6 +113,7 @@ expression: "&pages[\"owners.html\"]"
 </table>
 </div>
 
+</main>
 
 </body>
 </html>

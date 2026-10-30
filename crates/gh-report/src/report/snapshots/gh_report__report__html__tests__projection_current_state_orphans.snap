@@ -20,6 +20,7 @@ expression: "&pages[\"orphans.html\"]"
 
 <body>
 
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <nav class="top-nav">
     <a href=".">Dashboard</a>
     
@@ -29,6 +30,7 @@ expression: "&pages[\"orphans.html\"]"
     <a href="admin.html" class="admin-link">Admin</a>
 </nav>
 
+    <main id="main-content" tabindex="-1">
     <h1>Orphan Repositories</h1>
 
     <ul class="breadcrumb">
@@ -73,6 +75,7 @@ expression: "&pages[\"orphans.html\"]"
 
     
 
+    </main>
 
 </body>
 

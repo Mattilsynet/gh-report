@@ -20,6 +20,7 @@ expression: detail_page
 
 <body>
 
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <nav class="top-nav">
     <a href="..">Dashboard</a>
     <a href="../owners.html">Owners</a>
@@ -29,6 +30,7 @@ expression: detail_page
     <a href="../admin.html" class="admin-link">Admin</a>
 </nav>
 
+    <main id="main-content" tabindex="-1">
     <h1 title="@org/team-empty"><a href="https://github.com/orgs/TestOrg/teams/team-empty" target="_blank"
             rel="noopener noreferrer">team-empty</a></h1>
 
@@ -207,6 +209,8 @@ expression: detail_page
     
 
     
+    </main>
+
 </body>
 
 </html>

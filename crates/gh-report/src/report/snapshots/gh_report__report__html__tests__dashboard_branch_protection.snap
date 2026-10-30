@@ -20,6 +20,7 @@ expression: "&pages[\"branch_protection.html\"]"
 
 <body>
 
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <nav class="top-nav">
     <a href=".">Dashboard</a>
     
@@ -29,6 +30,7 @@ expression: "&pages[\"branch_protection.html\"]"
     <a href="admin.html" class="admin-link">Admin</a>
 </nav>
 
+    <main id="main-content" tabindex="-1">
     <h1>Branch Protection Coverage</h1>
 
 <ul class="breadcrumb">
@@ -80,6 +82,7 @@ expression: "&pages[\"branch_protection.html\"]"
     <p class="meta">Every repository in the population was measured.</p>
     
 </section>
+    </main>
 
 </body>
 

@@ -9,6 +9,7 @@
 
     {% include "partials/nav.html" %}
 
+    <main id="main-content" tabindex="-1">
     <h1 title="{{ vm.owner }}">{% if let Some(url) = vm.github_url %}<a href="{{ url }}" target="_blank"
             rel="noopener noreferrer">{{ vm.owner_short }}</a>{% else %}{{ vm.owner_short }}{% endif %}{% if vm.owner_departed() %} {% call tooltip::warning("No longer a member of this GitHub organisation.") %}{% endcall %}{% endif %}</h1>
 
@@ -228,6 +229,8 @@
     {% if vm.has_stale_repos %}
     <p class="footer">Rows highlighted in pink have not been updated in over 2 years and may be abandoned.</p>
     {% endif %}
+    </main>
+
 </body>
 
 </html>
