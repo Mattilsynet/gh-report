@@ -82,19 +82,37 @@ publication authority.
 This authoritative document ships in the same consumer commit/PR as the
 adoption. It is not disposable local planning output.
 
-### gh-report main history-integrity protection (scoped exception)
+### gh-report main branch protection (scoped exception)
 
 For `Mattilsynet/gh-report` main only, branch protection is deliberately
-history-integrity-only. Force pushes and deletions are blocked and linear
-history is required; mandatory PR reviews, code-owner/stale-review, and
-conversation resolution are not enforced at branch-protection level, and the
-required-status-checks listing is empty. Removing required statuses removes
-GitHub's status-based mechanical integration blocking: with no effective or
-inherited rulesets (verified empty), a failing gate no longer prevents a
-merge at the platform level. This is an authorized main-only tradeoff, not
-an unchanged enforcement posture. Pull requests to main remain available and
-preferred, but are optional; the release workflow above does not require them
-for this repository.
+scoped. Force pushes and deletions are blocked and linear history is required;
+mandatory PR reviews, code-owner/stale-review, and conversation resolution are
+not enforced at branch-protection level.
+
+Pull requests to main are gated by seven required status-check contexts
+(`strict=false`), so a red or missing required check blocks the merge at the
+platform level:
+
+- `CI / build, test, lint`
+- `CI / gh-report projection-lock chokepoint`
+- `CI / gh-report FencedConflict converge-sink chokepoint`
+- `CI / non-exhaustive error-enum gate`
+- `CI / ban module-level dead_code suppression (crates/*/src)`
+- `CI / supply-chain (audit + deny)`
+- `Docker build (no push)`
+
+That enforcement was restored on 2026-10-30 by explicit user decision, closing
+the status-check half of the 2026-10-08 tradeoff; RST-0007:R4's name↔list sync
+obligation is live again, so renaming a gate job `name:` is a branch-protection
+migration in the same change. Pull requests to main remain available and
+preferred, and the release workflow above does not require them for this
+repository.
+
+Known limitation: required status checks gate pull-request merges only. Direct
+pushes to main run no workflow (`ci.yml` has no `push` trigger; `build.yml`
+runs on `v*` tags) and are not blocked by status checks. Closing that gap
+requires requiring a pull request before merging, which would change the
+sanctioned trunk workflow and is a separate, undecided question.
 
 Administrator bypass is explicit and user-accepted: `enforce_admins=false`,
 so repository admins are not bound by the branch-level history blocks.
@@ -103,8 +121,9 @@ non-admin force-push/delete and accidents, not an absolute guarantee against
 administrator action (see RST-0007 gh-report scoped ruling).
 
 Operational authority for this exception is the explicit user decision
-(2026-10-08); CHE-0083/CHE-0090 classify report-side scoring and supply
-learning context only. The CI gate commands remain: every gate job in
+(2026-10-08 for history-integrity protection and the admin bypass;
+2026-10-30 for required status checks); CHE-0083/CHE-0090 classify report-side
+scoring and supply learning context only. The CI gate commands remain: every gate job in
 `.github/workflows/ci-reusable.yml` (RST-0007, cited by job id) keeps its job
 id and run-and-fail behavior inside its caller workflows — `ci.yml` triggers
 on PRs to main, and `build.yml` triggers on `v*` tags; direct main pushes

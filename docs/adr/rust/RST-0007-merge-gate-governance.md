@@ -1,7 +1,7 @@
 # RST-0007. Merge-Gate Governance
 
 Date: 2026-08-12
-Last-reviewed: 2026-08-28 — refined — all six gates now compliant (dead-code cites RST-0003:R6) and R7's coverage claim holds as written now gate-citation rejects zero-citation gates; 2026-10-08 — gh-report scoped ruling added (history-integrity listing removal is not gate removal)
+Last-reviewed: 2026-08-28 — refined — all six gates now compliant (dead-code cites RST-0003:R6) and R7's coverage claim holds as written now gate-citation rejects zero-citation gates; 2026-10-08 — gh-report scoped ruling added (history-integrity listing removal is not gate removal); 2026-10-30 — required status-check contexts re-populated (seven) by user decision; R4's name↔list sync obligation resumed
 Tier: B
 Status: Accepted
 Parent-cross-domain: COM-0017 — merge-gate authorship and citation obligations are the general enforcement-mechanism concern COM-0017 already governs; no same-domain RST parent covers who may add a gate or what it must cite
@@ -120,3 +120,49 @@ authority. The `enforce_admins=false` admin bypass is an accepted, recorded
 tradeoff, not an omission: history-integrity protection is best-effort
 against non-admin force-push/delete and accidents, and is not absolute
 against administrators.
+
+## gh-report scoped ruling (2026-10-30): required contexts re-populated
+
+The 2026-10-08 ruling closed by anticipating its own reversal: "if the list is
+reintroduced, or a retained job's `name:` changes, R4's sync obligation
+resumes." By explicit user decision on 2026-10-30 the listing is re-populated,
+so R4 resumes and binds again.
+
+`Mattilsynet/gh-report` main now requires seven status-check contexts, rendered
+by `ci.yml`'s caller job (`name: CI`) plus `ci-reusable.yml`'s job `name:`
+fields, with `strict=false`:
+
+- `CI / build, test, lint`
+- `CI / gh-report projection-lock chokepoint`
+- `CI / gh-report FencedConflict converge-sink chokepoint`
+- `CI / non-exhaustive error-enum gate`
+- `CI / ban module-level dead_code suppression (crates/*/src)`
+- `CI / supply-chain (audit + deny)`
+- `Docker build (no push)`
+
+`strict=false` is deliberate: branch-up-to-date forcing would fight the
+single-drafter append-only trunk cadence and buys nothing that linear history
+does not already give.
+
+R4 is live again: renaming any of these job `name:` fields, or adding or
+removing a merge gate, is a branch-protection migration that MUST update this
+listing in the same change. Branch protection matches the rendered contexts,
+not the job ids.
+
+This is a strengthening of the merge gate, so R6's removal-or-weakening route
+is not triggered; the ruling is nevertheless recorded under COM-0035:R5's
+reopen discipline because it reverses a previously recorded scoped tradeoff.
+
+Known limitation, deliberately not closed by this ruling: required status
+checks gate pull-request merges only. Direct pushes to main run no workflow
+(`ci.yml` has no `push` trigger; `build.yml` runs on `v*` tags) and are not
+blocked by status checks. Closing that gap requires requiring a pull request
+before merging, which would change the sanctioned trunk workflow and remains a
+separate, undecided question.
+
+Unchanged from 2026-10-08 and still in force: `enforce_admins=false` (admin
+bypass), linear history required, force pushes and deletions blocked, and PR
+review plus conversation resolution not enforced.
+
+Scope: exclusively `Mattilsynet/gh-report` main. No gate command, workflow, job
+id, or other repository is amended.
