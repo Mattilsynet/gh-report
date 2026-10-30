@@ -7,7 +7,7 @@
    /* Status palette  (severity base colours) */
    --status-pass: #116e6b;
    /* success base-default */
-   --status-warn: #EEAB2B;
+   --status-warn: #8F5A00;
    /* warning base-active  */
    --status-fail: #C83719;
    /* danger  base-default */
@@ -62,6 +62,52 @@
    --rank-bronze: #7F433B;
    /* warning border-default */
 }
+
+/* ── WCAG 2.1 AA contrast matrix (measured 2026-10-30; audit ghr-2b743426) ──
+   Method: WCAG 2.1 relative luminance + contrast ratio.
+   L = 0.2126 R + 0.7152 G + 0.0722 B over linearized sRGB;
+   ratio = (L1 + 0.05) / (L2 + 0.05), lighter over darker.
+   Each token is classified by its ACTUAL usage in this stylesheet:
+     TEXT         -> threshold 4.5:1   (text glyphs: badges, tooltip triggers)
+     NON-TEXT     -> threshold 3:1     (8px status dots, 4px tier / caveat /
+                                       red-flag borders, progress-fill fills)
+     SURFACE TINT -> exempt            (color-mix() 6% blends under tier and
+                                       red-flag cards; decorative, no glyph
+                                       of its own)
+   A token used in several classes is judged on its stricter threshold.
+
+   Legend — background tokens:  card #ffffff · page #FAF7F4 · stripe #EDEDED
+                               nav #E6EFE1 ·  caveat #FFF3CF · stale #FEEAE6
+
+    token             value      card  page  stripe  nav  caveat  stale  class
+    ---------------- -------   ------ ------ ------ ------ ------ ------  ----------
+    --status-warn    #8F5A00    5.78   5.42   4.94  4.90   5.23   4.99  TEXT 4.5:1
+    --status-fail    #C83719    5.23   4.90   4.47  4.43   4.72   4.51  NON-TEXT 3:1
+    --status-pass    #116E6B    6.06   5.68   5.17  5.13   5.47   5.23  NON-TEXT 3:1
+    --status-unknown #5F5F5F    6.39   5.98   5.45  5.41   5.77   5.51  NON-TEXT 3:1
+    --text-primary   #3D3D3D   10.86  10.18   9.28  9.21   9.81   9.38  TEXT 4.5:1
+    --text-muted     #6B6B6B    5.33   4.99   4.55  4.52   4.81   4.60  TEXT 4.5:1
+
+   Every entry above clears its class threshold on each real background it
+   composites on (min = --status-warn 4.90:1 on --bg-nav, its worst case).
+
+   Repair rationale — --status-warn was #EEAB2B: measured 2.00 / 1.87 /
+   1.71 / 1.70 / 1.81 / 1.73 on card/page/stripe/nav/caveat/stale, failing
+   BOTH 4.5:1 (text: warm-start / coverage-capped badges, .tooltip-warn) and
+   3:1 (dots, borders, progress fill). Repaired to #8F5A00, the lightest
+   amber measured to clear >= 4.5:1 with margin on its worst background
+   (4.90:1 vs --bg-nav; 4.30:1 vs --bg-progress, above the 3:1 graphic
+   floor). Amber/ochre hue is kept and remains visually distinct from
+   --status-fail (red) and --status-unknown (grey).
+
+   Left unchanged — --status-fail dips to 4.43:1 on nav / 4.47:1 on stripe
+   but is a non-text graphic there (dots, borders, fill): the 3:1 class
+   governs, so it passes. --text-muted only reads sub-4.5 against
+   --bg-progress, a track that carries no text. --status-pass, --status-
+   unknown, --text-primary and --text-muted pass their measured classes.
+   6%-8% color-mix() surface tints (tier/red-flag/rank cards) are exempt;
+   dots and progress fills are backed by sr-only text labels. The dark-mode
+   palette (prefers-color-scheme: dark) is outside this audit and untouched. */
 
 /* ── Base Layout ────────────────────────────────────────────────── */
 
