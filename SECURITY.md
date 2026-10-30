@@ -7,11 +7,10 @@ If you discover a security issue in any crate in this workspace (notably
 the `cherry-pit-*` family it builds on), please report it privately rather
 than filing a public issue.
 
-If GitHub private vulnerability reporting is enabled on this repository
-(Settings → Security → Private vulnerability reporting — currently
-**disabled**, tracked separately as a repo-setting follow-up, not this
-document), use it first: it opens a private advisory visible only to
-maintainers.
+Use GitHub private vulnerability reporting on this repository first
+(**Security** tab → **Report a vulnerability**). It opens a private advisory
+visible only to maintainers and keeps the report out of public issue
+tracking. It is enabled on this repository as of 2026-10-30.
 
 Otherwise, email <24.7@mattilsynet.no> (Mattilsynet's published security
 contact, per <https://www.mattilsynet.no/.well-known/security.txt>). The
