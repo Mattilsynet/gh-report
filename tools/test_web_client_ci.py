@@ -53,28 +53,28 @@ def assert_gates(test, workflow):
     steps = job["steps"]
     test.assertFalse(any("verify_web_client.py bundle" in step.get("run", "") for step in steps))
     matches = [i for i, step in enumerate(steps)
-               if step.get("with", {}).get("toolchain") == "1.99.0"]
-    test.assertEqual(len(matches), 1, "unique 1.99 toolchain setup")
+               if step.get("with", {}).get("toolchain") == "1.100.0"]
+    test.assertEqual(len(matches), 1, "unique 1.100 toolchain setup")
     setup = matches[0]
     setup_step = steps[setup]
     test.assertTrue(
         setup_step.get("uses", "").startswith("dtolnay/rust-toolchain@"),
-        "1.99 setup uses the pinned dtolnay action")
+        "1.100 setup uses the pinned dtolnay action")
     test.assertEqual(
         set(setup_step["with"]) - {"toolchain", "targets", "components"}, set(),
-        "1.99 setup uses only toolchain/targets/components inputs")
-    test.assertNotIn("default", setup_step["with"], "1.99 setup sets no default")
+        "1.100 setup uses only toolchain/targets/components inputs")
+    test.assertNotIn("default", setup_step["with"], "1.100 setup sets no default")
     test.assertEqual(setup_step["with"].get("components"), "clippy, rustfmt",
-                     "1.99 setup carries clippy/rustfmt components")
+                     "1.100 setup carries clippy/rustfmt components")
     test.assertEqual(setup_step["with"].get("targets"), "wasm32-unknown-unknown",
-                     "1.99 setup carries the wasm32 target")
-    test.assertNotIn("if", setup_step, "1.99 setup is unconditional")
-    test.assertNotIn("continue-on-error", setup_step, "1.99 setup is unconditional")
+                     "1.100 setup carries the wasm32 target")
+    test.assertNotIn("if", setup_step, "1.100 setup is unconditional")
+    test.assertNotIn("continue-on-error", setup_step, "1.100 setup is unconditional")
     canonical_install = next(
         i for i, step in enumerate(steps)
-        if step.get("run", "").startswith("cargo +1.99.0 install --git https://github.com/acje/comment-free"))
+        if step.get("run", "").startswith("cargo +1.100.0 install --git https://github.com/acje/comment-free"))
     test.assertLess(setup, canonical_install,
-                    "1.99 setup ordered before canonical comment-free install")
+                    "1.100 setup ordered before canonical comment-free install")
     matches = [i for i, step in enumerate(steps) if is_install_step(step)]
     test.assertEqual(len(matches), 1, INSTALL)
     install = matches[0]
@@ -180,7 +180,7 @@ class WorkflowGates(unittest.TestCase):
                 changed = copy.deepcopy(workflow)
                 steps = changed["jobs"]["build-test-lint"]["steps"]
                 matches = [step for step in steps
-                           if (step.get("with", {}).get("toolchain") == "1.99.0"
+                           if (step.get("with", {}).get("toolchain") == "1.100.0"
                                if anchor == "setup" else is_install_step(step))]
                 self.assertEqual(len(matches), 1, anchor)
                 if mutation == "remove":
@@ -241,8 +241,8 @@ class WorkflowGates(unittest.TestCase):
                     assert_gates(self, changed)
                 assert_gates(self, workflow)
 
-    def test_toolchain_1_99_setup_guard_plant_fail_revert_clean(self):
-        # The single 1.99 dtolnay/rust-toolchain setup is the canonical
+    def test_toolchain_1_100_setup_guard_plant_fail_revert_clean(self):
+        # The single 1.100 dtolnay/rust-toolchain setup is the canonical
         # availability source for the canonical comment-free install. The
         # guard pins its uniqueness, exact pin, relevant inputs, absence of
         # inappropriate inputs, unconditionality, and ordering before the
@@ -252,20 +252,20 @@ class WorkflowGates(unittest.TestCase):
         setup_block = (
             "      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable\n"
             "        with:\n"
-            "          toolchain: 1.99.0\n"
+            "          toolchain: 1.100.0\n"
             "          components: clippy, rustfmt\n"
             "          targets: wasm32-unknown-unknown\n"
         )
         install_step = (
             "      - name: install canonical comment-free\n"
-            "        run: cargo +1.99.0 install --git https://github.com/acje/comment-free --rev b4666626bbeee4e74ca41fd6ff1048b2f167dd27 --locked comment-free\n"
+            "        run: cargo +1.100.0 install --git https://github.com/acje/comment-free --rev b4666626bbeee4e74ca41fd6ff1048b2f167dd27 --locked comment-free\n"
         )
 
         def plant(source, variant):
             if variant == "missing":
                 return source.replace(setup_block, "")
             if variant == "wrongpin":
-                return source.replace("          toolchain: 1.99.0\n",
+                return source.replace("          toolchain: 1.100.0\n",
                                       "          toolchain: 1.97.0\n", 1)
             if variant == "reorder":
                 return source.replace(setup_block, "").replace(
@@ -338,7 +338,7 @@ class WorkflowGates(unittest.TestCase):
         anchor = "        run: python3.12 -B tools/verify_web_client.py imports --ci\n"
         blocks = {
             "pinned": "      - name: raw cargo pinned-selector add\n"
-                      "        run: cargo +1.99.0 build -p gh-report-web-client --lib --locked\n",
+                      "        run: cargo +1.100.0 build -p gh-report-web-client --lib --locked\n",
             "shell": "      - name: raw cargo shell-block add\n"
                      "        run: |\n"
                      "          set -euo pipefail\n"
@@ -346,9 +346,9 @@ class WorkflowGates(unittest.TestCase):
             "tester": "      - name: raw cargo test add\n"
                       "        run: cargo test -p gh-report-web-client --target wasm32-unknown-unknown --locked --lib\n",
             "reordered": "      - name: raw cargo reordered flags add\n"
-                         "        run: cargo +1.99.0 build --locked -p gh-report-web-client --lib\n",
+                         "        run: cargo +1.100.0 build --locked -p gh-report-web-client --lib\n",
             "envprefixed": "      - name: raw cargo env-prefixed add\n"
-                           "        run: CARGO_TARGET_DIR=target cargo +1.99.0 build -p gh-report-web-client --lib --locked\n",
+                           "        run: CARGO_TARGET_DIR=target cargo +1.100.0 build -p gh-report-web-client --lib --locked\n",
         }
         original = workflow_path.read_text()
         assert_gates(self, read_workflow(workflow_path))

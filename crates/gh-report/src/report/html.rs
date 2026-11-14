@@ -1695,16 +1695,17 @@ fn build_one_owner_detail_view_model(
     let org_encoded = utf8_percent_encode(ctx.organization, PATH_SEGMENT).to_string();
     let github_url = build_owner_github_url(m.owner_type, &m.owner, &org_encoded);
     let security_url = build_team_security_url(m.owner_type, &m.owner, &org_encoded);
-    let mut repo_rows: Vec<OwnerRepoRow> = ctx
-        .owner_repo_map
-        .get(&canonical_key)
-        .map(|(_, repos)| {
-            repos
-                .iter()
-                .map(|repo| build_owner_repo_row(repo, &org_encoded, ctx.run_timestamp, ctx.tiers))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut repo_rows: Vec<OwnerRepoRow> =
+        ctx.owner_repo_map
+            .get(&canonical_key)
+            .map_or_default(|(_, repos)| {
+                repos
+                    .iter()
+                    .map(|repo| {
+                        build_owner_repo_row(repo, &org_encoded, ctx.run_timestamp, ctx.tiers)
+                    })
+                    .collect()
+            });
 
     repo_rows.sort_by_cached_key(|r| r.repo_name.to_lowercase());
 
@@ -1748,8 +1749,7 @@ fn build_one_owner_detail_view_model(
         .orphaned_by_team
         .iter()
         .find(|group| group.team.eq_ignore_ascii_case(&m.owner))
-        .map(|group| group.rows.clone())
-        .unwrap_or_default();
+        .map_or_default(|group| group.rows.clone());
     let orphan_unresolved = matches!(
         m.owner_type,
         OwnerType::Team | OwnerType::AmbiguousTeamShaped
@@ -1821,14 +1821,10 @@ fn extract_last_commit_display(repo: &RepositoryEvidence) -> LastCommitDisplay {
                 .or(info.committer_login.as_deref())
                 .unwrap_or(EM_DASH)
                 .to_string();
-            let url = info
-                .committer_login
-                .as_ref()
-                .map(|l| {
-                    let encoded = utf8_percent_encode(l, PATH_SEGMENT);
-                    format!("{}/{}", config::DEFAULT_GITHUB_WEB_BASE_URL, encoded)
-                })
-                .unwrap_or_default();
+            let url = info.committer_login.as_ref().map_or_default(|l| {
+                let encoded = utf8_percent_encode(l, PATH_SEGMENT);
+                format!("{}/{}", config::DEFAULT_GITHUB_WEB_BASE_URL, encoded)
+            });
             let date = format_date_prefix(info.commit_date.as_deref());
             let unregistered = url.is_empty() && login != EM_DASH;
             LastCommitDisplay {
@@ -2160,8 +2156,9 @@ fn build_deleted_view_model(
         .map(|roster| {
             let mut referencing_repos: Vec<String> = owner_repo_map
                 .get(&roster.canonical_owner.to_lowercase())
-                .map(|(_, repos)| repos.iter().map(|r| r.repository.name.clone()).collect())
-                .unwrap_or_default();
+                .map_or_default(|(_, repos)| {
+                    repos.iter().map(|r| r.repository.name.clone()).collect()
+                });
             referencing_repos.sort_by_cached_key(|name| name.to_lowercase());
             let team_url =
                 build_owner_github_url(OwnerType::Team, &roster.canonical_owner, &org_encoded)

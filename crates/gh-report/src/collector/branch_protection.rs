@@ -442,12 +442,11 @@ fn ruleset_applies(ruleset: &serde_json::Value, default_branch: &str) -> bool {
         ref_name
             .and_then(|r| r.get(key))
             .and_then(serde_json::Value::as_array)
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             })
-            .unwrap_or_default()
     };
 
     let include = extract_patterns("include");

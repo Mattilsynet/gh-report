@@ -14,11 +14,11 @@
 #   podman run --rm -p 8080:8080 -e GITHUB_TOKEN=ghp_... -e BIND_ADDRESS=0.0.0.0 gh-report --org MyOrg
 
 # ── Stage 1: Base Chef ──────────────────────────────────────────
-FROM rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS chef
+FROM rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS chef
 
-COPY --from=lukemathwalker/cargo-chef:0.1.78-rust-1.99.0-bookworm@sha256:2ee6e8edf0b91b5a7295071299596601710bccb243bd9735e0b9abf6e114582b /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
+COPY --from=lukemathwalker/cargo-chef:0.1.78-rust-1.100.0-bookworm@sha256:9573268a2a874efc1c755a0094a50c25988b2c6a0b7a520ddb7fd08d868d1c43 /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 WORKDIR /app
-ENV RUSTUP_TOOLCHAIN=1.99.0
+ENV RUSTUP_TOOLCHAIN=1.100.0
 
 # ── Stage 2: Recipe Planner ──────────────────────────────────────
 FROM chef AS planner

@@ -524,8 +524,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let nats_creds_path = config
             .nats_creds
             .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default();
+            .map_or_default(|path| path.display().to_string());
         let sanitized_nats_url =
             gh_report::app::state::sanitize_nats_url(&config.nats_url);
         tracing::info!(

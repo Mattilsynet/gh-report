@@ -51,7 +51,7 @@ High-assurance testing techniques—such as property-based testing (proptest), f
 - Target class: `service-unattended` (as mapped in `sf-sdlc.toml`).
 - Real entrypoint: `gh-report` (GitHub org evidence collector + HTML reporter daemon).
 - Canonical verification entrypoint: `scripts/verify.sh`
-- Rust workspace (edition 2024, MSRV 1.99, resolver 3, 3 member crates) shipping one
+- Rust workspace (edition 2024, MSRV 1.100, resolver 3, 3 member crates) shipping one
   binary, web client and checker, consuming an external ADR-governed library family:
   - `adr-fmt` (ADR validator, read-only) from `Mattilsynet/adr-fmt`.
   - `comment-free` (doc-lint tool) from `acje/comment-free`.
@@ -150,7 +150,7 @@ BOUNDARY.
   pass pedantic with zero warnings.
 - `rustfmt` runs on **stable defaults only** (RST-0003:R3); there is no custom
   `rustfmt.toml` style. Don't add format config.
-- `rust-toolchain.toml` pins channel 1.99 (clippy+rustfmt). Use it; don't bump.
+- `rust-toolchain.toml` pins channel 1.100 (clippy+rustfmt). Use it; don't bump.
 
 ### Supply Chain Gates
 `cargo deny check` and `cargo audit` are the supply-chain controls.
@@ -163,7 +163,7 @@ comment-free --check-doc-budget --doc-advisory-words 80 --doc-max-words 120 --ma
 
 Requires comment-free 0.2.0 at the canonical revision below:
 ```sh
-cargo +1.99.0 install --git https://github.com/acje/comment-free --rev b4666626bbeee4e74ca41fd6ff1048b2f167dd27 --locked comment-free
+cargo +1.100.0 install --git https://github.com/acje/comment-free --rev b4666626bbeee4e74ca41fd6ff1048b2f167dd27 --locked comment-free
 ```
 
 The read-only native gate recursively scans Rust sources under `.` with the

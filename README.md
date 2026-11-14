@@ -113,7 +113,7 @@ the application and `canonical_cherry_bridge` persistence/type-identity test.
   Foundation domains (`ground`, `common`, `rust`, `security`, `flow`)
   supply cross-cutting principles applied to all crates.
 
-This is a Rust workspace (edition 2024, MSRV 1.99).
+This is a Rust workspace (edition 2024, MSRV 1.100).
 
 ## Canonical Cherry gate ownership
 
@@ -145,7 +145,7 @@ It is not a member of this workspace — it is consumed from canonical
 upstream. Install the pinned revision once:
 
 ```console
-cargo +1.99.0 install --git https://github.com/Mattilsynet/adr-fmt --locked \
+cargo +1.100.0 install --git https://github.com/Mattilsynet/adr-fmt --locked \
   --rev e3247faa4f5b39310490814e665185606e967de1 adr-fmt
 ```
 

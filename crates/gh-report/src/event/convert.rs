@@ -1027,7 +1027,7 @@ mod tests {
             let mut domain_meta = crate::test_fixtures::make_metadata();
             domain_meta.coverage = domain_cov;
             let native_meta =
-                AssessmentMetadata::try_from(domain_meta.clone()).expect("conversion to native");
+                AssessmentMetadata::try_from(domain_meta).expect("conversion to native");
             match native_meta.coverage {
                 crate::event::CollectionCoverage::Known { limit, .. } => {
                     assert_eq!(limit.get(), limit_val);
