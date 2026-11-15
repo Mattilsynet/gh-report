@@ -192,7 +192,7 @@ CI installs the consumer pin as a step in the `build-test-lint` job checksum-ver
 `async-nats` is pinned to the `server_2_14` feature to match.
 
 ### CI Specifics (`.github/workflows/ci.yml`)
-- `ci.yml` triggers on `pull_request` to `main` (no `push` trigger); `build.yml` triggers on `v*` tags; direct main pushes run neither. Third-party actions are **SHA-pinned**.
+- `ci.yml` triggers on `pull_request` to `main`, `push` to `main`, and `workflow_dispatch`; `build.yml` triggers on `v*` tags. Every push to main is gated and attributed, but a push-triggered run cannot block the push that triggers it, and `enforce_admins=false` still permits a bypass: detection and attribution changed, prevention did not. Third-party actions are **SHA-pinned**.
 - Merge gates (RST-0007) live in `.github/workflows/ci-reusable.yml` (called
   from `ci.yml`), invoked via `tools/tripwires.sh <check>`.
 - `cargo deny check` and `cargo audit` run as supply-chain gates.

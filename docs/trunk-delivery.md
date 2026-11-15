@@ -108,11 +108,14 @@ migration in the same change. Pull requests to main remain available and
 preferred, and the release workflow above does not require them for this
 repository.
 
-Known limitation: required status checks gate pull-request merges only. Direct
-pushes to main run no workflow (`ci.yml` has no `push` trigger; `build.yml`
-runs on `v*` tags) and are not blocked by status checks. Closing that gap
-requires requiring a pull request before merging, which would change the
-sanctioned trunk workflow and is a separate, undecided question.
+Known limitation: required status checks gate pull-request merges only. Since
+2026-11-15 `ci.yml` also triggers on `push` to `main` and on
+`workflow_dispatch`, so every direct push is gated and attributed — but a
+push-triggered run cannot block the push that triggers it, and
+`enforce_admins=false` still permits a bypass. Detection and attribution
+changed; prevention did not. Closing the residual gap requires requiring a
+pull request before merging, which would change the sanctioned trunk workflow
+and is a separate, undecided question.
 
 Administrator bypass is explicit and user-accepted: `enforce_admins=false`,
 so repository admins are not bound by the branch-level history blocks.
@@ -126,12 +129,14 @@ Operational authority for this exception is the explicit user decision
 scoring and supply learning context only. The CI gate commands remain: every gate job in
 `.github/workflows/ci-reusable.yml` (RST-0007, cited by job id) keeps its job
 id and run-and-fail behavior inside its caller workflows — `ci.yml` triggers
-on PRs to main, and `build.yml` triggers on `v*` tags; direct main pushes
-run neither. Delivery quality for any direct main publication therefore rests
-on pre-publication obligations — run the local verification tiers and gate
+on PRs to main, on pushes to main, and on `workflow_dispatch`; `build.yml`
+triggers on `v*` tags. Because a push-triggered run cannot block the push that
+triggers it, delivery quality for a direct main publication still rests on
+pre-publication obligations — run the local verification tiers and gate
 checks, perform dependency/supply-chain intake (cargo audit + deny), obtain
 independent engineering review (mandatory linus/code-review), and retain
-guard plant→fail→revert→clean evidence — with no reliance on post-push CI.
+guard plant→fail→revert→clean evidence — with post-push CI as detection and
+attribution, not a pre-merge block.
 This exception is scoped to `Mattilsynet/gh-report`; it does not alter CI
 triggers or add workflows, does not weaken gates or protection for any other
 repository, and grants no force-push, deletion, or history-rewrite authority
