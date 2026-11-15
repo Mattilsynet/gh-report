@@ -307,8 +307,7 @@ mod tests {
             .map(|row| {
                 row.cells()
                     .item(0)
-                    .map(|cell| cell.text_content().unwrap_or_default())
-                    .unwrap_or_default()
+                    .map_or_default(|cell| cell.text_content().unwrap_or_default())
             })
             .collect()
     }
@@ -547,8 +546,7 @@ mod tests {
             .map(|row| {
                 row.cells()
                     .item(0)
-                    .map(|cell| cell.text_content().unwrap_or_default())
-                    .unwrap_or_default()
+                    .map_or_default(|cell| cell.text_content().unwrap_or_default())
             })
             .collect();
         assert_eq!(team_order, vec!["Zeta", "Alpha"]);
