@@ -15,17 +15,17 @@ from workflow_subset import load, read_workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL = "cargo install --version 0.2.129 --locked wasm-bindgen-cli"
-WARM = [f"python3.12 -B tools/verify_web_client.py {mode} --ci"
+WARM = [f"python3 -B tools/verify_web_client.py {mode} --ci"
         for mode in ("status", "native", "browser")]
-COLD = [f"python3.12 -B tools/verify_web_client.py {mode} --ci"
+COLD = [f"python3 -B tools/verify_web_client.py {mode} --ci"
         for mode in ("prepare", "wasm", "imports")]
-ALL_OWNED = WARM + COLD + ["python3.12 -B tools/test_web_client_verify.py"]
+ALL_OWNED = WARM + COLD + ["python3 -B tools/test_web_client_verify.py"]
 # Every runner-owned frontend command the CI gate must carry exactly once.
 # PREBUILDS is intentionally empty: the raw cargo precompile steps it used to
 # name (host-lib build, wasm test --no-run, wasm release build, wasm-target
 # clippy, wasm-tools import dump) are consolidated into single runner
 # operations (prepare/wasm/imports) and must not reappear as raw cargo.
-COMMANDS = [f"python3.12 -B tools/verify_web_client.py {mode} --ci"
+COMMANDS = [f"python3 -B tools/verify_web_client.py {mode} --ci"
             for mode in ("prepare", "status", "native", "browser", "wasm", "imports")]
 PREBUILDS = []
 # The frontend owner gate is a POSITIVE closed step segment, not a shell
@@ -95,7 +95,7 @@ def assert_gates(test, workflow):
         _, step = matches[0]
         test.assertNotIn("continue-on-error", step)
         test.assertNotIn("uses", step)
-        if command == "python3.12 -B tools/verify_web_client.py wasm --ci":
+        if command == "python3 -B tools/verify_web_client.py wasm --ci":
             test.assertEqual(step.get("if"), "always()", "wasm lint+compile gate")
         elif command.endswith(" imports --ci"):
             test.assertEqual(step.get("if"), "always()", "import-key tripwire")
@@ -108,13 +108,13 @@ def assert_gates(test, workflow):
         test.assertNotIn("uses", step, "no action step inside the closed frontend segment")
         test.assertNotIn("continue-on-error", step, "no ignore inside the closed frontend segment")
     cold = next(i for i, step in enumerate(segment)
-                if step.get("run") == "python3.12 -B tools/verify_web_client.py prepare --ci")
+                if step.get("run") == "python3 -B tools/verify_web_client.py prepare --ci")
     for mode in ("native", "browser"):
         warm = next(i for i, step in enumerate(segment)
-                    if step.get("run") == f"python3.12 -B tools/verify_web_client.py {mode} --ci")
+                    if step.get("run") == f"python3 -B tools/verify_web_client.py {mode} --ci")
         test.assertLess(cold, warm, "cold prepare ordered before warm check")
-    for run in ("python3.12 -B tools/verify_web_client.py bundle",
-                "python3.12 -B tools/verify_web_client.py artifacts"):
+    for run in ("python3 -B tools/verify_web_client.py bundle",
+                "python3 -B tools/verify_web_client.py artifacts"):
         test.assertFalse(any(run in step.get("run", "") for step in steps),
                          "bundle/artifacts stays local (ghr-6fg0y)")
 
@@ -190,9 +190,9 @@ class WorkflowGates(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     assert_gates(self, changed)
                 assert_gates(self, workflow)
-        for command in COMMANDS + PREBUILDS + ["python3.12 -B tools/test_web_client_verify.py"]:
+        for command in COMMANDS + PREBUILDS + ["python3 -B tools/test_web_client_verify.py"]:
             for mutation in ("remove", "ignore", "skip", "interpreter"):
-                if mutation == "interpreter" and not command.startswith("python3.12"):
+                if mutation == "interpreter" and not command.startswith("python3"):
                     continue
                 changed = copy.deepcopy(workflow)
                 steps = changed["jobs"]["build-test-lint"]["steps"]
@@ -204,11 +204,11 @@ class WorkflowGates(unittest.TestCase):
                 elif mutation == "skip":
                     step["if"] = "false"
                 else:
-                    step["run"] = command.replace("python3.12", "python3")
+                    step["run"] = command.replace("python3", "python")
                 with self.assertRaises(AssertionError):
                     assert_gates(self, changed)
                 assert_gates(self, workflow)
-        cold_prepare = "python3.12 -B tools/verify_web_client.py prepare --ci"
+        cold_prepare = "python3 -B tools/verify_web_client.py prepare --ci"
         for mutation in ("reorder", "rawcargo"):
             changed = copy.deepcopy(workflow)
             steps = changed["jobs"]["build-test-lint"]["steps"]
@@ -218,7 +218,7 @@ class WorkflowGates(unittest.TestCase):
                 steps.append(step)
             else:
                 imports_index = next(i for i, step in enumerate(steps)
-                                     if step.get("run") == "python3.12 -B tools/verify_web_client.py imports --ci")
+                                     if step.get("run") == "python3 -B tools/verify_web_client.py imports --ci")
                 steps.insert(imports_index,
                              {"run": "cargo build -p gh-report-web-client --lib --locked"})
             with self.assertRaises(AssertionError):
@@ -335,7 +335,7 @@ class WorkflowGates(unittest.TestCase):
         # Covers the round-2 witnesses: pinned selectors, shell blocks, raw
         # cargo test, REORDERED flags and ENVIRONMENT-PREFIXED cargo all fail.
         workflow_path = ROOT / ".github/workflows/ci-reusable.yml"
-        anchor = "        run: python3.12 -B tools/verify_web_client.py imports --ci\n"
+        anchor = "        run: python3 -B tools/verify_web_client.py imports --ci\n"
         blocks = {
             "pinned": "      - name: raw cargo pinned-selector add\n"
                       "        run: cargo +1.100.0 build -p gh-report-web-client --lib --locked\n",

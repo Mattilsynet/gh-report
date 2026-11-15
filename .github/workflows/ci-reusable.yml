@@ -41,15 +41,15 @@ jobs:
       # host-lib build and wasm test --no-run under a distinct cold deadline;
       # warm native/browser checks keep the 180s helper deadline.
       - name: cold prepare (host lib + wasm test precompile)
-        run: python3.12 -B tools/verify_web_client.py prepare --ci
+        run: python3 -B tools/verify_web_client.py prepare --ci
       - name: verify status vocabulary
-        run: python3.12 -B tools/verify_web_client.py status --ci
+        run: python3 -B tools/verify_web_client.py status --ci
       - name: verify directed-sort native contract
-        run: python3.12 -B tools/verify_web_client.py native --ci
+        run: python3 -B tools/verify_web_client.py native --ci
       - name: verify web-client in headless Chrome
-        run: python3.12 -B tools/verify_web_client.py browser --ci
+        run: python3 -B tools/verify_web_client.py browser --ci
       - name: verify web-client guard regressions
-        run: python3.12 -B tools/test_web_client_verify.py
+        run: python3 -B tools/test_web_client_verify.py
       # CHE-0087 R5/R6: the Leptos CSR client is wasm32-only and excluded from
       # the default build set. Its committed .wasm/.js artefacts are embedded
       # into gh-report via include_bytes!/include_str!; the wasm operation
@@ -58,7 +58,7 @@ jobs:
       # that target so dom.rs (cfg(wasm32)) is linted, not merely compiled.
       - name: wasm release compile + real-target clippy (R5/R6)
         if: always()
-        run: python3.12 -B tools/verify_web_client.py wasm --ci
+        run: python3 -B tools/verify_web_client.py wasm --ci
       # Tripwire: assert the committed glue/wasm artefact pair still agrees on
       # the import-key contract (glue's import-object key == the wasm
       # module's expected import module == "./gh-report-web-client_bg.js").
@@ -73,7 +73,7 @@ jobs:
       # this tripwire actually guards against is bd ghr-e32955e3.
       - name: import-key invariant (gh-report-web-client wasm/glue)
         if: always()
-        run: python3.12 -B tools/verify_web_client.py imports --ci
+        run: python3 -B tools/verify_web_client.py imports --ci
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
         if: always()
       - run: cargo fmt --check
