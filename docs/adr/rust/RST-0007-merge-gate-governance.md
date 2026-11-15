@@ -1,7 +1,7 @@
 # RST-0007. Merge-Gate Governance
 
 Date: 2026-08-12
-Last-reviewed: 2026-08-28 — refined — all six gates now compliant (dead-code cites RST-0003:R6) and R7's coverage claim holds as written now gate-citation rejects zero-citation gates; 2026-10-08 — gh-report scoped ruling added (history-integrity listing removal is not gate removal); 2026-10-30 — required status-check contexts re-populated (seven) by user decision; R4's name↔list sync obligation resumed
+Last-reviewed: 2026-08-28 — refined — all six gates now compliant (dead-code cites RST-0003:R6) and R7's coverage claim holds as written now gate-citation rejects zero-citation gates; 2026-10-08 — gh-report scoped ruling added (history-integrity listing removal is not gate removal); 2026-10-30 — required status-check contexts re-populated (seven) by user decision; R4's name↔list sync obligation resumed; 2026-11-15 — addendum records the ci.yml push trigger added (supersedes the "direct main pushes run no workflow" statements)
 Tier: B
 Status: Accepted
 Parent-cross-domain: COM-0017 — merge-gate authorship and citation obligations are the general enforcement-mechanism concern COM-0017 already governs; no same-domain RST parent covers who may add a gate or what it must cite
@@ -166,3 +166,28 @@ review plus conversation resolution not enforced.
 
 Scope: exclusively `Mattilsynet/gh-report` main. No gate command, workflow, job
 id, or other repository is amended.
+
+## Addendum (2026-11-15): `ci.yml` now triggers on push to main
+
+On 2026-11-15 `ci.yml` gained `push: branches: [main]` and `workflow_dispatch:`
+alongside its existing `pull_request:` trigger. This addendum records the
+trigger change for `Mattilsynet/gh-report` main; it does not amend R1-R7.
+
+Earlier statements in this document — the gate-command paragraph above the
+2026-10-30 scoped ruling, and that ruling's "Known limitation" paragraph —
+state that direct pushes to main run no workflow. Those statements were
+accurate when written and are superseded by this section. They are retained
+unchanged as the record of what was ruled, not as current behaviour.
+
+The change was made because the gap they described was observed rather than
+theoretical: main at `8343b80` carried zero check-runs, and all seven required
+contexts had been bypassed on direct pushes. A push-triggered run reports
+after the push lands, so it cannot block the push that triggers it, and
+`enforce_admins=false` still permits an administrative bypass. Every push is
+now gated and attributed; a bad push is not prevented. Closing the residual
+exposure — a direct push may land before its own checks report, and an
+administrator may bypass the branch protection — requires requiring a pull
+request before merging, which remains a separate, undecided question.
+
+Scope: exclusively `Mattilsynet/gh-report` main. No gate command, job id, or
+other repository is amended.
