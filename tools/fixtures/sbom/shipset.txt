@@ -1,0 +1,5 @@
+gh-report@0.0.0
+askama@0.16.1
+serde@1.0.229
+zstd@0.14.0
+fastrand@2.5.0

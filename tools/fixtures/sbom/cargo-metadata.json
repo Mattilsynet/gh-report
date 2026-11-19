@@ -1,0 +1,247 @@
+{
+  "packages": [
+    {
+      "id": "path+file:///fixture/repo/crates/gh-report#0.0.0",
+      "name": "gh-report",
+      "version": "0.0.0",
+      "source": null,
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "gh_report"
+        },
+        {
+          "kind": ["bin"],
+          "name": "gh-report"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#askama@0.16.1",
+      "name": "askama",
+      "version": "0.16.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "askama"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#askama_derive@0.16.1",
+      "name": "askama_derive",
+      "version": "0.16.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["proc-macro"],
+          "name": "askama_derive"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#askama_parser@0.16.1",
+      "name": "askama_parser",
+      "version": "0.16.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "askama_parser"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+      "name": "serde",
+      "version": "1.0.229",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "serde"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.229",
+      "name": "serde_derive",
+      "version": "1.0.229",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["proc-macro"],
+          "name": "serde_derive"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#zstd@0.14.0",
+      "name": "zstd",
+      "version": "0.14.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "zstd"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0",
+      "name": "fastrand",
+      "version": "2.5.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "fastrand"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#trybuild@1.0.0",
+      "name": "trybuild",
+      "version": "1.0.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "trybuild"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#basic-toml@0.1.10",
+      "name": "basic-toml",
+      "version": "0.1.10",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "basic_toml"
+        }
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#build-helper@1.0.0",
+      "name": "build-helper",
+      "version": "1.0.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "targets": [
+        {
+          "kind": ["lib"],
+          "name": "build_helper"
+        }
+      ]
+    }
+  ],
+  "workspace_members": ["path+file:///fixture/repo/crates/gh-report#0.0.0"],
+  "resolve": {
+    "nodes": [
+      {
+        "id": "path+file:///fixture/repo/crates/gh-report#0.0.0",
+        "deps": [
+          {
+            "name": "askama",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#askama@0.16.1",
+            "dep_kinds": [{"kind": null, "target": null}]
+          },
+          {
+            "name": "serde",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+            "dep_kinds": [{"kind": null, "target": null}]
+          },
+          {
+            "name": "zstd",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#zstd@0.14.0",
+            "dep_kinds": [{"kind": "normal", "target": null}]
+          },
+          {
+            "name": "fastrand",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0",
+            "dep_kinds": [
+              {"kind": "dev", "target": null},
+              {"kind": null, "target": null}
+            ]
+          },
+          {
+            "name": "trybuild",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#trybuild@1.0.0",
+            "dep_kinds": [{"kind": "dev", "target": null}]
+          },
+          {
+            "name": "build-helper",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#build-helper@1.0.0",
+            "dep_kinds": [{"kind": "build", "target": null}]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#askama@0.16.1",
+        "deps": [
+          {
+            "name": "askama_derive",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#askama_derive@0.16.1",
+            "dep_kinds": [{"kind": null, "target": null}]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#askama_derive@0.16.1",
+        "deps": [
+          {
+            "name": "askama_parser",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#askama_parser@0.16.1",
+            "dep_kinds": [{"kind": null, "target": null}]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#askama_parser@0.16.1",
+        "deps": []
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "deps": [
+          {
+            "name": "serde_derive",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.229",
+            "dep_kinds": [{"kind": null, "target": null}]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.229",
+        "deps": []
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#zstd@0.14.0",
+        "deps": []
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0",
+        "deps": []
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#trybuild@1.0.0",
+        "deps": [
+          {
+            "name": "basic-toml",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#basic-toml@0.1.10",
+            "dep_kinds": [{"kind": null, "target": null}]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#basic-toml@0.1.10",
+        "deps": []
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#build-helper@1.0.0",
+        "deps": []
+      }
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "serialNumber": "urn:uuid:fixture-image-bom-0000-0000-000000000000",
+  "metadata": {
+    "timestamp": "2026-11-19T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "anchore",
+        "name": "syft",
+        "version": "fixture"
+      }
+    ],
+    "component": {
+      "type": "container",
+      "bom-ref": "pkg:oci/gh-report@sha256%3Afixture?repository_url=fixture&tag=fixture",
+      "name": "gh-report",
+      "version": "fixture"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:deb/debian/base-files@12.3?arch=amd64",
+      "name": "base-files",
+      "version": "12.3",
+      "purl": "pkg:deb/debian/base-files@12.3?arch=amd64"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:deb/debian/libc6@2.36-9?arch=amd64",
+      "name": "libc6",
+      "version": "2.36-9",
+      "purl": "pkg:deb/debian/libc6@2.36-9?arch=amd64"
+    },
+    {
+      "type": "file",
+      "bom-ref": "file-gh-report-binary",
+      "name": "gh-report",
+      "version": "fixture"
+    }
+  ],
+  "dependencies": []
+}

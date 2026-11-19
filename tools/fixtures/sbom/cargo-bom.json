@@ -1,0 +1,112 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "serialNumber": "urn:uuid:fixture-cargo-bom-0000-0000-000000000000",
+  "metadata": {
+    "timestamp": "2026-11-19T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "CycloneDX",
+        "name": "cargo-cyclonedx",
+        "version": "0.5.7"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "path+file:///fixture/repo/crates/gh-report#0.0.0",
+      "name": "gh-report",
+      "version": "0.0.0",
+      "purl": "pkg:cargo/gh-report@0.0.0?download_url=file://.",
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "path+file:///fixture/repo/crates/gh-report#0.0.0 bin-target-0",
+          "name": "gh-report",
+          "version": "0.0.0",
+          "purl": "pkg:cargo/gh-report@0.0.0?download_url=file://.#src/main.rs"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#askama@0.16.1",
+      "name": "askama",
+      "version": "0.16.1",
+      "purl": "pkg:cargo/askama@0.16.1"
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#askama_derive@0.16.1",
+      "name": "askama_derive",
+      "version": "0.16.1",
+      "purl": "pkg:cargo/askama_derive@0.16.1"
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#basic-toml@0.1.10",
+      "name": "basic-toml",
+      "version": "0.1.10",
+      "purl": "pkg:cargo/basic-toml@0.1.10"
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+      "name": "serde",
+      "version": "1.0.229"
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zstd@0.14.0",
+      "name": "zstd",
+      "version": "0.14.0",
+      "purl": "pkg:cargo/zstd@0.14.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0",
+      "name": "fastrand",
+      "version": "2.5.0",
+      "purl": "pkg:cargo/fastrand@2.5.0"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "path+file:///fixture/repo/crates/gh-report#0.0.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#askama@0.16.1",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#zstd@0.14.0",
+        "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#askama@0.16.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#askama_derive@0.16.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#askama_derive@0.16.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#basic-toml@0.1.10",
+      "dependsOn": []
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+      "dependsOn": []
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zstd@0.14.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#fastrand@2.5.0",
+      "dependsOn": []
+    }
+  ]
+}
