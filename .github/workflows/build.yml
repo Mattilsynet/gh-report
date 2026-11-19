@@ -214,6 +214,9 @@ jobs:
           api-key: ${{ secrets.DTRACK_API_KEY }}
           project-name: gh-report
           project-version: prod
+          # Team ownership marker: this is how the portfolio is read by owning
+          # team. The upload binds the project's tag set to exactly this value.
+          project-tags: infosec
           auto-create: true
           is-latest: true
           bom-filename: ${{ runner.temp }}/sbom/bom.json

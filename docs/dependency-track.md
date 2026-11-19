@@ -14,6 +14,32 @@ Those two strings are literals in both workflows (RST-0008:R1). With
 `auto-create: true`, any other value would silently create a new, untriaged
 project, so they are never taken from a tag, SHA or dispatch input.
 
+The project also carries the ownership tag `infosec`, set by the upload
+(`project-tags: infosec`), so the portfolio can be read by owning team.
+
+## Ownership tags
+
+The tag is part of the delivered identity: `project-tags: infosec` is a literal
+in the upload step, alongside `project-name` and `project-version`.
+
+Dependency-Track 5.1.2 binds the project's tag set to exactly what the request
+carries (`BomResource` → `maybeBindTags` → `QueryManager.bind`), so the workflow
+is the single owner of that set: adding a tag here replaces the project's other
+tags at the next upload. Do not curate tags by hand in the UI; a hand-added tag
+disappears on the next release.
+
+Permission behaviour (`BomResource`, 5.1.2):
+
+- Binding a *different* tag set requires `PORTFOLIO_MANAGEMENT` or
+  `PORTFOLIO_MANAGEMENT_UPDATE` on the API key. Missing it does not fail the
+  upload — the server logs a warning and leaves the existing tags alone. A
+  green release therefore does not prove the tag was applied; check the project
+  in the UI when the key changes.
+- Creating a tag that does not yet exist requires `TAG_MANAGEMENT`.
+- A project created by the upload may already carry the requested tags from
+  creation, in which case no tag change is needed and the permission check is
+  not reached (`maybeBindTags` compares the sets first).
+
 ## What the BOM describes
 
 - **Root**: the released image, pinned to the digest that the build job pushed,
