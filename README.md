@@ -169,6 +169,7 @@ Graphify policy and evidence: [sole authority](../sf-sdlc/docs/graphify-evidence
 ## More
 
 - Per-crate `README.md` files under [`crates/`](crates/).
+- [Dependency-Track: released inventory and VEX triage](docs/dependency-track.md).
 
 ## Contact
 

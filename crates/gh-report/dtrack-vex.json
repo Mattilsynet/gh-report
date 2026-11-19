@@ -1,0 +1,15 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "bom-ref": "gh-report",
+      "type": "application",
+      "name": "gh-report",
+      "description": "GitHub organization governance collector and reporter, released as the gh-report container image to Cloud Run and tracked in Dependency-Track as project gh-report / prod."
+    }
+  },
+  "components": [],
+  "vulnerabilities": []
+}

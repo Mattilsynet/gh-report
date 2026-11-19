@@ -1,0 +1,87 @@
+name: Apply VEX to Dependency-Track
+
+# Applies the reviewed triage decisions in crates/gh-report/dtrack-vex.json to
+# the constant project identity (gh-report / prod) that the release workflow
+# uploads to. Run it manually after a reviewed VEX change is merged, and after
+# a new finding appears, because the SBOM import is processed asynchronously.
+# The endpoint cannot create projects: a 404 means the release SBOM has not been
+# imported under the same literals yet. See docs/dependency-track.md.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-vex
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    # Reviewed triage only: a dispatch from another branch would write
+    # unreviewed decisions into the project.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Configure Required reviewers on this environment if triage needs approval.
+    environment: prod
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: apply repository-held triage to gh-report / prod
+        env:
+          DTRACK_API_KEY: ${{ secrets.DTRACK_API_KEY }}
+        run: |
+          set -euo pipefail
+          # The count is printed before the POST and never gates it: an empty
+          # file must still reach Dependency-Track, otherwise the 404-before /
+          # 200-after ladder cannot be observed.
+          decisions="$(python3 -B -c 'import json, sys; print(len(json.load(open(sys.argv[1], encoding="utf-8")).get("vulnerabilities") or []))' crates/gh-report/dtrack-vex.json)"
+          echo "crates/gh-report/dtrack-vex.json contains ${decisions} triage decision(s)."
+
+          response="$(mktemp)"
+          cleanup() { rm -f "$response"; }
+          trap cleanup EXIT
+
+          status=$(curl -sS --max-time 120 -o "$response" -w '%{http_code}' -X POST \
+            "https://api.dtrack.mattilsynet.io/api/v1/vex" \
+            -H "X-Api-Key: ${DTRACK_API_KEY}" \
+            -F "projectName=gh-report" \
+            -F "projectVersion=prod" \
+            -F "vex=@crates/gh-report/dtrack-vex.json")
+
+          # Only the token field is read; the response body and the token are
+          # never printed.
+          token=""
+          if [ "$status" = "200" ]; then
+            token="$(python3 -B -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("token") or "")' "$response" 2>/dev/null || true)"
+          fi
+
+          case "$status" in
+            200)
+              if [ -z "$token" ]; then
+                echo "::warning::HTTP 200 from /api/v1/vex without a BomUploadResponse token: the document was accepted but the import run id is unconfirmed"
+              fi
+              if [ "$decisions" -eq 0 ]; then
+                echo "::notice::crates/gh-report/dtrack-vex.json contains 0 triage decisions. Dependency-Track accepted the document and applied nothing. This run proves the dispatch path for gh-report / prod (404 before the first SBOM import, 200 after), not VEX suppression."
+              else
+                echo "${decisions} triage decision(s) accepted for asynchronous processing (gh-report / prod). A 200 does not mean an entry matched: verify each analysis state in the Dependency-Track UI; the audit trail shows the commenter 'CycloneDX VEX' only for entries that matched an existing finding."
+              fi
+              ;;
+            403)
+              echo "::error::403 from /api/v1/vex: DTRACK_API_KEY lacks VULNERABILITY_ANALYSIS (or VULNERABILITY_ANALYSIS_UPDATE), or access to project gh-report / prod"
+              exit 1
+              ;;
+            404)
+              echo "::error::404 from /api/v1/vex: project gh-report / prod does not exist — the release SBOM has not been imported yet, or the workflow literals drifted from the upload job"
+              exit 1
+              ;;
+            *)
+              echo "::error::unexpected HTTP ${status} from /api/v1/vex"
+              exit 1
+              ;;
+          esac

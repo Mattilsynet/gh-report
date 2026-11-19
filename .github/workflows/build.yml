@@ -109,8 +109,11 @@ jobs:
           fallback: none
           checksum: true
 
-      - name: Test the release BOM merge tool
-        run: python3 -B tools/test_sbom_merge.py
+      - name: Test the release SBOM tools
+        run: |
+          set -euo pipefail
+          python3 -B tools/test_sbom_merge.py
+          python3 -B tools/test_dtrack_vex.py
 
       - name: Compute the shipped crate closure
         run: |
