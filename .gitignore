@@ -102,3 +102,6 @@ guests/
 
 # insta pending snapshots
 *.snap.new
+
+# cargo-cyclonedx output (regenerated per release build; never source)
+crates/*/bom.json
