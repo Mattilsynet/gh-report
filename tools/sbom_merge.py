@@ -28,7 +28,9 @@ Merge rule:
   reported; image components without a `pkg:` purl are dropped and reported.
   Dependency entries are kept for retained components only and every dependsOn
   target must resolve to a retained component, so the exclusion rule holds in
-  the graph as well as in components[].
+  the graph as well as in components[]. A shipset below 200 entries is refused
+  before the document is built: a truncated shipset would otherwise let a
+  truncated cargo BOM pass the missing-component check silently.
 
   The OCI root is purl == bom-ref:
   pkg:oci/gh-report@sha256%3A<hex>?repository_url=<percent-encoded>&tag=<tag>
@@ -62,6 +64,7 @@ import urllib.parse
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 BANNED_NAMES = frozenset({"proptest", "insta", "dhat", "basic-toml", "paste"})
 NORMAL_KINDS = (None, "normal")
+MIN_SHIPSET_ENTRIES = 200
 OCI_ROOT_PREFIX = "pkg:oci/gh-report@sha256%3A"
 PROC_MACRO = "proc-macro"
 BEHIND_PROC_MACRO = "behind-proc-macro"
@@ -477,6 +480,12 @@ def _run_merge(args):
     cargo_doc = _load_json(args.cargo_bom)
     image_doc = _load_json(args.image_bom)
     shipset = _read_shipset(args.shipset)
+    if len(shipset) < MIN_SHIPSET_ENTRIES:
+        raise DataError(
+            "shipset-size",
+            "%d entries (floor %d): a truncated shipset would silently truncate"
+            " the document" % (len(shipset), MIN_SHIPSET_ENTRIES),
+        )
     document, excluded, dropped_image = build_document(
         cargo_doc, image_doc, shipset, args.repository_url, args.digest, args.tag
     )

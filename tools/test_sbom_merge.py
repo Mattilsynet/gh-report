@@ -53,6 +53,10 @@ def shipset_lines():
         return [line.strip() for line in handle if line.strip()]
 
 
+PAD_COMPONENTS = 195
+PAD_REF = "registry+https://github.com/rust-lang/crates.io-index#%s@1.0.0"
+
+
 class ToolTestCase(unittest.TestCase):
     def setUp(self):
         self.scratch = Path(tempfile.mkdtemp(prefix="sbom-merge-test-"))
@@ -68,13 +72,41 @@ class ToolTestCase(unittest.TestCase):
         path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
         return path
 
+    def pad_cargo(self, cargo):
+        """Bring the cargo document to the shipset entry floor the CLI enforces."""
+        for index in range(PAD_COMPONENTS):
+            name = "pad-%03d" % index
+            reference = PAD_REF % name
+            cargo["components"].append(
+                {
+                    "type": "library",
+                    "bom-ref": reference,
+                    "name": name,
+                    "version": "1.0.0",
+                    "purl": "pkg:cargo/%s@1.0.0" % name,
+                }
+            )
+            cargo["dependencies"].append({"ref": reference, "dependsOn": []})
+        return cargo
+
+    def pad_shipset(self, lines):
+        return lines + ["pad-%03d@1.0.0" % index for index in range(PAD_COMPONENTS)]
+
     def merge(self, out_name="bom.json", cargo=None, image=None, shipset=None, check=True):
         out = self.scratch / out_name
+        if cargo is None:
+            cargo = self.write_json(
+                "cargo-padded.json", self.pad_cargo(load_fixture("cargo-bom.json"))
+            )
+        if shipset is None:
+            shipset = self.write_shipset(
+                "shipset-padded.txt", self.pad_shipset(shipset_lines())
+            )
         args = [
             "merge",
-            "--cargo-bom", cargo or FIXTURES / "cargo-bom.json",
+            "--cargo-bom", cargo,
             "--image-bom", image or FIXTURES / "image-bom.json",
-            "--shipset", shipset or FIXTURES / "shipset.txt",
+            "--shipset", shipset,
             "--repository-url", REPO_URL,
             "--digest", DIGEST,
             "--tag", TAG,
@@ -106,13 +138,14 @@ class MergeTest(ToolTestCase):
         components = document["components"]
         refs = [component["bom-ref"] for component in components]
         names = [component["name"] for component in components]
-        self.assertEqual(len(components), 7)
-        self.assertEqual(len(set(refs)), 7)
+        self.assertEqual(len(components), 202)
+        self.assertEqual(len(set(refs)), 202)
         self.assertEqual(refs, sorted(refs))
         self.assertEqual(
-            sorted(names),
+            [name for name in sorted(names) if not name.startswith("pad-")],
             ["askama", "base-files", "fastrand", "gh-report", "libc6", "serde", "zstd"],
         )
+        self.assertEqual(len([name for name in names if name.startswith("pad-")]), PAD_COMPONENTS)
         self.assertEqual(document["version"], 1)
         self.assertNotIn("serialNumber", document)
         self.assertNotIn("timestamp", document["metadata"])
@@ -160,7 +193,7 @@ class MergeTest(ToolTestCase):
             {
                 "bom": str(out),
                 "check": "passed",
-                "components": 7,
+                "components": 202,
                 "dropped_image_components": 1,
                 "excluded_components": 2,
             },
@@ -244,8 +277,11 @@ class FailClosedTest(ToolTestCase):
                 "purl": "pkg:cargo/proptest@1.0.0",
             }
         )
-        cargo_path = self.write_json("cargo-banned.json", cargo)
-        shipset = self.write_shipset("shipset-banned.txt", shipset_lines() + ["proptest@1.0.0"])
+        cargo_path = self.write_json("cargo-banned.json", self.pad_cargo(cargo))
+        shipset = self.write_shipset(
+            "shipset-banned.txt",
+            self.pad_shipset(shipset_lines() + ["proptest@1.0.0"]),
+        )
         proc, out = self.merge(cargo=cargo_path, shipset=shipset)
         self.assert_fails(proc, "banned-component", "proptest@1.0.0")
         self.assertFalse(out.exists(), "check mode must not leave a rejected document behind")
@@ -288,7 +324,7 @@ class FailClosedTest(ToolTestCase):
         cargo["dependencies"] = [
             entry for entry in cargo["dependencies"] if entry["ref"] != ASKAMA_REF
         ]
-        cargo_path = self.write_json("cargo-missing.json", cargo)
+        cargo_path = self.write_json("cargo-missing.json", self.pad_cargo(cargo))
         proc, _ = self.merge(cargo=cargo_path)
         self.assert_fails(proc, "missing-shipset-component", "askama@0.16.1")
 
@@ -306,6 +342,12 @@ class FailClosedTest(ToolTestCase):
         image_path = self.write_json("image-duplicate.json", image)
         proc, _ = self.merge(image=image_path)
         self.assert_fails(proc, "duplicate-bom-ref", ASKAMA_REF)
+
+    def test_truncated_shipset_fails_closed(self):
+        shipset = self.write_shipset("shipset-truncated.txt", ["askama@0.16.1"])
+        proc, out = self.merge(shipset=shipset)
+        self.assert_fails(proc, "shipset-size", "1 entries (floor 200)")
+        self.assertFalse(out.exists(), "a refused shipset must not leave a document behind")
 
     def test_check_rejects_each_document_failure_class(self):
         document, _, _ = sbom_merge.build_document(
