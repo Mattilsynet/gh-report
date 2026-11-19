@@ -103,7 +103,10 @@ map it. No repository change here can substitute for that.
 
 The packaged logback encoder is plain text and prints the *simple* logger name
 (`%logger{0}`), so a Cloud Logging filter on the fully qualified class name
-matches nothing. Use:
+matches nothing. In the filter below, `dtrack-apiserver` is the *expected*
+Cloud Run service name, not a verified fact: if the query returns nothing,
+substitute the actual service name of the deployed revision and keep the rest
+of the block unchanged. Use:
 
 ```text
 resource.type="cloud_run_revision"
