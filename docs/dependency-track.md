@@ -14,31 +14,86 @@ Those two strings are literals in both workflows (RST-0008:R1). With
 `auto-create: true`, any other value would silently create a new, untriaged
 project, so they are never taken from a tag, SHA or dispatch input.
 
-The project also carries the ownership tag `infosec`, set by the upload
-(`project-tags: infosec`), so the portfolio can be read by owning team.
+## Ownership tags (team name)
 
-## Ownership tags
+The portfolio is read by owning team, so every delivered project carries an
+ownership tag whose name is the owning team. For this service the team is
+`infosec`.
 
-The tag is part of the delivered identity: `project-tags: infosec` is a literal
-in the upload step, alongside `project-name` and `project-version`.
+The tag is part of the delivered identity, next to `projectName` and
+`projectVersion`: it is a literal in the upload step of
+[build.yml](../.github/workflows/build.yml), never derived from a tag, SHA or
+dispatch input.
 
-Dependency-Track 5.1.2 binds the project's tag set to exactly what the request
-carries (`BomResource` → `maybeBindTags` → `QueryManager.bind`), so the workflow
-is the single owner of that set: adding a tag here replaces the project's other
-tags at the next upload. Do not curate tags by hand in the UI; a hand-added tag
-disappears on the next release.
+```yaml
+project-name: gh-report
+project-version: prod
+project-tags: infosec
+```
 
-Permission behaviour (`BomResource`, 5.1.2):
+One tag per service is the current convention. The workflow binds the tag
+*set*, so a jointly owned service would list its teams comma-separated
+(`project-tags: infosec,platform`) — that is a portfolio decision, made in the
+workflow, not a per-upload choice.
 
-- Binding a *different* tag set requires `PORTFOLIO_MANAGEMENT` or
-  `PORTFOLIO_MANAGEMENT_UPDATE` on the API key. Missing it does not fail the
-  upload — the server logs a warning and leaves the existing tags alone. A
-  green release therefore does not prove the tag was applied; check the project
-  in the UI when the key changes.
-- Creating a tag that does not yet exist requires `TAG_MANAGEMENT`.
-- A project created by the upload may already carry the requested tags from
-  creation, in which case no tag change is needed and the permission check is
-  not reached (`maybeBindTags` compares the sets first).
+### Changing the owning team
+
+1. Edit the `project-tags` literal in [build.yml](../.github/workflows/build.yml).
+2. Open a PR and merge it. Workflow changes are reviewed like any other CD
+   change, because the tag now decides who is notified about the service.
+3. The next release binds the new set. The previous team tag disappears at the
+   same upload — nothing to remove by hand.
+
+### Tagging an existing project before the next release
+
+Use this for a new service whose first release predates the tag, or after a
+team handover that cannot wait for a release.
+
+In the UI: **Portfolio → `gh-report` / `prod` → tag control → select or create
+`infosec` → save**.
+
+By API, in three calls against `https://api.dtrack.mattilsynet.io`:
+
+```bash
+# 1. create the tag if it does not exist (TAG_MANAGEMENT); 201 first time
+curl -s -o /dev/null -w '%{http_code}\n' -X PUT \
+  -H "X-Api-Key: $DTRACK_API_KEY" -H 'Content-Type: application/json' \
+  -d '["infosec"]' https://api.dtrack.mattilsynet.io/api/v1/tag
+
+# 2. resolve the project UUID (name + version identifies the project)
+UUID=$(curl -s -H "X-Api-Key: $DTRACK_API_KEY" \
+  'https://api.dtrack.mattilsynet.io/api/v1/project/lookup?name=gh-report&version=prod' \
+  | jq -r .uuid)
+
+# 3. bind the tag; 204 = tagged, 404 = tag does not exist
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H "X-Api-Key: $DTRACK_API_KEY" -H 'Content-Type: application/json' \
+  -d "[\"$UUID\"]" https://api.dtrack.mattilsynet.io/api/v1/tag/infosec/project
+
+# 4. verify (VIEW_PORTFOLIO): the project must be listed
+curl -s -H "X-Api-Key: $DTRACK_API_KEY" \
+  https://api.dtrack.mattilsynet.io/api/v1/tag/infosec/project
+```
+
+### Semantics and permissions (Dependency-Track 5.1.2)
+
+- **The workflow owns the tag set.** `BomResource` passes `projectTags` to
+  `maybeBindTags`, which calls `QueryManager.bind` — the project's tags become
+  exactly the requested set. A tag added by hand in the UI survives until the
+  next upload, then it is replaced. Do not curate tags manually.
+- **Tags attach to a project version, not to the name.** The identity is
+  `projectName` + `projectVersion`, so the tag lands on `gh-report` / `prod`.
+  Legacy `v0.1.x` projects stay untagged; they are archived views, not the live
+  one.
+- **A missing permission cannot fail the release.** Binding a *different* tag
+  set needs `PORTFOLIO_MANAGEMENT` or `PORTFOLIO_MANAGEMENT_UPDATE` on the API
+  key. Without it the server logs a warning and leaves the tags unchanged while
+  the upload succeeds — so a green release is **not** proof that the tag was
+  applied. Check the project when the key or its permissions change.
+- **Creating a tag** needs `TAG_MANAGEMENT`. Creating the project through the
+  upload (`PROJECT_CREATION_UPLOAD`) can already carry the requested tags, in
+  which case `maybeBindTags` finds the sets equal and skips the permission
+  check.
 
 ## What the BOM describes
 
