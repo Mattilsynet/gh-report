@@ -28,9 +28,12 @@ Merge rule:
   reported; image components without a `pkg:` purl are dropped and reported.
   Dependency entries are kept for retained components only and every dependsOn
   target must resolve to a retained component, so the exclusion rule holds in
-  the graph as well as in components[]. A shipset below 200 entries is refused
-  before the document is built: a truncated shipset would otherwise let a
-  truncated cargo BOM pass the missing-component check silently.
+  the graph as well as in components[]. A shipset below MIN_SHIPSET_ENTRIES is
+  refused before the document is built. That guard is bounded: it catches
+  severe truncation (the release closure is about 252 crates, so the floor is
+  a lost file or a collapsed resolve, not a general truncation detector), a
+  small truncation passes it, and a legitimate inventory shrink below the
+  floor is a deliberate re-decision rather than a silent pass.
 
   The OCI root is purl == bom-ref:
   pkg:oci/gh-report@sha256%3A<hex>?repository_url=<percent-encoded>&tag=<tag>
@@ -64,6 +67,10 @@ import urllib.parse
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 BANNED_NAMES = frozenset({"proptest", "insta", "dhat", "basic-toml", "paste"})
 NORMAL_KINDS = (None, "normal")
+# Fail-open guard against severe shipset truncation, not a general detector:
+# the release closure was 252 crates on 2026-11-19, so 200 tolerates a real
+# dependency diet while catching a lost or collapsed metadata file. Making the
+# floor an internal, test-injectable parameter is bd ghr-grm75.
 MIN_SHIPSET_ENTRIES = 200
 OCI_ROOT_PREFIX = "pkg:oci/gh-report@sha256%3A"
 PROC_MACRO = "proc-macro"
