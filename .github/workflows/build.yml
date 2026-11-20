@@ -66,7 +66,7 @@ jobs:
           service_account: artifacts-wi-sa-github-actions@${{ env.ARTIFACT_ID }}.iam.gserviceaccount.com
 
       - name: Login to GAR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.GAR_LOCATION }}-docker.pkg.dev
           username: oauth2accesstoken
@@ -103,7 +103,7 @@ jobs:
           toolchain: 1.100.0
 
       - name: Install cargo-cyclonedx 0.5.7
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-cyclonedx@0.5.7
           fallback: none
