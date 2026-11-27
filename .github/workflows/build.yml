@@ -66,7 +66,7 @@ jobs:
           service_account: artifacts-wi-sa-github-actions@${{ env.ARTIFACT_ID }}.iam.gserviceaccount.com
 
       - name: Login to GAR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.GAR_LOCATION }}-docker.pkg.dev
           username: oauth2accesstoken
@@ -103,7 +103,7 @@ jobs:
           toolchain: 1.100.0
 
       - name: Install cargo-cyclonedx 0.5.7
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-cyclonedx@0.5.7
           fallback: none
@@ -128,7 +128,7 @@ jobs:
           test -s crates/gh-report/bom.json
 
       - name: Scan the pushed image digest
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
         with:
           image: ${{ env.IMAGE }}@${{ steps.build-push.outputs.digest }}
           registry-username: oauth2accesstoken
